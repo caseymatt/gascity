@@ -190,16 +190,47 @@ func bdQueryEphemeralStatusQuietShell(status string) string {
 	return bdQueryEphemeralStatusShell(status) + ` 2>/dev/null`
 }
 
-func legacyEphemeralReadyFilterJQ(selector string, limit int, excludeHoldLabels bool) string {
-	body := selector +
-		` | select(((.issue_type // .type // "") != "epic"))` +
-		` | select(([ (.dependencies // [])[]` +
-		` | select((.type // .dep_type // "") as $t | ($t == "blocks" or $t == "waits-for" or $t == "conditional-blocks"))` +
-		` | select((.status // .depends_on_status // "") != "closed") ] | length) == 0)`
+// ephemeralReadyBaseSelectorJQ composes the selector clauses shared by every
+// ephemeral ready-tier filter: the caller's own assignee/routing selector,
+// plus the epic exclusion and optional hold-label exclusion every variant
+// applies alike. Dependency gating is layered on top by each caller, since
+// `bd query --json` exposes only a `dependency_count` scalar — never a
+// `dependencies` array — which is precise enough to prove "definitely no
+// dependencies" but not to resolve whether a nonzero count is still open.
+func ephemeralReadyBaseSelectorJQ(selector string, excludeHoldLabels bool) string {
+	body := selector + ` | select(((.issue_type // .type // "") != "epic"))`
 	if excludeHoldLabels {
 		body += excludeHoldLabelsJQClause()
 	}
-	filter := `[.[] | ` + body + `]` + ` | sort_by(.created_at // "")`
+	return body
+}
+
+// legacyEphemeralReadyFilterJQ is the fast path: it withholds any candidate
+// with a nonzero dependency_count outright, since bd query --json carries no
+// detail on whether those dependencies are still open. dependency_count == 0
+// is a belt-and-braces prefilter, not the sole gate — ephemeralAssignedReadyProbeScript
+// pairs it with ephemeralReadyDependencyCandidateFilterJQ's real bd show
+// enrichment for the dependency_count > 0 case, so a step whose dependencies
+// have since all closed is still reachable instead of withheld forever.
+func legacyEphemeralReadyFilterJQ(selector string, limit int, excludeHoldLabels bool) string {
+	body := ephemeralReadyBaseSelectorJQ(selector, excludeHoldLabels) +
+		` | select(((.dependency_count // 0) == 0))`
+	filter := `[.[] | ` + body + `]` + ` | sort_by(.created_at // "", .id // "")`
+	if limit > 0 {
+		filter += ` | .[:` + strconv.Itoa(limit) + `]`
+	}
+	return filter
+}
+
+// ephemeralReadyDependencyCandidateFilterJQ is the slow-path complement to
+// legacyEphemeralReadyFilterJQ: it surfaces the candidates the fast path
+// withheld (dependency_count > 0) so the caller can enrich them with a real
+// bd show --json call via inProgressBlockedByEnrichmentScript and decide
+// readiness precisely, instead of leaving them permanently unservable.
+func ephemeralReadyDependencyCandidateFilterJQ(selector string, limit int, excludeHoldLabels bool) string {
+	body := ephemeralReadyBaseSelectorJQ(selector, excludeHoldLabels) +
+		` | select(((.dependency_count // 0) > 0))`
+	filter := `[.[] | ` + body + `]` + ` | sort_by(.created_at // "", .id // "")`
 	if limit > 0 {
 		filter += ` | .[:` + strconv.Itoa(limit) + `]`
 	}
@@ -313,7 +344,7 @@ func standardAssignedInProgressWorkQueryScript(topo QueryTopology) string {
 		`[ -z "$id" ] && continue; ` +
 		`r=$(bd list --status in_progress --assignee="$id" --json --limit=1 2>/dev/null); ` +
 		`if [ -n "$r" ] && [ "$r" != "[]" ]; then ` +
-		inProgressBlockedByEnrichmentScript("r") +
+		inProgressBlockedByEnrichmentScript() +
 		`fi; ` +
 		ephemeralAssignedInProgressProbeScript("id", topo) +
 		`done; `
@@ -346,7 +377,7 @@ func standardAssignedInProgressWorkQueryScript(topo QueryTopology) string {
 // degrades to the stock behavior of serving the candidate unchanged, never to
 // dropping it, so a malformed or log-prefixed bd stdout can never disable
 // crash recovery.
-func inProgressBlockedByEnrichmentScript(shellVar string) string {
+func inProgressBlockedByEnrichmentScript() string {
 	const blockingDepsJQ = `[.[0].dependencies[]? | ` +
 		`select(.dependency_type == "blocks" or .dependency_type == "waits-for" or ` +
 		`.dependency_type == "conditional-blocks") | {id, status}]`
@@ -354,13 +385,11 @@ func inProgressBlockedByEnrichmentScript(shellVar string) string {
 
 	const enrichJQ = `map(. + {blocked_by: $bb})`
 
-	v := `$` + shellVar
-	// The enriched payload lands in a scratch var derived from shellVar so the
-	// candidate itself is never clobbered: if jq fails (non-JSON or
-	// log-prefixed `bd list` stdout) the original is served unchanged.
-	enrichedVar := shellVar + `_enriched`
-	e := `$` + enrichedVar
-	return `bid=$(printf "%s" "` + v + `" | jq -r ".[0].id // empty" 2>/dev/null); ` +
+	// Every caller stages its candidate JSON into $r before invoking this
+	// script; the enriched payload lands in $r_enriched so the candidate
+	// itself is never clobbered if jq fails (non-JSON or log-prefixed
+	// `bd list` stdout) — the original is then served unchanged.
+	return `bid=$(printf "%s" "$r" | jq -r ".[0].id // empty" 2>/dev/null); ` +
 		`bb="[]"; ` +
 		`[ -n "$bid" ] && bb=$(bd show "$bid" --json 2>/dev/null | ` +
 		`jq -c ` + shellquote.Quote(blockingDepsJQ) + ` 2>/dev/null); ` +
@@ -368,10 +397,10 @@ func inProgressBlockedByEnrichmentScript(shellVar string) string {
 		`nblocked=$(printf "%s" "$bb" | jq -r ` + shellquote.Quote(openBlockerCountJQ) + ` 2>/dev/null); ` +
 		`[ -z "$nblocked" ] && nblocked=0; ` +
 		`if [ "$nblocked" = "0" ]; then ` +
-		enrichedVar + `=$(printf "%s" "` + v + `" | jq -c --argjson bb "$bb" ` +
+		`r_enriched=$(printf "%s" "$r" | jq -c --argjson bb "$bb" ` +
 		shellquote.Quote(enrichJQ) + ` 2>/dev/null); ` +
-		`[ -n "` + e + `" ] && [ "` + e + `" != "[]" ] && ` + shellVar + `="` + e + `"; ` +
-		`printf "%s" "` + v + `" && exit 0; ` +
+		`[ -n "$r_enriched" ] && [ "$r_enriched" != "[]" ] && r="$r_enriched"; ` +
+		`printf "%s" "$r" && exit 0; ` +
 		`fi; `
 }
 
@@ -407,7 +436,7 @@ func legacyControlAssignedInProgressWorkQueryScript(topo QueryTopology) string {
 		`[ -z "$cand" ] && continue; ` +
 		`r=$(bd list --status in_progress --assignee="$cand" --json --limit=1 2>/dev/null); ` +
 		`if [ -n "$r" ] && [ "$r" != "[]" ]; then ` +
-		inProgressBlockedByEnrichmentScript("r") +
+		inProgressBlockedByEnrichmentScript() +
 		`fi; ` +
 		ephemeralAssignedInProgressProbeScript("cand", topo) +
 		`done; ` +
@@ -427,11 +456,17 @@ func legacyControlAssignedReadyWorkQueryScript(topo QueryTopology) string {
 		`done; `
 }
 
+// ephemeralAssignedInProgressProbeScript is the ephemeral twin of
+// standardAssignedInProgressWorkQueryScript's crash-recovery read: it must
+// apply the same inProgressBlockedByEnrichmentScript gate before serving, or
+// a blocked in_progress wisp step is re-served on every hook tick (ga-qjozkw).
 func ephemeralAssignedInProgressProbeScript(shellVar string, topo QueryTopology) string {
 	_ = topo
 	return `r=$(` + bdQueryEphemeralStatusQuietShell("in_progress") + ` | ` +
 		`jq --arg id "$` + shellVar + `" '[.[] | select((.assignee // "") == $id)] | .[:1]' 2>/dev/null); ` +
-		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; `
+		`if [ -n "$r" ] && [ "$r" != "[]" ]; then ` +
+		inProgressBlockedByEnrichmentScript() +
+		`fi; `
 }
 
 // ephemeralAssignedReadyProbeScript is the bd-1.0.4 wisp tier. It stays on
@@ -441,14 +476,24 @@ func ephemeralAssignedInProgressProbeScript(shellVar string, topo QueryTopology)
 // (see splitEnv.mintWispWith). The ephemeral tier only exists where the policy
 // front door put the wisp somewhere a plain read cannot see it, which is the
 // single-store city.
+//
+// It tries the fast dependency_count == 0 candidate first, then falls back to
+// a dependency_count > 0 candidate enriched via a real bd show --json call,
+// so a step whose dependencies have since all closed is still reachable —
+// see ephemeralReadyDependencyCandidateFilterJQ.
 func ephemeralAssignedReadyProbeScript(shellVar string, topo QueryTopology) string {
 	if topo.includeEphemeralReady() {
 		return ""
 	}
-	filter := legacyEphemeralReadyFilterJQ(`select((.assignee // "") == $id)`, 1, false)
-	return `r=$(` + bdQueryEphemeralStatusQuietShell("open") + ` | ` +
-		`jq --arg id "$` + shellVar + `" ` + shellquote.Quote(filter) + ` 2>/dev/null); ` +
-		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; `
+	fastFilter := legacyEphemeralReadyFilterJQ(`select((.assignee // "") == $id)`, 1, false)
+	slowFilter := ephemeralReadyDependencyCandidateFilterJQ(`select((.assignee // "") == $id)`, 1, false)
+	return `open_ephemeral=$(` + bdQueryEphemeralStatusQuietShell("open") + `); ` +
+		`r=$(printf "%s" "$open_ephemeral" | jq --arg id "$` + shellVar + `" ` + shellquote.Quote(fastFilter) + ` 2>/dev/null); ` +
+		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
+		`r=$(printf "%s" "$open_ephemeral" | jq --arg id "$` + shellVar + `" ` + shellquote.Quote(slowFilter) + ` 2>/dev/null); ` +
+		`if [ -n "$r" ] && [ "$r" != "[]" ]; then ` +
+		inProgressBlockedByEnrichmentScript() +
+		`fi; `
 }
 
 func poolDemandOriginGateScript() string {

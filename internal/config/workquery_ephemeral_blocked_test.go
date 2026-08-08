@@ -93,7 +93,7 @@ func TestEphemeralReadyProbeWithholdsBlockedStep(t *testing.T) {
 // the same class of read and applies no gate whatsoever, so a blocked,
 // in_progress, assigned wisp step is re-served on every hook tick.
 func TestEphemeralInProgressProbeGatesOnReadiness(t *testing.T) {
-	script := ephemeralAssignedInProgressProbeScript("id", false)
+	script := ephemeralAssignedInProgressProbeScript("id", QueryTopology{})
 
 	// The probe's own jq must not be the only filter: it selects on assignee
 	// alone. Assert the emitted script performs readiness gating, by either
@@ -118,8 +118,8 @@ func TestEphemeralInProgressProbeGatesOnReadiness(t *testing.T) {
 // READY probe disables itself under those semantics (bd ready
 // --include-ephemeral covers it); the in_progress probe keeps running ungated.
 func TestEphemeralInProgressProbeIgnoresBD105Semantics(t *testing.T) {
-	legacy := ephemeralAssignedInProgressProbeScript("id", false)
-	modern := ephemeralAssignedInProgressProbeScript("id", true)
+	legacy := ephemeralAssignedInProgressProbeScript("id", QueryTopology{})
+	modern := ephemeralAssignedInProgressProbeScript("id", QueryTopology{Beads: BeadsConfig{BDCompatibility: BeadsBDCompatibility105}})
 
 	if legacy != modern {
 		t.Skip("in_progress probe now varies with bd ready semantics; revisit this pin")
