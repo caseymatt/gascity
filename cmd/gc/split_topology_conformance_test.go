@@ -96,6 +96,7 @@ func TestSplitTopologyConformance(t *testing.T) {
 	t.Run("I14-projection-coherence", func(t *testing.T) { forEachTopology(t, conformanceProjectionCoherence) })
 	t.Run("I15-work-query-federation", func(t *testing.T) { forEachTopologyWithRig(t, conformanceWorkQueryFederation) })
 	t.Run("I16-federated-read-tier", func(t *testing.T) { forEachTopology(t, conformanceFederatedReadTier) })
+	t.Run("I18-orphan-release-liveness-residence", func(t *testing.T) { forEachTopologyWithRig(t, conformanceOrphanReleaseLiveness) })
 }
 
 // conformanceReadyFederation (I1) guards the "no work" fail-open: a worker
@@ -260,7 +261,7 @@ func conformanceAssignedWorkCapture(t *testing.T, e splitEnv) {
 	}
 
 	released := releaseOrphanedPoolAssignments(
-		e.sessionsStore(), e.cfg, e.cityPath,
+		e.sessionsStore(), e.sessionsStore(), e.cfg, e.cityPath,
 		sessionInfosFromBeads([]beads.Bead{sess}),
 		got, stores, refs,
 		e.rigStores,
@@ -303,6 +304,77 @@ func conformanceAssignedWorkCapture(t *testing.T, e splitEnv) {
 	if reloaded.Status != "in_progress" || reloaded.Assignee != sess.ID {
 		t.Errorf("live holder's wisp = status %q assignee %q, want in_progress/%s (claim wrongfully released — the orphan-release TOCTOU class)", reloaded.Status, reloaded.Assignee, sess.ID)
 	}
+}
+
+// conformanceOrphanReleaseLiveness (I18) pins WHICH store answers the last
+// question orphan release asks before it takes a live agent's work away.
+//
+// releaseOrphanedPoolAssignments has three liveness gates. The first two read
+// the open-session SNAPSHOT the caller passed, and both are session-class routed
+// already. The third — liveOpenSessionAssignmentExists — is a fresh re-read, and
+// it exists precisely for the case the snapshot is wrong: a session minted after
+// the snapshot loaded, or one the store-ref index could not attribute. That
+// re-read was handed the leading WORK store. On a split city the session bead is
+// not there, so the gate could only ever answer "dead", and the one guard
+// standing between a TOCTOU race and a released claim was disarmed — silently,
+// because releasing work is what this pass is supposed to do.
+//
+// The scenario is that race, staged: an OPEN pool session bead in the sessions
+// store, deliberately ABSENT from the snapshot (nil openSessionInfos), holding a
+// claimed wisp. The leading store is the WORK store, as CityRuntime hands it.
+//
+// The dead-assignee wisp is the control, not decoration. Without it "released
+// nothing" is satisfied by a pass that fell out early for an unrelated reason —
+// a template that resolved to no agent, a status filter, a nil store — and the
+// invariant would pass on a build where the gate never ran at all. Releasing
+// exactly one of two beads is the only outcome that says the pass reached the
+// gate and the gate discriminated.
+func conformanceOrphanReleaseLiveness(t *testing.T, e splitEnv) {
+	sess, err := e.sessionsStore().Create(splitEnvPoolSessionBead(e.qualified, "executor-liveness"))
+	if err != nil {
+		t.Fatalf("create live pool session bead: %v", err)
+	}
+	live := e.mintWispWith(t, wispOpts{title: "claim held by a snapshot-invisible live session", routedTo: e.qualified, status: "in_progress", assignee: sess.ID})
+	dead := e.mintWispWith(t, wispOpts{title: "claim held by a session that is gone", routedTo: e.qualified, status: "in_progress", assignee: splitEnvDeadAssignee})
+
+	released := releaseOrphanedPoolAssignments(
+		e.work, e.sessionsStore(), e.cfg, e.cityPath,
+		nil, // the empty snapshot IS the race: every decision falls to the re-read
+		[]beads.Bead{live, dead},
+		[]beads.Store{e.graphStore(), e.graphStore()},
+		nil,
+		e.rigStores,
+	)
+
+	releasedIDs := make(map[string]bool, len(released))
+	for _, b := range released {
+		releasedIDs[b.ID] = true
+	}
+	if !releasedIDs[dead.ID] {
+		t.Fatalf("dead claim %s was NOT released; the release pass did not reach the liveness gate, so the live-claim leg below would pass vacuously (released = %v)", dead.ID, releasedPoolAssignmentIDs(released))
+	}
+	if releasedIDs[live.ID] {
+		t.Errorf("live claim %s WAS released. The liveness re-read is reading a store that does not hold session beads — on a split city that is the WORK store, and every orphan-release tick takes work away from agents that are still running it", live.ID)
+	}
+	if len(released) != 1 {
+		t.Errorf("released = %v, want exactly [%s]", releasedPoolAssignmentIDs(released), dead.ID)
+	}
+
+	survivor, err := e.graphStore().Get(live.ID)
+	if err != nil {
+		t.Fatalf("reload live-held wisp: %v", err)
+	}
+	if survivor.Status != "in_progress" || survivor.Assignee != sess.ID {
+		t.Errorf("live holder's wisp = status %q assignee %q, want in_progress/%s", survivor.Status, survivor.Assignee, sess.ID)
+	}
+}
+
+func releasedPoolAssignmentIDs(released []releasedPoolAssignment) []string {
+	ids := make([]string, 0, len(released))
+	for _, r := range released {
+		ids = append(ids, r.ID)
+	}
+	return ids
 }
 
 // conformanceByIDWriteResidence (I3) guards the by-id WRITE-residence class,

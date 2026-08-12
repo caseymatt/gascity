@@ -2277,6 +2277,7 @@ func (s *conditionalReleaseProbeStore) reclaim() {
 func releaseProbeAssignments(store *conditionalReleaseProbeStore, work beads.Bead) []releasedPoolAssignment {
 	return releaseOrphanedPoolAssignments(
 		store,
+		store,
 		testPoolReleaseConfig(),
 		"",
 		nil,
@@ -2484,7 +2485,7 @@ func releaseOrphanedPoolAssignmentsFromBeads(
 	for _, b := range openSessionBeads {
 		infos = append(infos, seedSessionInfo(b))
 	}
-	return releaseOrphanedPoolAssignments(store, cfg, cityPath, infos, assignedWorkBeads, assignedWorkStores, assignedWorkStoreRefs, rigStores)
+	return releaseOrphanedPoolAssignments(store, store, cfg, cityPath, infos, assignedWorkBeads, assignedWorkStores, assignedWorkStoreRefs, rigStores)
 }
 
 // gcSweepSessionBeadsFromBeads projects raw session beads to session.Info and
@@ -2575,6 +2576,7 @@ func TestReleaseOrphanedPoolAssignments_SkipsLiveModernPoolSessionWhenLiveListMi
 	store := sessionListMissStore{Store: base}
 
 	released := releaseOrphanedPoolAssignments(
+		store,
 		store,
 		&config.City{Agents: []config.Agent{{
 			Name:              "gascity/koolkats.polekitten",

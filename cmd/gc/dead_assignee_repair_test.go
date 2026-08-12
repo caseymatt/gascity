@@ -180,8 +180,13 @@ func TestReleaseOrphanedPoolAssignments_SkipsLiveAssigneeStaysAssigned(t *testin
 	}
 	work, _ = store.Get(work.ID)
 
+	// nil sessions store on purpose: this also pins the fallback that keeps the
+	// helper total (sessionsStore == nil reads the work store), so a caller that
+	// forgets the session-class argument still gets the conservative answer
+	// instead of a nil dereference.
 	released := releaseOrphanedPoolAssignments(
 		store,
+		nil,
 		&config.City{Agents: []config.Agent{{Name: "worker", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(2)}}},
 		"",
 		sessionInfosFromBeads([]beads.Bead{live}),
