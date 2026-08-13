@@ -48,6 +48,43 @@ func TestReapClosedBeadWorktrees_ReapsRegisteredExternalWorktreeFromClosedBeadMe
 	}
 }
 
+func TestReapClosedBeadWorktrees_ReapsSharedTerminalExternalWorktreeOnce(t *testing.T) {
+	cityPath, rigRoot := initReapRig(t)
+	worktreePath := addExternalReapWorktree(t, rigRoot, filepath.Join(t.TempDir(), "formula-worktrees"), "ga-ext001")
+	store := beads.NewMemStoreFrom(1, []beads.Bead{
+		{
+			ID:     "ga-attempt1",
+			Status: "closed",
+			Metadata: map[string]string{
+				beadmeta.WorkDirMetadataKey:         worktreePath,
+				beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+			},
+		},
+		{
+			ID:     "ga-ext001",
+			Status: "closed",
+			Metadata: map[string]string{
+				beadmeta.WorkDirMetadataKey:         worktreePath,
+				beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+			},
+		},
+	}, nil)
+	injectLiveness(t, liveWorktreeState{scanned: true})
+
+	var stderr bytes.Buffer
+	report := reapClosedBeadWorktrees(cityPath, reapTestConfig(rigRoot), map[string]beads.Store{reapTestRigName: store}, nil, false, events.Discard, nil, &stderr)
+
+	if len(report.Reaped) != 1 || report.Reaped[0].BeadID != "ga-ext001" {
+		t.Fatalf("Reaped = %+v, want exactly path-named source anchor ga-ext001\nProtected = %+v\nstderr:\n%s", report.Reaped, report.Protected, stderr.String())
+	}
+	if len(report.Protected) != 0 {
+		t.Fatalf("Protected = %+v, want no ownership mismatch for shared terminal worktree", report.Protected)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("shared external worktree %s still present after reap (stat err=%v)", worktreePath, err)
+	}
+}
+
 func TestReapClosedBeadWorktrees_RejectsUnsafeExternalCandidates(t *testing.T) {
 	t.Run("rig root", func(t *testing.T) {
 		cityPath, rigRoot := initReapRig(t)
