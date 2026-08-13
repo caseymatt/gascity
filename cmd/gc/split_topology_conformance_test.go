@@ -116,7 +116,18 @@ func TestSplitTopologyConformance(t *testing.T) {
 // (city_runtime.go). On a split city the leading store is the class store, so
 // the HQ work store is in NEITHER arm and a city-scope routed WORK bead is
 // invisible to controller-tick demand — the same "no work" fail-open this
-// invariant is named for, live today. cmd_start.go already names the dual role
+// invariant is named for, live today.
+//
+// THE TWO LEG SETS, named together so the delta stays one fact rather than two
+// hand-maintained lists. The CLAIM read's legs are enumerated in
+// ready_federation.go's contract header: city work store, then rigs by name
+// ascending, then the relocated binding LAST. The DEMAND read's legs are the
+// ones this row asserts: the leading sessions-class store (the binding on a
+// split city) plus rigBeadStores(). Their only difference is this row's subject
+// — the HQ work store, present in the claim set and absent from the demand set.
+// Every other divergence class between the two readers is closed at the row
+// level (demand_serve_predicate.go and its agreement conformance); this one is
+// a LEG-SET difference and is the last one outstanding. cmd_start.go already names the dual role
 // as a shared E2 two-store split. `gc session close` still reaches the HQ store
 // through unclaimWorkAssignedToRetiredSessionBead, so the bead is not lost
 // forever; the controller tick is what is blind. The hqWork row below asserts
