@@ -2189,6 +2189,20 @@ func (c *readyDemandCache) controllerDemandReady(store beads.Store) ([]beads.Bea
 	if liveErr != nil && !beads.IsPartialResult(liveErr) {
 		liveRows = nil
 	}
+	// Backfill: a failed or partial live read is topped up from the cached
+	// snapshot rather than reported as an absence of work.
+	//
+	// This is a DELIBERATE asymmetry with the worker, and naming it here is the
+	// point. The worker's own read is live-only and fails whole (`gc ready`
+	// aborts on any bad leg), so a row merged in from cache can be up to one tick
+	// stale relative to what that worker will see: the controller can count
+	// demand for a row a fresh read no longer serves. Accepted, in this direction
+	// only — the alternative is reporting zero demand from a store hiccup and
+	// draining a live pool, which is the correctness-over-latency contract this
+	// cache exists to honor. It self-heals on the next tick, and a seat spawned
+	// against a stale row now drains cleanly (no_work, ack, reaped) rather than
+	// being re-counted forever, because the permanent divergence classes are
+	// closed at their source (demand_serve_predicate.go).
 	rows = mergeReadyRowsByID(rows, liveRows)
 	if joined := errors.Join(err, liveErr); joined != nil && len(rows) > 0 && !beads.IsPartialResult(joined) {
 		return rows, &beads.PartialResultError{Op: "controller ready demand", Err: joined}
