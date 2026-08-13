@@ -2600,6 +2600,27 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 			time.Now(),
 			cr.stdout,
 		)
+		// The claim-without-execution lane. Both backstops above end at the
+		// claim; this one starts there. It reads the UNFILTERED assigned-work
+		// triple, which is the only index-aligned (bead, store, ref) view in the
+		// tick — the release filter above rewrites beads and refs but not stores
+		// — and re-checks ownership against each session's own identities anyway,
+		// so a released bead (whose assignee resolves to no live session by
+		// construction) cannot match a running one.
+		nudgeStalledPoolExecution(
+			cr.sp,
+			cr.cfg,
+			sessStore,
+			stalledPoolBeads,
+			result.AssignedWorkBeads,
+			result.AssignedWorkStores,
+			result.AssignedWorkStoreRefs,
+			result.StoreQueryPartial || result.SessionQueryPartial,
+			time.Now(),
+			cr.rec,
+			cr.requestSessionDrain,
+			cr.stdout,
+		)
 	}
 	recordPhase(TraceSiteControllerTickPhase, "bead_reconcile.nudge_stalled_pool_claims", phaseStart, nil)
 }

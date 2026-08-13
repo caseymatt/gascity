@@ -1741,6 +1741,14 @@ type EventStreamEnvelope struct {
 	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
 }
 
+// ExecutionStepStalledPayload defines model for ExecutionStepStalledPayload.
+type ExecutionStepStalledPayload struct {
+	Attempts   int64   `json:"attempts"`
+	BeadId     string  `json:"bead_id"`
+	RootBeadId *string `json:"root_bead_id,omitempty"`
+	SessionId  string  `json:"session_id"`
+}
+
 // ExtMsgAdapterRegisterInputBody defines model for ExtMsgAdapterRegisterInputBody.
 type ExtMsgAdapterRegisterInputBody struct {
 	// AccountId Account ID.
@@ -5606,6 +5614,22 @@ type TypedEventStreamEnvelopeExecutionStepDefined struct {
 	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
 }
 
+// TypedEventStreamEnvelopeExecutionStepStalled defines model for TypedEventStreamEnvelopeExecutionStepStalled.
+type TypedEventStreamEnvelopeExecutionStepStalled struct {
+	Actor            string                      `json:"actor"`
+	DependsOnStepIds *[]string                   `json:"depends_on_step_ids,omitempty"`
+	Message          *string                     `json:"message,omitempty"`
+	Payload          ExecutionStepStalledPayload `json:"payload"`
+	RunId            *string                     `json:"run_id,omitempty"`
+	Seq              int64                       `json:"seq"`
+	SessionId        *string                     `json:"session_id,omitempty"`
+	StepId           *string                     `json:"step_id,omitempty"`
+	Subject          *string                     `json:"subject,omitempty"`
+	Ts               time.Time                   `json:"ts"`
+	Type             string                      `json:"type"`
+	Workflow         *WorkflowEventProjection    `json:"workflow,omitempty"`
+}
+
 // TypedEventStreamEnvelopeExecutionStepStarted defines model for TypedEventStreamEnvelopeExecutionStepStarted.
 type TypedEventStreamEnvelopeExecutionStepStarted struct {
 	Actor            string                   `json:"actor"`
@@ -7009,6 +7033,23 @@ type TypedTaggedEventStreamEnvelopeExecutionStepDefined struct {
 	Ts               time.Time                `json:"ts"`
 	Type             string                   `json:"type"`
 	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedTaggedEventStreamEnvelopeExecutionStepStalled defines model for TypedTaggedEventStreamEnvelopeExecutionStepStalled.
+type TypedTaggedEventStreamEnvelopeExecutionStepStalled struct {
+	Actor            string                      `json:"actor"`
+	City             string                      `json:"city"`
+	DependsOnStepIds *[]string                   `json:"depends_on_step_ids,omitempty"`
+	Message          *string                     `json:"message,omitempty"`
+	Payload          ExecutionStepStalledPayload `json:"payload"`
+	RunId            *string                     `json:"run_id,omitempty"`
+	Seq              int64                       `json:"seq"`
+	SessionId        *string                     `json:"session_id,omitempty"`
+	StepId           *string                     `json:"step_id,omitempty"`
+	Subject          *string                     `json:"subject,omitempty"`
+	Ts               time.Time                   `json:"ts"`
+	Type             string                      `json:"type"`
+	Workflow         *WorkflowEventProjection    `json:"workflow,omitempty"`
 }
 
 // TypedTaggedEventStreamEnvelopeExecutionStepStarted defines model for TypedTaggedEventStreamEnvelopeExecutionStepStarted.
@@ -9945,6 +9986,32 @@ func (t *EventPayload) FromConditionalWritesDegradedPayload(v ConditionalWritesD
 
 // MergeConditionalWritesDegradedPayload performs a merge with any union data inside the EventPayload, using the provided ConditionalWritesDegradedPayload
 func (t *EventPayload) MergeConditionalWritesDegradedPayload(v ConditionalWritesDegradedPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsExecutionStepStalledPayload returns the union data inside the EventPayload as a ExecutionStepStalledPayload
+func (t EventPayload) AsExecutionStepStalledPayload() (ExecutionStepStalledPayload, error) {
+	var body ExecutionStepStalledPayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromExecutionStepStalledPayload overwrites any union data inside the EventPayload as the provided ExecutionStepStalledPayload
+func (t *EventPayload) FromExecutionStepStalledPayload(v ExecutionStepStalledPayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeExecutionStepStalledPayload performs a merge with any union data inside the EventPayload, using the provided ExecutionStepStalledPayload
+func (t *EventPayload) MergeExecutionStepStalledPayload(v ExecutionStepStalledPayload) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -13158,6 +13225,34 @@ func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeExecutionStepDef
 	return err
 }
 
+// AsTypedEventStreamEnvelopeExecutionStepStalled returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeExecutionStepStalled
+func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeExecutionStepStalled() (TypedEventStreamEnvelopeExecutionStepStalled, error) {
+	var body TypedEventStreamEnvelopeExecutionStepStalled
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedEventStreamEnvelopeExecutionStepStalled overwrites any union data inside the TypedEventStreamEnvelope as the provided TypedEventStreamEnvelopeExecutionStepStalled
+func (t *TypedEventStreamEnvelope) FromTypedEventStreamEnvelopeExecutionStepStalled(v TypedEventStreamEnvelopeExecutionStepStalled) error {
+	v.Type = "execution.step_stalled"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedEventStreamEnvelopeExecutionStepStalled performs a merge with any union data inside the TypedEventStreamEnvelope, using the provided TypedEventStreamEnvelopeExecutionStepStalled
+func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeExecutionStepStalled(v TypedEventStreamEnvelopeExecutionStepStalled) error {
+	v.Type = "execution.step_stalled"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsTypedEventStreamEnvelopeExecutionStepStarted returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeExecutionStepStarted
 func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeExecutionStepStarted() (TypedEventStreamEnvelopeExecutionStepStarted, error) {
 	var body TypedEventStreamEnvelopeExecutionStepStarted
@@ -14984,6 +15079,8 @@ func (t TypedEventStreamEnvelope) ValueByDiscriminator() (interface{}, error) {
 		return t.AsTypedEventStreamEnvelopeExecutionStepCompleted()
 	case "execution.step_defined":
 		return t.AsTypedEventStreamEnvelopeExecutionStepDefined()
+	case "execution.step_stalled":
+		return t.AsTypedEventStreamEnvelopeExecutionStepStalled()
 	case "execution.step_started":
 		return t.AsTypedEventStreamEnvelopeExecutionStepStarted()
 	case "execution.work_associated":
@@ -15757,6 +15854,34 @@ func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeExecu
 // MergeTypedTaggedEventStreamEnvelopeExecutionStepDefined performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeExecutionStepDefined
 func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeExecutionStepDefined(v TypedTaggedEventStreamEnvelopeExecutionStepDefined) error {
 	v.Type = "execution.step_defined"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTypedTaggedEventStreamEnvelopeExecutionStepStalled returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeExecutionStepStalled
+func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeExecutionStepStalled() (TypedTaggedEventStreamEnvelopeExecutionStepStalled, error) {
+	var body TypedTaggedEventStreamEnvelopeExecutionStepStalled
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedTaggedEventStreamEnvelopeExecutionStepStalled overwrites any union data inside the TypedTaggedEventStreamEnvelope as the provided TypedTaggedEventStreamEnvelopeExecutionStepStalled
+func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeExecutionStepStalled(v TypedTaggedEventStreamEnvelopeExecutionStepStalled) error {
+	v.Type = "execution.step_stalled"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedTaggedEventStreamEnvelopeExecutionStepStalled performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeExecutionStepStalled
+func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeExecutionStepStalled(v TypedTaggedEventStreamEnvelopeExecutionStepStalled) error {
+	v.Type = "execution.step_stalled"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -17593,6 +17718,8 @@ func (t TypedTaggedEventStreamEnvelope) ValueByDiscriminator() (interface{}, err
 		return t.AsTypedTaggedEventStreamEnvelopeExecutionStepCompleted()
 	case "execution.step_defined":
 		return t.AsTypedTaggedEventStreamEnvelopeExecutionStepDefined()
+	case "execution.step_stalled":
+		return t.AsTypedTaggedEventStreamEnvelopeExecutionStepStalled()
 	case "execution.step_started":
 		return t.AsTypedTaggedEventStreamEnvelopeExecutionStepStarted()
 	case "execution.work_associated":

@@ -45,6 +45,13 @@ const (
 	// RunID, SessionID, StepID, and DependsOnStepIDs carry its durable identity.
 	ExecutionStepStarted   = "execution.step_started"
 	ExecutionStepCompleted = "execution.step_completed"
+	// ExecutionStepStalled records that a session claimed a step and then never
+	// executed it: the claim-without-execution shape the controller's execution
+	// backstop gave up re-delivering a claim nudge for. Subject carries the work
+	// bead, RunID the workflow root, SessionID the holder. It is a controller
+	// LIVENESS fact, not a graph execution fact — nothing about the step's
+	// topology is asserted, and no projector consumes it.
+	ExecutionStepStalled = "execution.step_stalled"
 	// BeadDeadAssigneeReopened fires when the reconciler reopens a routed work
 	// bead whose assignee resolves to no open session bead — the owning session
 	// closed/retired while the bead stayed assigned, leaving it open+routed but
@@ -286,6 +293,7 @@ var KnownEventTypes = []string{
 	BeadClaimRejected,
 	BeadDeadAssigneeReopened,
 	ExecutionWorkAssociated, ExecutionStepDefined, ExecutionStepStarted, ExecutionStepCompleted,
+	ExecutionStepStalled,
 	MailSent, MailRead, MailArchived, MailMarkedRead, MailMarkedUnread,
 	MailReplied, MailDeleted,
 	ConvoyCreated, ConvoyClosed,
