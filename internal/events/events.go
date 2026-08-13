@@ -110,12 +110,20 @@ const (
 	// session, template, reset timestamp, and elapsed wait.
 	SessionResetStalled = "session.reset_stalled"
 	// SessionWorkQueryFailed fires when the current managed session's
-	// work-discovery query subprocess is killed by an external signal or
-	// aborted by the runner-imposed timeout before producing output.
+	// work-discovery query FAILED — killed by an external signal, aborted by the
+	// runner-imposed timeout, or exited non-zero — before producing output.
 	// Emission requires the current session ID so the lifecycle payload
 	// remains correlated; the companion reconciler handler is tracked in
 	// #1497.
 	SessionWorkQueryFailed = "session.work_query_failed"
+	// SessionDemandClaimDivergence fires when a seat the controller spawned on
+	// DEMAND evidence drains with no work. It is a diagnostics counter for the
+	// agreement invariant between the two readers — the controller's demand read
+	// and the worker's claim read — and it never influences the drain it reports
+	// on. Two classifications: benign (a sibling legitimately claimed the row
+	// first, which is correct pull, not a defect) and divergence (the row is
+	// still open, unassigned and route-matching, so the readers disagreed).
+	SessionDemandClaimDivergence = "session.demand_claim_divergence"
 	// SessionColdStartTimeout fires when a pool session's first runtime spawn
 	// (a pending create) exceeds the start deadline and is rolled back. It is
 	// per-session: it fires whenever a fresh spawn times out, including a warm
@@ -287,6 +295,7 @@ var KnownEventTypes = []string{
 	SessionUnknownState,
 	SessionResetStalled,
 	SessionWorkQueryFailed,
+	SessionDemandClaimDivergence,
 	SessionColdStartTimeout,
 	BeadCreated, BeadClosed, BeadDeleted, BeadUpdated,
 	BeadWorktreeReaped, BeadWorktreeReapSkipped,

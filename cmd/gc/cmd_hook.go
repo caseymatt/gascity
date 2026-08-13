@@ -698,7 +698,7 @@ func claimHookWorkWithRunner(workQuery, workDir string, queryEnv []string, store
 		// signal to the shared drain.
 		remaining = removeHookStore(remaining, claimStore)
 	}
-	return writeHookClaimNoWork(claimOpts, ops, claimsErrored, stdout, stderr)
+	return writeHookClaimNoWork(claimOpts, ops, claimsErrored, workDir, stdout, stderr)
 }
 
 // Claim-read retry pacing. A work-query ERROR is a failed read, and the failures

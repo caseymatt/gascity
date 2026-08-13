@@ -3260,6 +3260,13 @@ func resolveTemplateForSessionBeadInfo(
 		if tp.Env == nil {
 			tp.Env = make(map[string]string)
 		}
+		// A POOL-LEVEL marker, presence only: this seat exists because the
+		// controller counted demand. Nothing on the claim path may read the
+		// trigger id to decide what to claim — the pool is pull, and the
+		// controller does not choose the bead — but a seat that drains no_work
+		// is worth telling apart from one started for any other reason, which is
+		// what the divergence diagnostics key on (demand_divergence.go).
+		tp.Env["GC_SPAWN_ORIGIN"] = "demand"
 		tp.Env["GC_TRIGGER_BEAD_ID"] = triggerID
 		tp.Env["GC_TRIGGER_WORK_BEAD_ID"] = triggerID
 		if storeRef := strings.TrimSpace(info.TriggerBeadStoreRef); storeRef != "" {

@@ -3546,6 +3546,16 @@ type SessionCreateSucceededPayload struct {
 	Session   SessionResponse `json:"session"`
 }
 
+// SessionDemandClaimDivergencePayload defines model for SessionDemandClaimDivergencePayload.
+type SessionDemandClaimDivergencePayload struct {
+	Classification       string  `json:"classification"`
+	DrainReason          string  `json:"drain_reason"`
+	SessionId            string  `json:"session_id"`
+	Template             string  `json:"template"`
+	TriggerBeadId        *string `json:"trigger_bead_id,omitempty"`
+	TriggerStatusAtDrain *string `json:"trigger_status_at_drain,omitempty"`
+}
+
 // SessionDrainAckedWithAssignedWorkPayload defines model for SessionDrainAckedWithAssignedWorkPayload.
 type SessionDrainAckedWithAssignedWorkPayload struct {
 	// BeadId ID of the work bead still holding this session as its assignee.
@@ -6222,6 +6232,22 @@ type TypedEventStreamEnvelopeSessionCrashed struct {
 	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
 }
 
+// TypedEventStreamEnvelopeSessionDemandClaimDivergence defines model for TypedEventStreamEnvelopeSessionDemandClaimDivergence.
+type TypedEventStreamEnvelopeSessionDemandClaimDivergence struct {
+	Actor            string                              `json:"actor"`
+	DependsOnStepIds *[]string                           `json:"depends_on_step_ids,omitempty"`
+	Message          *string                             `json:"message,omitempty"`
+	Payload          SessionDemandClaimDivergencePayload `json:"payload"`
+	RunId            *string                             `json:"run_id,omitempty"`
+	Seq              int64                               `json:"seq"`
+	SessionId        *string                             `json:"session_id,omitempty"`
+	StepId           *string                             `json:"step_id,omitempty"`
+	Subject          *string                             `json:"subject,omitempty"`
+	Ts               time.Time                           `json:"ts"`
+	Type             string                              `json:"type"`
+	Workflow         *WorkflowEventProjection            `json:"workflow,omitempty"`
+}
+
 // TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork defines model for TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork.
 type TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork struct {
 	Actor            string                                   `json:"actor"`
@@ -7679,6 +7705,23 @@ type TypedTaggedEventStreamEnvelopeSessionCrashed struct {
 	Ts               time.Time                `json:"ts"`
 	Type             string                   `json:"type"`
 	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence defines model for TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence.
+type TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence struct {
+	Actor            string                              `json:"actor"`
+	City             string                              `json:"city"`
+	DependsOnStepIds *[]string                           `json:"depends_on_step_ids,omitempty"`
+	Message          *string                             `json:"message,omitempty"`
+	Payload          SessionDemandClaimDivergencePayload `json:"payload"`
+	RunId            *string                             `json:"run_id,omitempty"`
+	Seq              int64                               `json:"seq"`
+	SessionId        *string                             `json:"session_id,omitempty"`
+	StepId           *string                             `json:"step_id,omitempty"`
+	Subject          *string                             `json:"subject,omitempty"`
+	Ts               time.Time                           `json:"ts"`
+	Type             string                              `json:"type"`
+	Workflow         *WorkflowEventProjection            `json:"workflow,omitempty"`
 }
 
 // TypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork defines model for TypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork.
@@ -10376,6 +10419,32 @@ func (t *EventPayload) FromSessionCreateSucceededPayload(v SessionCreateSucceede
 
 // MergeSessionCreateSucceededPayload performs a merge with any union data inside the EventPayload, using the provided SessionCreateSucceededPayload
 func (t *EventPayload) MergeSessionCreateSucceededPayload(v SessionCreateSucceededPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSessionDemandClaimDivergencePayload returns the union data inside the EventPayload as a SessionDemandClaimDivergencePayload
+func (t EventPayload) AsSessionDemandClaimDivergencePayload() (SessionDemandClaimDivergencePayload, error) {
+	var body SessionDemandClaimDivergencePayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSessionDemandClaimDivergencePayload overwrites any union data inside the EventPayload as the provided SessionDemandClaimDivergencePayload
+func (t *EventPayload) FromSessionDemandClaimDivergencePayload(v SessionDemandClaimDivergencePayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSessionDemandClaimDivergencePayload performs a merge with any union data inside the EventPayload, using the provided SessionDemandClaimDivergencePayload
+func (t *EventPayload) MergeSessionDemandClaimDivergencePayload(v SessionDemandClaimDivergencePayload) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -14289,6 +14358,34 @@ func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeSessionCrashed(v
 	return err
 }
 
+// AsTypedEventStreamEnvelopeSessionDemandClaimDivergence returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeSessionDemandClaimDivergence
+func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeSessionDemandClaimDivergence() (TypedEventStreamEnvelopeSessionDemandClaimDivergence, error) {
+	var body TypedEventStreamEnvelopeSessionDemandClaimDivergence
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedEventStreamEnvelopeSessionDemandClaimDivergence overwrites any union data inside the TypedEventStreamEnvelope as the provided TypedEventStreamEnvelopeSessionDemandClaimDivergence
+func (t *TypedEventStreamEnvelope) FromTypedEventStreamEnvelopeSessionDemandClaimDivergence(v TypedEventStreamEnvelopeSessionDemandClaimDivergence) error {
+	v.Type = "session.demand_claim_divergence"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedEventStreamEnvelopeSessionDemandClaimDivergence performs a merge with any union data inside the TypedEventStreamEnvelope, using the provided TypedEventStreamEnvelopeSessionDemandClaimDivergence
+func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeSessionDemandClaimDivergence(v TypedEventStreamEnvelopeSessionDemandClaimDivergence) error {
+	v.Type = "session.demand_claim_divergence"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsTypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork
 func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork() (TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork, error) {
 	var body TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork
@@ -15155,6 +15252,8 @@ func (t TypedEventStreamEnvelope) ValueByDiscriminator() (interface{}, error) {
 		return t.AsTypedEventStreamEnvelopeSessionColdStartTimeout()
 	case "session.crashed":
 		return t.AsTypedEventStreamEnvelopeSessionCrashed()
+	case "session.demand_claim_divergence":
+		return t.AsTypedEventStreamEnvelopeSessionDemandClaimDivergence()
 	case "session.drain_acked_with_assigned_work":
 		return t.AsTypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork()
 	case "session.draining":
@@ -16928,6 +17027,34 @@ func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeSess
 	return err
 }
 
+// AsTypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence
+func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence() (TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence, error) {
+	var body TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence overwrites any union data inside the TypedTaggedEventStreamEnvelope as the provided TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence
+func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence(v TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence) error {
+	v.Type = "session.demand_claim_divergence"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence
+func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence(v TypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence) error {
+	v.Type = "session.demand_claim_divergence"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsTypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork
 func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork() (TypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork, error) {
 	var body TypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork
@@ -17794,6 +17921,8 @@ func (t TypedTaggedEventStreamEnvelope) ValueByDiscriminator() (interface{}, err
 		return t.AsTypedTaggedEventStreamEnvelopeSessionColdStartTimeout()
 	case "session.crashed":
 		return t.AsTypedTaggedEventStreamEnvelopeSessionCrashed()
+	case "session.demand_claim_divergence":
+		return t.AsTypedTaggedEventStreamEnvelopeSessionDemandClaimDivergence()
 	case "session.drain_acked_with_assigned_work":
 		return t.AsTypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork()
 	case "session.draining":
