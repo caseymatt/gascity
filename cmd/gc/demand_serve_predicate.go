@@ -71,18 +71,32 @@ func demandRowServable(b beads.Bead) bool {
 	if rules.RequireUnassigned && strings.TrimSpace(b.Assignee) != "" {
 		return false
 	}
+	// Each dimension matches whichever filter has the LAST WORD on what the
+	// worker is served. They are not the same comparison, and pretending they
+	// were is how the controller ends up counting a row no worker will take (or
+	// refusing to count one that every worker would).
+	//
+	// TYPE: exact, case-sensitive. The serving filter behind `gc ready` compares
+	// with a Go map lookup on the raw type (filterReadyBeads), bd's own
+	// --exclude-type lands in SQL as `issue_type NOT IN (?)` over a value that is
+	// alias-expanded but NOT case-folded, and no hook-side post-filter looks at
+	// type at all. So a bead typed "Epic" IS served, and counting it is agreement
+	// — declining to count it would be the controller inventing an exclusion the
+	// query does not have.
 	beadType := strings.TrimSpace(b.Type)
 	for _, excluded := range rules.ExcludeTypes {
-		if strings.EqualFold(beadType, excluded) {
+		if beadType == excluded {
 			return false
 		}
 	}
+	// LABEL: case-insensitive. Here the query is NOT the last word: whatever
+	// `gc ready` returns, the hook re-applies the hold filter in Go with
+	// EqualFold (isHeldHookCandidate) before serving a candidate, so a
+	// "Hold:Mayor" bead is served by the reader and then stripped by the hook.
+	// The worker never sees it, so it is not capacity demand.
 	for _, label := range b.Labels {
 		label = strings.TrimSpace(label)
 		for _, excluded := range rules.ExcludeLabels {
-			// EqualFold, matching isHeldHookCandidate: the hook applies the hold
-			// filter again in Go over whatever the query returned, so its
-			// comparison is the last word on what a worker actually sees.
 			if strings.EqualFold(label, excluded) {
 				return false
 			}

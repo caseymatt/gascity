@@ -199,9 +199,11 @@ func PoolDemandServeRulesForQuery() PoolDemandServeRules {
 	}
 }
 
-// shellArgs renders the rules as the bd flag string the demand tiers carry. It
-// is the single rendering path, so the descriptor and the query cannot drift.
-func (r PoolDemandServeRules) shellArgs() string {
+// ShellArgs renders the rules as the bd flag string a routed pool-demand tier
+// carries. It is the single rendering path — every generated demand query, in
+// this package and in the control dispatcher's own probe, is built from it, so
+// the descriptor and the queries cannot drift.
+func (r PoolDemandServeRules) ShellArgs() string {
 	var args string
 	if r.RequireUnassigned {
 		args += " --unassigned"
@@ -216,7 +218,7 @@ func (r PoolDemandServeRules) shellArgs() string {
 }
 
 func bdReadyPoolDemandShell(limitFlag string, topo QueryTopology) string {
-	return readyReaderCommand(topo.FederatedReady) + bdReadyIncludeEphemeralArg(topo.includeEphemeralReady()) + ` --metadata-field "` + beadmeta.RoutedToMetadataKey + `=$target"` + PoolDemandServeRulesForQuery().shellArgs() + ` --json ` + limitFlag
+	return readyReaderCommand(topo.FederatedReady) + bdReadyIncludeEphemeralArg(topo.includeEphemeralReady()) + ` --metadata-field "` + beadmeta.RoutedToMetadataKey + `=$target"` + PoolDemandServeRulesForQuery().ShellArgs() + ` --json ` + limitFlag
 }
 
 // bdReadyPoolDemandMigrationShell is a temporary raw compatibility probe for
@@ -228,7 +230,7 @@ func bdReadyPoolDemandShell(limitFlag string, topo QueryTopology) string {
 // requires jq in the default worker/reconciler environment; remove it with the
 // Go-side legacy candidates after the backfill completion tracked by ga-dhf44.
 func bdReadyPoolDemandMigrationShell(limitFlag string, topo QueryTopology) string {
-	return readyReaderCommand(topo.FederatedReady) + bdReadyIncludeEphemeralArg(topo.includeEphemeralReady()) + ` --metadata-field "` + beadmeta.RunTargetMetadataKey + `=$target" --metadata-field "` + beadmeta.KindMetadataKey + `=` + beadmeta.KindWorkflow + `"` + PoolDemandServeRulesForQuery().shellArgs() + ` --json --sort oldest ` + limitFlag
+	return readyReaderCommand(topo.FederatedReady) + bdReadyIncludeEphemeralArg(topo.includeEphemeralReady()) + ` --metadata-field "` + beadmeta.RunTargetMetadataKey + `=$target" --metadata-field "` + beadmeta.KindMetadataKey + `=` + beadmeta.KindWorkflow + `"` + PoolDemandServeRulesForQuery().ShellArgs() + ` --json --sort oldest ` + limitFlag
 }
 
 func poolDemandMigrationFilterJQ(limit int) string {

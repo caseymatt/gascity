@@ -1,7 +1,9 @@
 package tmux
 
 import (
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -80,4 +82,48 @@ func TestCodexBusyIndicatorIsReadable(t *testing.T) {
 	if !paneContainsBusyIndicator([]string{"  working  (esc to interrupt)"}) {
 		t.Fatal("codex's busy indicator no longer matches; submit verification for codex would report every delivery unconfirmed")
 	}
+}
+
+// TestNudgeSessionComposesEscapeThenSubmitSequence pins the PROVENANCE of the
+// composition nudgeKeystrokesForFamily models.
+//
+// The two decisions live in NudgeSession's body — the pre-submit Escape at step
+// 3, then the declared submit sequence at step 5 — and driving that body needs a
+// live tmux pane (both decisions resolve through the pane's environment or a
+// process sniff), so a unit test cannot execute it. What it CAN do is refuse to
+// let the model drift from the code: if NudgeSession stops consulting either
+// decision, or consults them in the other order, the helper above is describing
+// something that no longer happens and this fails.
+func TestNudgeSessionComposesEscapeThenSubmitSequence(t *testing.T) {
+	body := nudgeSessionSource(t)
+	escapeAt := strings.Index(body, "t.shouldSendEscapeBeforeEnter(target)")
+	submitAt := strings.Index(body, "t.nudgeSubmitKeySequence(target)")
+	switch {
+	case escapeAt < 0:
+		t.Fatal("NudgeSession no longer consults shouldSendEscapeBeforeEnter; nudgeKeystrokesForFamily models a step that is gone")
+	case submitAt < 0:
+		t.Fatal("NudgeSession no longer consults nudgeSubmitKeySequence; nudgeKeystrokesForFamily models a step that is gone")
+	case submitAt < escapeAt:
+		t.Fatal("NudgeSession now resolves the submit sequence BEFORE the pre-submit Escape decision; re-derive nudgeKeystrokesForFamily against the new order")
+	}
+}
+
+// nudgeSessionSource returns the source text of NudgeSession's body.
+func nudgeSessionSource(t *testing.T) string {
+	t.Helper()
+	src, err := os.ReadFile("tmux.go")
+	if err != nil {
+		t.Fatalf("reading tmux.go: %v", err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func (t *Tmux) NudgeSession(")
+	if start < 0 {
+		t.Fatal("NudgeSession not found in tmux.go")
+	}
+	rest := body[start:]
+	end := strings.Index(rest, "\nfunc ")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
 }

@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -78,6 +80,45 @@ func agreementRows() []agreementRow {
 			wantServable: false,
 		},
 		{
+			// The discriminating row for TYPE comparison. Nothing in the serving
+			// path case-folds a type — the reader compares raw and the hook has
+			// no type filter at all — so this IS served, and agreement means it
+			// is counted. A case-folding demand predicate would refuse to count
+			// work its own workers will happily claim.
+			name: "routed epic with a case-variant type",
+			bead: beads.Bead{ID: "a-8", Status: "open", Type: "Epic",
+				Metadata: map[string]string{beadmeta.RoutedToMetadataKey: agreementTemplate}},
+			wantServable: true,
+		},
+		{
+			// The discriminating row for LABEL comparison, and it points the
+			// other way: the reader serves it (exact-match miss) but the hook
+			// strips it (EqualFold hit), so the worker never sees it.
+			name: "routed bead held by a case-variant hold label",
+			bead: beads.Bead{ID: "a-10", Status: "open", Type: "task",
+				Labels:   []string{strings.ToUpper(beadmeta.DispatchHoldLabels[0])},
+				Metadata: map[string]string{beadmeta.RoutedToMetadataKey: agreementTemplate}},
+			wantServable: false,
+		},
+		{
+			// Collapse x hold: the route form is fixed by the pass, and the row
+			// is still not demand — the two dimensions are independent, and the
+			// rewrite must happen even for a row nobody may claim yet (the hold
+			// lifts later; a dead route form does not).
+			name: "held bead on a slot-suffixed route",
+			bead: beads.Bead{ID: "a-11", Status: "open", Type: "task",
+				Labels:   []string{beadmeta.DispatchHoldLabels[0]},
+				Metadata: map[string]string{beadmeta.RoutedToMetadataKey: agreementTemplate + "-2"}},
+			wantServable: false, wantRewrittenTo: agreementTemplate,
+		},
+		{
+			// Collapse x epic: same independence, other exclusion.
+			name: "epic on a slot-suffixed route",
+			bead: beads.Bead{ID: "a-12", Status: "open", Type: "epic",
+				Metadata: map[string]string{beadmeta.RoutedToMetadataKey: agreementTemplate + "-2"}},
+			wantServable: false, wantRewrittenTo: agreementTemplate,
+		},
+		{
 			name: "assigned row",
 			bead: beads.Bead{ID: "a-9", Status: "open", Type: "task", Assignee: "someone",
 				Metadata: map[string]string{beadmeta.RoutedToMetadataKey: agreementTemplate}},
@@ -104,9 +145,17 @@ func holdLabelAgreementRows() []agreementRow {
 	return rows
 }
 
-// TestDemandAndClaimAgreeOnEveryRowForm is the property itself. Both sides are
-// asked about the same row and must answer the same.
-func TestDemandAndClaimAgreeOnEveryRowForm(t *testing.T) {
+// TestDemandCountsExactlyTheClaimableRows states the demand side's verdict over
+// the corpus and pins the ROUTE half against the claim matcher.
+//
+// It deliberately does NOT re-derive the "served" side from demandRowServable —
+// that would be the demand predicate agreeing with itself. The exclusion half is
+// checked against the real serving path in
+// TestGoPredicateAndGeneratedQueryAgreeRowByRow, which runs the generated
+// query's own filters; what this row adds is the one production function that
+// test cannot reach, hookClaimMatchesRoute — the matcher that will actually
+// accept or reject the claim once a worker holds the row.
+func TestDemandCountsExactlyTheClaimableRows(t *testing.T) {
 	cfg := agreementConfig()
 	templates := map[string]struct{}{agreementTemplate: {}}
 	routeTargets := hookClaimRouteTargets(agreementTemplate)
@@ -115,28 +164,19 @@ func TestDemandAndClaimAgreeOnEveryRowForm(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			// The same-tick pass runs before demand is counted, so the property
 			// is asserted over the POST-rewrite row.
-			bead := row.bead
-			if rewritten := routeCollapseRewriteTarget(cfg, bead.Metadata[beadmeta.RoutedToMetadataKey]); rewritten != "" {
-				meta := map[string]string{}
-				for k, v := range bead.Metadata {
-					meta[k] = v
-				}
-				meta[beadmeta.RoutedToMetadataKey] = rewritten
-				bead.Metadata = meta
-			}
+			bead := postCanonicalizeBead(cfg, row.bead)
 
 			_, counted := demandServableForTemplates(cfg, bead, templates)
-			claimable := demandRowServable(bead) && hookClaimMatchesRoute(bead, routeTargets)
-
 			if counted != row.wantServable {
 				t.Errorf("counted by demand = %v, want %v", counted, row.wantServable)
 			}
-			if claimable != row.wantServable {
-				t.Errorf("acceptable to the claim matcher = %v, want %v", claimable, row.wantServable)
-			}
-			if counted != claimable {
-				t.Fatalf("AGREEMENT VIOLATED: demand=%v claim=%v for %s — a row counted by exactly one side is the defect",
-					counted, claimable, bead.ID)
+			// Every row demand counts must be one the claim matcher accepts.
+			// The converse does not hold and must not be asserted: the matcher
+			// answers only the route question, so it accepts a held or epic row
+			// that the serving rules exclude.
+			if counted && !hookClaimMatchesRoute(bead, routeTargets) {
+				t.Fatalf("AGREEMENT VIOLATED: demand counts %s but the claim matcher rejects its route %q",
+					bead.ID, bead.Metadata[beadmeta.RoutedToMetadataKey])
 			}
 		})
 	}
@@ -200,13 +240,17 @@ func ruleDeclares(rules config.PoolDemandServeRules, flag, value string) bool {
 }
 
 // TestSlotSuffixCollapseIsPersistedForClaimableFormsOnly is the store-backed
-// half: the pass rewrites the collapsible route and nothing else.
+// half: the pass rewrites exactly the collapsible routes, and the corpus is what
+// makes that statement mean something.
 //
-// Controls, each failing differently from a predicate bug: an out-of-range slot
-// is untouched (pins the collapse BOUNDS, which are NormalizePoolRouteTarget's,
-// not this pass's), and a held or epic row is untouched (the pass owns route
-// FORM only — excluding those rows is the predicate's job, and a pass that
-// "helpfully" rewrote them would be erasing routing).
+// The two dimensions are INDEPENDENT and the corpus now proves it in both
+// directions. The pass owns route FORM only: an out-of-range slot is untouched
+// (the bounds are NormalizePoolRouteTarget's, not this pass's), while a held row
+// and an epic row on "-N" routes ARE rewritten — being ineligible for demand is
+// the predicate's verdict, not a reason to leave a dead route form behind. A
+// pass that skipped them would strand exactly the rows whose hold lifts later,
+// and a pass that used eligibility to decide what to rewrite would be two
+// coupled decisions where there is one.
 func TestSlotSuffixCollapseIsPersistedForClaimableFormsOnly(t *testing.T) {
 	cfg := agreementConfig()
 	cfg.Rigs[0].Path = filepath.Join(t.TempDir(), "rig")
@@ -326,8 +370,7 @@ func TestGoPredicateAndGeneratedQueryAgreeRowByRow(t *testing.T) {
 			bead := postCanonicalizeBead(cfg, row.bead)
 
 			_, counted := demandServableForTemplates(cfg, bead, templates)
-			served := len(filterReadyBeads([]beads.Bead{bead}, opts, metaWant)) == 1 ||
-				legacyWorkflowTierServes(bead, legacyOpts, legacyMetaWant)
+			served := workerIsServed(bead, opts, metaWant) || legacyWorkflowTierServes(bead, legacyOpts, legacyMetaWant)
 
 			if counted != served {
 				t.Fatalf("AGREEMENT VIOLATED for %s: the Go demand predicate says %v, the generated pool-demand query form says %v",
@@ -348,21 +391,55 @@ func TestGoPredicateAndGeneratedQueryAgreeRowByRow(t *testing.T) {
 // jq clause here is the single restatement in this conformance, and
 // assertLegacyTierFilterUnchanged is what keeps it honest.
 func legacyWorkflowTierServes(bead beads.Bead, opts readyOpts, metaWant []metadataFieldFilter) bool {
-	if len(filterReadyBeads([]beads.Bead{bead}, opts, metaWant)) != 1 {
+	if !workerIsServed(bead, opts, metaWant) {
 		return false
 	}
 	return strings.TrimSpace(bead.Metadata[beadmeta.RoutedToMetadataKey]) == ""
 }
 
-// assertLegacyTierFilterUnchanged pins the jq clause legacyWorkflowTierServes
-// mirrors. If the builder's post-filter changes, this fails instead of leaving
-// the mirror quietly wrong.
+// workerIsServed is what the WORKER ends up holding: the reader's own filter
+// (filterReadyBeads, behind `gc ready`) and then the hook's Go post-filter over
+// that output (filterUnreadyHookCandidates). Both are production code and both
+// are part of the serving path — comparing the demand predicate against only the
+// first would miss every exclusion the hook applies afterwards, which is exactly
+// where the two use different comparisons (see demandRowServable).
+func workerIsServed(bead beads.Bead, opts readyOpts, metaWant []metadataFieldFilter) bool {
+	readerServed := filterReadyBeads([]beads.Bead{bead}, opts, metaWant)
+	if len(readerServed) != 1 {
+		return false
+	}
+	encoded, err := json.Marshal(readerServed)
+	if err != nil {
+		return false
+	}
+	return workQueryHasReadyWork(filterUnreadyHookCandidates(string(encoded), time.Now()))
+}
+
+// assertLegacyTierFilterUnchanged pins the jq program legacyWorkflowTierServes
+// mirrors — the WHOLE rendered filter, not one clause inside it.
+//
+// Presence of a clause is not the property that matters. A filter that grows a
+// SECOND stage still contains the clause this used to look for, so the pin would
+// stay green while the Go mirror silently stopped describing what the query
+// does. Pinning the complete program means any added stage, changed limit slice
+// or reordered select fails here, which is the only honest way to hold a
+// restatement in place.
 func assertLegacyTierFilterUnchanged(t *testing.T, query string) {
 	t.Helper()
-	const wantSelect = `select((.metadata["gc.routed_to"] // "") == "")`
-	if !strings.Contains(query, wantSelect) {
-		t.Fatalf("the legacy workflow tier no longer post-filters with %s; the Go mirror in legacyWorkflowTierServes is now unpinned:\n%s", wantSelect, query)
+	// The exact filter poolDemandMigrationFilterJQ(1) renders into
+	// poolDemandFirstRowFunctionScript, brackets and limit slice included. The
+	// query is compared with the sh -c single-quote escaping undone, so the pin
+	// holds the jq PROGRAM rather than the quoting of the shell wrapper around it.
+	const wantFilter = `jq '[.[] | select((.metadata["gc.routed_to"] // "") == "")] | .[:1]'`
+	if !strings.Contains(unescapeShellSingleQuotes(query), wantFilter) {
+		t.Fatalf("the legacy workflow tier's post-filter is no longer exactly\n  %s\nso the Go mirror in legacyWorkflowTierServes is unpinned. Re-derive the mirror against the new filter, then update this pin.\nGenerated query:\n%s", wantFilter, query)
 	}
+}
+
+// unescapeShellSingleQuotes undoes the '\” sequence sh -c quoting produces, so
+// a pin can name the embedded program as it is written in the builder.
+func unescapeShellSingleQuotes(s string) string {
+	return strings.ReplaceAll(s, `'\''`, `'`)
 }
 
 // tierThreeLegacyReaderArgs slices the legacy workflow-root tier's reader

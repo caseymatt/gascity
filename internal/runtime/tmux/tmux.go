@@ -2174,6 +2174,17 @@ func (t *Tmux) NudgeSession(session, message string) error {
 	// dependence on an external observer re-kicking the session. Providers
 	// without a reliable indicator keep best-effort delivery.
 	submitKeys := t.nudgeSubmitKeySequence(target)
+	// RE-SEND HAZARD (noted, not redesigned): a submit sequence that leads with
+	// Escape is only safe to repeat while the pane is still idle. If the first
+	// attempt actually submitted and the pane went busy, a re-sent Escape is an
+	// INTERRUPT for the very TUIs that need the Escape (codex reads it as
+	// cancel), so a retry could kill the turn it just started. submitEnterAndConfirm
+	// re-checks busy before every re-send, which is why the verified path is safe
+	// — and why codex is on it (submitVerifyEligibleFamilies). The best-effort
+	// fallback below and NudgePane's retry loop do NOT re-check; they are safe
+	// only for single-key (plain Enter) sequences, which is what every family
+	// without a table entry has. Adding a multi-key entry for a family that is
+	// not submit-verify eligible would need that gap closed first.
 	sendSubmit := func() error { return t.sendNudgeSubmitSequence(target, submitKeys) }
 	wake := func() { t.WakePaneIfDetached(session) }
 	if t.submitVerifyEligible(target) {
