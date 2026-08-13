@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/clock"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/runtime"
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
@@ -96,6 +99,80 @@ func TestBuildDesiredState_PoolSlotSessionBeadCarriesNoSlotAlias(t *testing.T) {
 	}
 	if tp.PoolSlot != 1 {
 		t.Fatalf("pool slot TemplateParams.PoolSlot = %d, want 1", tp.PoolSlot)
+	}
+}
+
+// TestPoolSlotStaysUnaliasedAcrossReconcileTicks is the CROSS-TICK pin, and the
+// one that matters: every other test in this file is unit-shaped and nothing in
+// them crosses build -> sync -> spawn.
+//
+// A production tick is buildDesiredState -> syncSessionBeads -> session start
+// (city_runtime.go). Creating the bead unaliased is not enough, because
+// syncSessionBeads re-derives an alias of its own from tp.InstanceName /
+// agent_name — both still slot-form on purpose, since the slot IS the logical
+// instance name. If those fallbacks are not gated on the same predicate the
+// create path uses, tick 1 writes the slot straight back onto the bead and the
+// session starts from a re-aliased bead with GC_ALIAS=slot baked in. The claim
+// is slot-form again and the treadmill continues, with every unit test still
+// green.
+//
+// So this runs the real order twice and asserts the alias stays empty through
+// both. skipClose=true matches the reconciler's own call.
+func TestPoolSlotStaysUnaliasedAcrossReconcileTicks(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	cfg := transientSlotPoolConfig()
+	clk := &clock.Fake{Time: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)}
+
+	var beadID string
+	for tick := 1; tick <= 2; tick++ {
+		var stderr bytes.Buffer
+		dsResult := buildDesiredState("test-city", cityPath, clk.Now(), cfg, runtime.NewFake(), store, &stderr)
+		syncSessionBeads(cityPath, store, dsResult.State, runtime.NewFake(), allConfiguredDS(dsResult.State), cfg, clk, &stderr, true)
+
+		sessionBeads, err := loadSessionBeads(store)
+		if err != nil {
+			t.Fatalf("tick %d: load session beads: %v", tick, err)
+		}
+		if len(sessionBeads) != 1 {
+			t.Fatalf("tick %d: session beads = %d, want 1; beads=%#v", tick, len(sessionBeads), sessionBeads)
+		}
+		got := sessionBeads[0]
+		if beadID == "" {
+			beadID = got.ID
+		} else if got.ID != beadID {
+			t.Fatalf("tick %d: session bead id = %q, want the tick-1 bead %q (sync minted a duplicate)", tick, got.ID, beadID)
+		}
+
+		if alias := got.Metadata["alias"]; alias != "" {
+			t.Fatalf("tick %d: pool slot bead alias = %q, want empty — syncSessionBeads re-stamped the slot as an "+
+				"ownership identity, so the session starts with GC_ALIAS=%s and claims slot-form again; stderr=%q",
+				tick, alias, alias, stderr.String())
+		}
+		if history := got.Metadata["alias_history"]; strings.TrimSpace(history) != "" {
+			t.Fatalf("tick %d: pool slot bead alias_history = %q, want empty", tick, history)
+		}
+		// The slot must still be recorded where it belongs, or the unaliasing
+		// would have destroyed slot accounting instead of relocating it.
+		if got.Metadata["agent_name"] != "rig/claude-1" || got.Metadata["pool_slot"] != "1" {
+			t.Fatalf("tick %d: slot accounting lost: agent_name=%q pool_slot=%q",
+				tick, got.Metadata["agent_name"], got.Metadata["pool_slot"])
+		}
+
+		// The env the session would actually spawn with, read through the same
+		// runtime projection session start uses (it overrides tp.Env).
+		info, err := sessionFrontDoor(store).Get(got.ID)
+		if err != nil {
+			t.Fatalf("tick %d: project session info: %v", tick, err)
+		}
+		env := sessionpkg.RuntimeEnvWithSessionContext(info, 1, 1, "tok")
+		if env["GC_ALIAS"] != "" {
+			t.Fatalf("tick %d: spawn GC_ALIAS = %q, want empty", tick, env["GC_ALIAS"])
+		}
+		if want := got.Metadata["session_name"]; env["BEADS_ACTOR"] != want {
+			t.Fatalf("tick %d: spawn BEADS_ACTOR = %q, want the session name %q — this is the string the claim writes",
+				tick, env["BEADS_ACTOR"], want)
+		}
 	}
 }
 
@@ -235,7 +312,6 @@ func TestReleaseOrphanedPoolAssignmentsReopensStaleSlotFormClaim(t *testing.T) {
 
 	released := releaseOrphanedPoolAssignments(
 		store,
-		beads.SessionStore{Store: store},
 		testPoolReleaseConfig(),
 		"",
 		nil,

@@ -5364,8 +5364,8 @@ func TestBuildDesiredState_NewPoolSessionBeadDefersAliasWhenConcreteAliasTaken(t
 		Metadata: map[string]string{
 			"template":       "rig/manual",
 			"agent_name":     "rig/manual",
-			"alias":          "rig/claude-1",
-			"session_name":   "manual-rig-claude-1",
+			"alias":          "rig/furiosa",
+			"session_name":   "manual-rig-furiosa",
 			"state":          "awake",
 			"session_origin": "manual",
 			"manual_session": "true",
@@ -5382,6 +5382,11 @@ func TestBuildDesiredState_NewPoolSessionBeadDefersAliasWhenConcreteAliasTaken(t
 			StartCommand:      "true",
 			MaxActiveSessions: intPtr(3),
 			ScaleCheck:        "printf 1",
+			// A NAMEPOOL agent: its members are identified by stable pool names
+			// ("furiosa"), which still persist as aliases, so the alias-conflict
+			// deferral lane this test covers is still reachable. Transient numeric
+			// slots never take an alias at all, so they have nothing to defer.
+			NamepoolNames: []string{"furiosa"},
 		}},
 	}
 
@@ -5402,8 +5407,8 @@ func TestBuildDesiredState_NewPoolSessionBeadDefersAliasWhenConcreteAliasTaken(t
 	if created.ID == "" {
 		t.Fatalf("did not create a managed pool session bead; beads=%#v", sessionBeads)
 	}
-	if got := created.Metadata["agent_name"]; got != "rig/claude-1" {
-		t.Fatalf("created agent_name = %q, want concrete slot identity", got)
+	if got := created.Metadata["agent_name"]; got != "rig/furiosa" {
+		t.Fatalf("created agent_name = %q, want namepool identity", got)
 	}
 	if got := created.Metadata["alias"]; got != "" {
 		t.Fatalf("created alias = %q, want deferred until alias guard accepts it", got)
@@ -5438,8 +5443,8 @@ func TestBuildDesiredState_NewPoolSessionBeadDefersAliasWhenConcreteAliasTaken(t
 	if got.Metadata["alias"] != "" {
 		t.Fatalf("synced alias = %q, want still deferred after conflict", got.Metadata["alias"])
 	}
-	if got.Metadata[poolAliasConflictMetadataKey] != "rig/claude-1" {
-		t.Fatalf("pool_alias_conflict = %q, want rig/claude-1", got.Metadata[poolAliasConflictMetadataKey])
+	if got.Metadata[poolAliasConflictMetadataKey] != "rig/furiosa" {
+		t.Fatalf("pool_alias_conflict = %q, want rig/furiosa", got.Metadata[poolAliasConflictMetadataKey])
 	}
 	if !strings.Contains(syncStderr.String(), "unavailable") {
 		t.Fatalf("sync stderr %q does not mention alias conflict", syncStderr.String())
@@ -5527,6 +5532,75 @@ func TestSelectOrCreatePoolSessionBead_SerializesAliasCheckAndCreate(t *testing.
 		if got := bead.Metadata["pool_slot"]; got != "1" {
 			t.Fatalf("pool bead %s pool_slot = %q, want 1", bead.ID, got)
 		}
+	}
+}
+
+// TestSelectOrCreatePoolSessionBead_AliasedPoolStillCASesTheSlot keeps the
+// alias-reservation CAS covered on the lane that still persists an alias.
+// Unaliasing transient slots removed the alias tiebreaker from the test above,
+// so this pins it where it survives: a canonical singleton, whose bare identity
+// never rebinds. Exactly one racer may own that alias.
+func TestSelectOrCreatePoolSessionBead_AliasedPoolStillCASesTheSlot(t *testing.T) {
+	store := newBlockingPoolCreateStore("claude")
+	cityPath := t.TempDir()
+	// max_active_sessions=1 with no namepool: a canonical singleton pool member,
+	// identified by the bare agent name rather than a slot.
+	cfgAgent := config.Agent{Name: "claude", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(1)}
+	if usesTransientPoolSlotIdentity(&cfgAgent) {
+		t.Fatal("fixture agent is transient; this test must exercise the lane that still persists an alias")
+	}
+	newBuildParams := func() *agentBuildParams {
+		return &agentBuildParams{
+			cityPath:     cityPath,
+			beadStore:    store,
+			sessionBeads: &sessionBeadSnapshot{},
+			agents:       []config.Agent{cfgAgent},
+		}
+	}
+
+	done := make(chan struct{}, 2)
+	create := func() {
+		_, _, _ = selectOrCreatePoolSessionBead(newBuildParams(), &cfgAgent, "claude", nil, map[string]bool{}, map[int]bool{})
+		done <- struct{}{}
+	}
+	go create()
+	go create()
+
+	select {
+	case <-store.firstCreateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first pool create did not start")
+	}
+	select {
+	case <-store.secondCreateStarted:
+		close(store.releaseFirstCreate)
+		close(store.releaseSecondCreate)
+		t.Fatal("second pool create reached the store before the first finished; alias lock did not serialize create")
+	case <-time.After(150 * time.Millisecond):
+		close(store.releaseFirstCreate)
+		select {
+		case <-store.secondCreateStarted:
+			close(store.releaseSecondCreate)
+		case <-time.After(time.Second):
+			t.Fatal("second pool create did not start after the first completed")
+		}
+	}
+	for i := 0; i < 2; i++ {
+		<-done
+	}
+
+	sessionBeads, err := loadSessionBeads(store)
+	if err != nil {
+		t.Fatalf("load session beads: %v", err)
+	}
+	aliasOwners := 0
+	for _, bead := range sessionBeads {
+		if bead.Metadata["alias"] == "claude" {
+			aliasOwners++
+		}
+	}
+	if aliasOwners != 1 {
+		t.Fatalf("canonical singleton alias owners = %d, want exactly one; beads=%#v", aliasOwners, sessionBeads)
 	}
 }
 
