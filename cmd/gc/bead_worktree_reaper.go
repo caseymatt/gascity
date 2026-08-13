@@ -42,20 +42,19 @@ type reapReport struct {
 	DryRun    bool
 }
 
-// reapClosedBeadWorktrees discovers registered per-bead git worktrees and
-// removes any whose associated bead is closed and that pass every safety gate.
-// Standard worktrees are recognized beneath cityPath/.gc/worktrees/<rig>/;
-// external formula worktrees require an exact closed-bead work-dir metadata
-// reference. It returns a reapReport describing what was reaped and protected.
+// reapClosedBeadWorktrees discovers conventional per-bead git worktrees under
+// cityPath/.gc/worktrees/<rig>/ plus external linked worktrees explicitly
+// referenced by closed beads. It removes only worktrees whose associated bead
+// is closed and that pass every safety gate, and returns a reapReport describing
+// what was reaped and what was protected.
 //
 // Discovery is authoritative at any nesting depth and location: for each rig
 // it runs `git worktree list --porcelain` from the rig's own repository (the
 // repo that owns these worktrees, per worktree-setup.sh's
-// `git -C <rig> worktree add`). Per-bead worktrees are often nested under
-// agent-home directories, while formula-owned worktrees may live outside the
-// city tree; an external path is admitted only through exact owning-bead
-// metadata. The old os.ReadDir(.gc/worktrees/<rig>/) scan saw only agent homes
-// and reaped nothing (gastownhall/gascity#4492 root cause A).
+// `git -C <rig> worktree add`), rather than a single-level directory scan. Per-bead worktrees are nested
+// under agent-home directories (depth-2, sometimes deeper); the old
+// os.ReadDir(.gc/worktrees/<rig>/) scan saw only the agent homes and reaped
+// nothing (gastownhall/gascity#4492 root cause A).
 //
 // Safety gates, in order, all fail closed toward keeping the worktree:
 //  1. Named agent-home directories are never removed.
@@ -167,53 +166,25 @@ func reapClosedBeadWorktrees(
 			livenessByPath[wl.Path] = wl
 		}
 
-		// Load the rig's beads once. The same snapshot supplies exact external
-		// worktree ownership metadata and the later borrow-veto decision, keeping
-		// discovery and safety classification on one coherent view.
-		allBeads, listErr := store.List(beads.ListQuery{AllowScan: true, SkipLabels: true, IncludeClosed: true, TierMode: beads.TierBoth})
-		owners := discoverClosedWorktreeOwners(cfg, rigRoot, rigWorktreeDir, wtRoot, sessionHomes, store, worktrees, allBeads)
-
-		// Pass 1: turn discovered closed-bead worktrees into reap-eligible
-		// candidates once they are past the freshness quarantine (FR-5). Every
-		// other gate is deferred to pass 2.
-		var candidates []reapCandidate
-		for _, wt := range worktreeLivenessResults {
-			worktreePath := wt.Path
-			beadID := owners[pathutil.NormalizePathForCompare(worktreePath)]
-			if beadID == "" {
-				continue
+		// Pass 1: discover conventional path-owned candidates and external
+		// worktrees explicitly owned by closed beads. Discovery also applies the
+		// freshness gate and reports malformed external ownership claims instead
+		// of silently dropping them.
+		candidates, discoveryProtected, discoveryErr := discoverReapCandidates(
+			cfg, store, rigName, rigRoot, wtRoot, rigWorktreeDir, sessionHomes, worktreeLivenessResults,
+		)
+		if discoveryErr != nil {
+			fmt.Fprintf(stderr, "reapClosedBeadWorktrees: discovering external formula worktrees for rig %s: %v\n", rigName, discoveryErr) //nolint:errcheck
+		}
+		for _, decision := range discoveryProtected {
+			if skips.shouldSurface(decision.Path, decision.Reason) {
+				fmt.Fprintf(stderr, //nolint:errcheck
+					"reapClosedBeadWorktrees: protecting %s (bead %s closed but %s)\n",
+					decision.Path, decision.BeadID, decision.Reason,
+				)
+				recordReapSkipped(rec, decision.BeadID, decision.Path, rigName, decision.Reason)
 			}
-
-			// Freshness quarantine (FR-5): a worktree younger than the
-			// configured minimum age is exempt from reaping, protecting
-			// against the race between worktree creation and its owning
-			// bead's work-dir metadata being stamped by the next reconcile
-			// pass. Age is fail-closed — an indeterminate age protects.
-			minAge := cfg.Daemon.AutoReapClosedBeadWorktreesMinAge()
-			age, ok := computeWorktreeAge(worktreePath)
-			reason := ""
-			switch {
-			case !ok:
-				reason = "worktree age indeterminate (failing closed)"
-			case minAge > 0 && age < minAge:
-				reason = fmt.Sprintf("worktree too young to reap (quarantine): min_age=%s", minAge)
-			}
-			if reason != "" {
-				branch, _ := git.New(worktreePath).CurrentBranch()
-				if skips.shouldSurface(worktreePath, reason) {
-					fmt.Fprintf(stderr, //nolint:errcheck
-						"reapClosedBeadWorktrees: protecting %s (bead %s closed but %s)\n",
-						worktreePath, beadID, reason,
-					)
-					recordReapSkipped(rec, beadID, worktreePath, rigName, reason)
-				}
-				report.Protected = append(report.Protected, reapDecision{
-					BeadID: beadID, Path: worktreePath, Rig: rigName, Branch: branch, Reason: reason,
-				})
-				continue
-			}
-
-			candidates = append(candidates, reapCandidate{beadID: beadID, worktreePath: worktreePath})
+			report.Protected = append(report.Protected, decision)
 		}
 
 		if len(candidates) == 0 {
@@ -224,10 +195,7 @@ func reapClosedBeadWorktrees(
 		// surviving candidate in this rig instead of one query per candidate.
 		// A query error fails closed — every remaining candidate in this
 		// rig's tick is protected (NFR-1).
-		var referencingBeads map[string][]string
-		if listErr == nil {
-			referencingBeads = borrowVetoReferencesFromBeads(allBeads, candidates)
-		}
+		referencingBeads, listErr := scanBorrowVetoReferences(store, candidates)
 		if listErr != nil {
 			reason := fmt.Sprintf("borrow-veto scan failed (failing closed): %v", listErr)
 			for _, c := range candidates {
@@ -356,75 +324,144 @@ func reapClosedBeadWorktrees(
 	return report
 }
 
-// discoverClosedWorktreeOwners associates registered worktrees with closed
-// beads. Standard city-owned paths retain their path-derived ownership. A
-// registered worktree elsewhere is admitted only when a closed bead records
-// that exact path in gc.work_dir or legacy work_dir metadata. Ambiguous
-// metadata fails closed, and the owning repository's main worktree is never
-// admitted.
-func discoverClosedWorktreeOwners(
-	cfg *config.City,
-	rigRoot, rigWorktreeDir, wtRoot string,
-	sessionHomes map[string]bool,
-	store beads.Store,
-	worktrees []git.Worktree,
-	allBeads []beads.Bead,
-) map[string]string {
-	metadataOwners := make(map[string]string)
-	ambiguous := make(map[string]bool)
-	for _, bead := range allBeads {
-		if bead.Status != "closed" {
-			continue
-		}
-		for _, key := range [...]string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
-			path := strings.TrimSpace(bead.Metadata[key])
-			if path == "" {
-				continue
-			}
-			norm := pathutil.NormalizePathForCompare(path)
-			if previous := metadataOwners[norm]; previous != "" && previous != bead.ID {
-				ambiguous[norm] = true
-			}
-			metadataOwners[norm] = bead.ID
-		}
-	}
-
-	owners := make(map[string]string)
-	for _, wt := range worktrees {
-		norm := pathutil.NormalizePathForCompare(wt.Path)
-		if pathutil.SamePath(rigRoot, wt.Path) || ambiguous[norm] {
-			continue
-		}
-
-		standard := pathutil.PathWithin(rigWorktreeDir, wt.Path) &&
-			!pathutil.SamePath(rigWorktreeDir, wt.Path) &&
-			isStrictlyUnderDir(wtRoot, wt.Path) &&
-			!sessionHomes[filepath.Base(wt.Path)]
-		if standard {
-			beadID := extractBeadIDFromWorktreePath(cfg, rigWorktreeDir, wt.Path)
-			if beadID == "" {
-				continue
-			}
-			bead, err := store.Get(beadID)
-			if err == nil && bead.Status == "closed" {
-				owners[norm] = beadID
-			}
-			continue
-		}
-
-		if beadID := metadataOwners[norm]; beadID != "" {
-			owners[norm] = beadID
-		}
-	}
-	return owners
-}
-
 // reapCandidate is a worktree that survived the closed-bead check and the
 // freshness quarantine in pass 1, awaiting the batched borrow-veto scan and
 // the remaining safety gates in pass 2.
 type reapCandidate struct {
 	beadID       string
 	worktreePath string
+}
+
+// discoverReapCandidates owns the complete candidate-discovery decision. It
+// keeps the conventional path-derived behavior while adding closed beads whose
+// recorded work directory is an external linked worktree. External metadata is
+// an ownership claim, not proof: paths absent from the configured rig's
+// worktree registry are returned as protected decisions.
+func discoverReapCandidates(
+	cfg *config.City,
+	store beads.Store,
+	rigName, rigRoot, wtRoot, rigWorktreeDir string,
+	sessionHomes map[string]bool,
+	worktrees []worktreeLiveness,
+) ([]reapCandidate, []reapDecision, error) {
+	var candidates []reapCandidate
+	var protected []reapDecision
+	seen := make(map[string]struct{})
+
+	appendCandidate := func(beadID, worktreePath string) {
+		norm := pathutil.NormalizePathForCompare(worktreePath)
+		if _, ok := seen[norm]; ok {
+			return
+		}
+		seen[norm] = struct{}{}
+		branch, _ := git.New(worktreePath).CurrentBranch()
+		minAge := cfg.Daemon.AutoReapClosedBeadWorktreesMinAge()
+		age, ok := computeWorktreeAge(worktreePath)
+		reason := ""
+		switch {
+		case !ok:
+			reason = "worktree age indeterminate (failing closed)"
+		case minAge > 0 && age < minAge:
+			reason = fmt.Sprintf("worktree too young to reap (quarantine): min_age=%s", minAge)
+		}
+		if reason != "" {
+			protected = append(protected, reapDecision{
+				BeadID: beadID, Path: worktreePath, Rig: rigName, Branch: branch, Reason: reason,
+			})
+			return
+		}
+		candidates = append(candidates, reapCandidate{beadID: beadID, worktreePath: worktreePath})
+	}
+
+	registered := make(map[string]string, len(worktrees))
+	for _, wt := range worktrees {
+		registered[pathutil.NormalizePathForCompare(wt.Path)] = wt.Path
+		worktreePath := wt.Path
+		if !pathutil.PathWithin(rigWorktreeDir, worktreePath) || pathutil.SamePath(rigWorktreeDir, worktreePath) {
+			continue
+		}
+		if !isStrictlyUnderDir(wtRoot, worktreePath) || sessionHomes[filepath.Base(worktreePath)] {
+			continue
+		}
+		beadID := extractBeadIDFromWorktreePath(cfg, rigWorktreeDir, worktreePath)
+		if beadID == "" {
+			continue
+		}
+		bead, err := store.Get(beadID)
+		if err != nil || bead.Status != "closed" {
+			continue
+		}
+		appendCandidate(beadID, worktreePath)
+	}
+
+	closedBeads, err := store.List(beads.ListQuery{
+		AllowScan:     true,
+		IncludeClosed: true,
+		SkipLabels:    true,
+		TierMode:      beads.TierBoth,
+	})
+	if err != nil {
+		return candidates, protected, err
+	}
+
+	type externalClaim struct {
+		beadID     string
+		path       string
+		actionable bool
+	}
+	claims := make(map[string][]externalClaim)
+	for _, bead := range closedBeads {
+		if bead.Status != "closed" {
+			continue
+		}
+		beadPaths := make(map[string]struct{}, 2)
+		for _, key := range [...]string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+			worktreePath := strings.TrimSpace(bead.Metadata[key])
+			if worktreePath == "" || pathutil.PathWithin(rigWorktreeDir, worktreePath) {
+				continue
+			}
+			norm := pathutil.NormalizePathForCompare(worktreePath)
+			if _, duplicate := beadPaths[norm]; duplicate {
+				continue
+			}
+			beadPaths[norm] = struct{}{}
+			claims[norm] = append(claims[norm], externalClaim{
+				beadID: bead.ID, path: worktreePath,
+				actionable: bead.Metadata[beadmeta.FormulaContractMetadataKey] == beadmeta.FormulaContractGraphV2,
+			})
+		}
+	}
+
+	for norm, owners := range claims {
+		ownerIDs := make([]string, 0, len(owners))
+		actionable := false
+		for _, owner := range owners {
+			ownerIDs = append(ownerIDs, owner.beadID)
+			actionable = actionable || owner.actionable
+		}
+		if len(owners) > 1 {
+			if actionable {
+				reason := fmt.Sprintf("external worktree ownership mismatch: path referenced by closed beads %s", strings.Join(ownerIDs, ", "))
+				for _, owner := range owners {
+					protected = append(protected, reapDecision{BeadID: owner.beadID, Path: owner.path, Rig: rigName, Reason: reason})
+				}
+			}
+			continue
+		}
+
+		owner := owners[0]
+		wt, registeredHere := registered[norm]
+		if !filepath.IsAbs(owner.path) || !registeredHere || pathutil.SamePath(rigRoot, owner.path) {
+			if owner.actionable {
+				reason := fmt.Sprintf("external bead path is not a registered worktree owned by rig %s", rigName)
+				protected = append(protected, reapDecision{BeadID: owner.beadID, Path: owner.path, Rig: rigName, Reason: reason})
+			}
+			continue
+		}
+		appendCandidate(owner.beadID, wt)
+	}
+
+	return candidates, protected, nil
 }
 
 // reapSkipTracker makes the reaper's skip reporting edge-triggered, so a
@@ -528,17 +565,14 @@ func computeWorktreeAge(worktreePath string) (age time.Duration, ok bool) {
 // A query error is returned as-is; the caller must fail closed and protect
 // every candidate in the rig (NFR-1).
 func scanBorrowVetoReferences(store beads.Store, candidates []reapCandidate) (map[string][]string, error) {
-	// Skip label hydration because this scan never reads labels. TierBoth is
-	// explicit so the safety contract does not depend on a wrapping store's
-	// default tier.
+	// The query excludes closed beads at the store level (IsTerminalStatus
+	// would discard them anyway) and skips label hydration this scan never
+	// reads. TierBoth is explicit so the reaper's safety contract does not
+	// depend on a wrapping store expanding the default tier for it.
 	all, err := store.List(beads.ListQuery{AllowScan: true, SkipLabels: true, TierMode: beads.TierBoth})
 	if err != nil {
 		return nil, err
 	}
-	return borrowVetoReferencesFromBeads(all, candidates), nil
-}
-
-func borrowVetoReferencesFromBeads(all []beads.Bead, candidates []reapCandidate) map[string][]string {
 	byNorm := make(map[string]string, len(candidates)) // normalized -> raw candidate path
 	for _, c := range candidates {
 		byNorm[pathutil.NormalizePathForCompare(c.worktreePath)] = c.worktreePath
@@ -559,7 +593,7 @@ func borrowVetoReferencesFromBeads(all []beads.Bead, candidates []reapCandidate)
 			}
 		}
 	}
-	return refs
+	return refs, nil
 }
 
 // recordReapSkipped emits a bead.worktree.reap_skipped event carrying the
