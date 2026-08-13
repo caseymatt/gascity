@@ -262,7 +262,7 @@ func TestReapClosedBeadWorktrees_BorrowVetoScanIsBatchedPerRig(t *testing.T) {
 	if q.TierMode != beads.TierBoth {
 		t.Errorf("TierMode = %v, want beads.TierBoth: the scan must see ephemeral (wisp-tier) borrowers without relying on a wrapping store to expand the default tier", q.TierMode)
 	}
-	if q.IncludeClosed {
-		t.Errorf("IncludeClosed = true, want false: closed beads are discarded by IsTerminalStatus anyway, so pulling each rig's full closed history every tick is pure cost")
+	if !q.IncludeClosed {
+		t.Errorf("IncludeClosed = false, want true: the same batched snapshot must discover external worktrees from closed-bead metadata before terminal beads are discarded for borrow-veto classification")
 	}
 }
