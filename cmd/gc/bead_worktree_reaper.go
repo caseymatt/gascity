@@ -421,23 +421,32 @@ func discoverReapCandidates(
 	}
 
 	for norm, owners := range claims {
-		ownerIDs := make([]string, 0, len(owners))
-		actionable := false
-		for _, owner := range owners {
-			ownerIDs = append(ownerIDs, owner.beadID)
-			actionable = actionable || owner.actionable
-		}
+		owner := owners[0]
 		if len(owners) > 1 {
-			if actionable {
-				reason := fmt.Sprintf("external worktree ownership mismatch: path referenced by closed beads %s", strings.Join(ownerIDs, ", "))
-				for _, owner := range owners {
-					protected = append(protected, reapDecision{BeadID: owner.beadID, Path: owner.path, Rig: rigName, Reason: reason})
+			ownerIDs := make([]string, 0, len(owners))
+			actionable := false
+			pathBeadID := extractBeadIDFromWorktreeName(cfg, filepath.Base(owner.path))
+			pathOwnerFound := false
+			for _, candidate := range owners {
+				ownerIDs = append(ownerIDs, candidate.beadID)
+				actionable = actionable || candidate.actionable
+				if candidate.beadID == pathBeadID {
+					owner = candidate
+					pathOwnerFound = true
 				}
 			}
-			continue
+			if !pathOwnerFound {
+				if actionable {
+					reason := fmt.Sprintf("external worktree ownership mismatch: path referenced by closed beads %s", strings.Join(ownerIDs, ", "))
+					for _, candidate := range owners {
+						protected = append(protected, reapDecision{BeadID: candidate.beadID, Path: candidate.path, Rig: rigName, Reason: reason})
+					}
+				}
+				continue
+			}
+			owner.actionable = actionable
 		}
 
-		owner := owners[0]
 		wt, registeredHere := registered[norm]
 		if !filepath.IsAbs(owner.path) || !registeredHere || pathutil.SamePath(rigRoot, owner.path) {
 			if owner.actionable {
