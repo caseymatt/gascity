@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,4 +110,138 @@ func TestReapClosedBeadWorktrees_RejectsUnsafeExternalCandidates(t *testing.T) {
 			t.Fatalf("unowned external worktree was removed: %v", err)
 		}
 	})
+}
+
+func addExternalWorktree(t *testing.T, rigRoot, parent, beadID string) string {
+	t.Helper()
+	path := filepath.Join(parent, beadID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir external worktree parent: %v", err)
+	}
+	mustGit(t, rigRoot, "worktree", "add", "-b", "external-"+beadID, path)
+	backdateWorktreeGitFile(t, path, 24*time.Hour)
+	return path
+}
+
+type reapEventRecorder struct {
+	events []events.Event
+}
+
+func (r *reapEventRecorder) Record(event events.Event) {
+	r.events = append(r.events, event)
+}
+
+func externalReapSkippedReasons(t *testing.T, rec *reapEventRecorder) []events.BeadWorktreeReapSkippedPayload {
+	t.Helper()
+	var got []events.BeadWorktreeReapSkippedPayload
+	for _, event := range rec.events {
+		if event.Type != events.BeadWorktreeReapSkipped {
+			continue
+		}
+		var payload events.BeadWorktreeReapSkippedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode reap-skipped payload: %v", err)
+		}
+		got = append(got, payload)
+	}
+	return got
+}
+
+// TestReapClosedBeadWorktrees_ReportsDirtyExternalFormulaWorktree proves a
+// formula-owned worktree outside the conventional city subtree no longer
+// disappears from the reaper's report merely because it is protected. The
+// path remains and the event names both the owning bead and the unsafe state.
+func TestReapClosedBeadWorktrees_ReportsDirtyExternalFormulaWorktree(t *testing.T) {
+	cityPath, rigRoot := initReapRig(t)
+	wt := addExternalWorktree(t, rigRoot, filepath.Join(t.TempDir(), "formula-worktrees"), "ga-external1")
+	if err := os.WriteFile(filepath.Join(wt, "dirty.txt"), []byte("keep me\n"), 0o644); err != nil {
+		t.Fatalf("dirty external worktree: %v", err)
+	}
+	store := beads.NewMemStoreFrom(1, []beads.Bead{{
+		ID: "ga-external1", Status: "closed",
+		Metadata: map[string]string{
+			beadmeta.WorkDirMetadataKey:         wt,
+			beadmeta.FormulaContractMetadataKey: "graph.v2",
+		},
+	}}, nil)
+	injectLiveness(t, liveWorktreeState{scanned: true})
+	rec := &reapEventRecorder{}
+
+	var stderr bytes.Buffer
+	report := reapClosedBeadWorktrees(cityPath, reapTestConfig(rigRoot), map[string]beads.Store{reapTestRigName: store}, nil, false, rec, nil, &stderr)
+
+	if len(report.Reaped) != 0 || len(report.Protected) != 1 {
+		t.Fatalf("Reaped=%+v Protected=%+v, want one protected external worktree\nstderr:\n%s", report.Reaped, report.Protected, stderr.String())
+	}
+	decision := report.Protected[0]
+	if decision.BeadID != "ga-external1" || decision.Path != wt || !strings.Contains(decision.Reason, "uncommitted=true") {
+		t.Fatalf("protected decision = %+v, want path %s, owner ga-external1, and dirty reason", decision, wt)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("dirty external worktree was removed: %v", err)
+	}
+	payloads := externalReapSkippedReasons(t, rec)
+	if len(payloads) != 1 || payloads[0].BeadID != "ga-external1" || payloads[0].Path != wt || !strings.Contains(payloads[0].Reason, "uncommitted=true") {
+		t.Fatalf("reap-skipped payloads = %+v, want actionable owner/path/dirty reason", payloads)
+	}
+}
+
+// TestReapClosedBeadWorktrees_LeavesUnreferencedExternalWorktreeAlone proves
+// registration in the same repository is not ownership: an unrelated user
+// worktree outside the city subtree is invisible unless a closed formula bead
+// records that exact path.
+func TestReapClosedBeadWorktrees_LeavesUnreferencedExternalWorktreeAlone(t *testing.T) {
+	cityPath, rigRoot := initReapRig(t)
+	wt := addExternalWorktree(t, rigRoot, filepath.Join(t.TempDir(), "user-worktrees"), "ga-user0001")
+	store := beads.NewMemStoreFrom(1, []beads.Bead{{ID: "ga-other001", Status: "closed"}}, nil)
+	injectLiveness(t, liveWorktreeState{scanned: true})
+	rec := &reapEventRecorder{}
+
+	report := reapClosedBeadWorktrees(cityPath, reapTestConfig(rigRoot), map[string]beads.Store{reapTestRigName: store}, nil, false, rec, nil, &bytes.Buffer{})
+
+	if len(report.Reaped) != 0 || len(report.Protected) != 0 {
+		t.Fatalf("unrelated external worktree was classified: Reaped=%+v Protected=%+v", report.Reaped, report.Protected)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("unrelated external worktree was touched: %v", err)
+	}
+	if got := externalReapSkippedReasons(t, rec); len(got) != 0 {
+		t.Fatalf("unrelated external worktree emitted events: %+v", got)
+	}
+}
+
+// TestReapClosedBeadWorktrees_ReportsExternalOwnershipMismatch proves a stale
+// or forged metadata path fails closed and remains actionable even when the
+// path is a directory but is not a worktree registered to the configured rig.
+func TestReapClosedBeadWorktrees_ReportsExternalOwnershipMismatch(t *testing.T) {
+	cityPath, rigRoot := initReapRig(t)
+	path := filepath.Join(t.TempDir(), "not-a-worktree")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir non-worktree: %v", err)
+	}
+	store := beads.NewMemStoreFrom(1, []beads.Bead{{
+		ID: "ga-mismatch1", Status: "closed",
+		Metadata: map[string]string{
+			beadmeta.WorkDirMetadataKey:         path,
+			beadmeta.FormulaContractMetadataKey: "graph.v2",
+		},
+	}}, nil)
+	injectLiveness(t, liveWorktreeState{scanned: true})
+	rec := &reapEventRecorder{}
+
+	report := reapClosedBeadWorktrees(cityPath, reapTestConfig(rigRoot), map[string]beads.Store{reapTestRigName: store}, nil, false, rec, nil, &bytes.Buffer{})
+
+	if len(report.Reaped) != 0 || len(report.Protected) != 1 {
+		t.Fatalf("Reaped=%+v Protected=%+v, want mismatch protected", report.Reaped, report.Protected)
+	}
+	if got := report.Protected[0]; got.BeadID != "ga-mismatch1" || got.Path != path || !strings.Contains(got.Reason, "not a registered worktree") {
+		t.Fatalf("mismatch decision = %+v, want owning bead, path, and registration reason", got)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("ownership-mismatch path was removed: %v", err)
+	}
+	payloads := externalReapSkippedReasons(t, rec)
+	if len(payloads) != 1 || payloads[0].BeadID != "ga-mismatch1" || !strings.Contains(payloads[0].Reason, "not a registered worktree") {
+		t.Fatalf("mismatch events = %+v, want actionable owner and reason", payloads)
+	}
 }
