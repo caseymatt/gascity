@@ -53,6 +53,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/clock"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -92,7 +93,7 @@ func nudgeStalledPoolExecution(
 	snapshotPartial bool,
 	now time.Time,
 	rec events.Recorder,
-	requestDrain func(sessionName string) error,
+	requestDrain func(sessionBead beads.Bead) error,
 	stdout io.Writer,
 ) {
 	if sp == nil || cfg == nil || store == nil || snapshotPartial {
@@ -187,7 +188,7 @@ type poolExecutionBackstop struct {
 	sp           runtime.Provider
 	now          time.Time
 	rec          events.Recorder
-	requestDrain func(sessionName string) error
+	requestDrain func(sessionBead beads.Bead) error
 	claims       executionClaimSnapshot
 }
 
@@ -301,13 +302,18 @@ func (p poolExecutionBackstop) exhausted(store beads.Store, s *beads.Bead, stdou
 		return
 	}
 	p.emitStepStalled(s, beadID, atoiOr0(s.Metadata[executionClaimNudgeCountKey]))
-	fmt.Fprintf(stdout, "execution-claim-nudge: %s still holds %s unexecuted after %d attempts; requesting drain\n",
-		sessName, beadID, idleClaimNudgeMaxAttempts) //nolint:errcheck // best-effort
+	fmt.Fprintf(stdout, "execution-claim-nudge: %s still holds %s unexecuted after %d attempts; draining (%s)\n",
+		sessName, beadID, idleClaimNudgeMaxAttempts, executionStalledDrainReason) //nolint:errcheck // best-effort
 	if p.requestDrain == nil || sessName == "" {
 		return
 	}
-	if err := p.requestDrain(sessName); err != nil {
-		fmt.Fprintf(stdout, "execution-claim-nudge: requesting drain of %s failed: %v\n", sessName, err) //nolint:errcheck // best-effort
+	// The drain is the CONVERGENCE step, not a notification. Nothing else will
+	// release this claim: the session is alive and awake, so no crash lane
+	// touches it, and it holds in_progress work, so the wake machinery keeps it
+	// alive by design. The tracked drain is what turns "we gave up nudging" into
+	// stop -> close -> dead-assignee reopen -> the row is claimable again.
+	if err := p.requestDrain(*s); err != nil {
+		fmt.Fprintf(stdout, "execution-claim-nudge: draining %s failed: %v\n", sessName, err) //nolint:errcheck // best-effort
 	}
 }
 
@@ -399,14 +405,31 @@ func writeSessionMetadata(store beads.Store, s *beads.Bead, kvs map[string]strin
 	return true
 }
 
-// requestSessionDrain asks the runtime to drain a session through the ordinary
-// drain path (drainOps.setDrain), which is what the reconciler's own recycle
-// lanes use. It is a method on the runtime rather than a bare method value so a
-// runtime constructed without drain ops (the standalone/one-shot shapes) reports
-// the missing capability instead of panicking on a nil interface.
-func (cr *CityRuntime) requestSessionDrain(sessionName string) error {
-	if cr == nil || cr.dops == nil {
-		return fmt.Errorf("no drain ops configured for %q", sessionName)
+// requestExecutionStalledDrain begins a TRACKED drain of a seat that claimed
+// work and never executed it.
+//
+// Tracked, not a bare runtime flag: the drainTracker is the machinery that
+// actually converges a session — it defers the interrupt one tick so a
+// false positive can still be canceled, then advances through stop, close, and
+// the dead-assignee reopen that puts the claim back in the demand set. Setting
+// the runtime's GC_DRAIN meta alone announces an intention that nothing drives.
+//
+// The reason is executionStalledDrainReason precisely because this session looks
+// exactly like one every keep-alive guard exists to protect (awake, running,
+// holding an in_progress claim); a cancelable reason would be canceled by the
+// very claim that justified the drain.
+//
+// It re-reads the session through the front door rather than trusting the
+// backstop's snapshot: the drain carries the session's generation, and acting on
+// a stale generation is how a drain lands on the wrong incarnation.
+func (cr *CityRuntime) requestExecutionStalledDrain(sessionBead beads.Bead) error {
+	if cr == nil || cr.sessionDrains == nil {
+		return fmt.Errorf("no drain tracker configured for %q", sessionBead.ID)
 	}
-	return cr.dops.setDrain(sessionName)
+	info, err := sessionFrontDoor(cr.sessionsBeadStore()).Get(sessionBead.ID)
+	if err != nil {
+		return fmt.Errorf("reading session %q before draining: %w", sessionBead.ID, err)
+	}
+	beginSessionDrainInfo(info, cr.sp, cr.sessionDrains, executionStalledDrainReason, clock.Real{}, defaultDrainTimeout)
+	return nil
 }

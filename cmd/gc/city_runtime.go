@@ -2618,7 +2618,7 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 			result.StoreQueryPartial || result.SessionQueryPartial,
 			time.Now(),
 			cr.rec,
-			cr.requestSessionDrain,
+			cr.requestExecutionStalledDrain,
 			cr.stdout,
 		)
 	}

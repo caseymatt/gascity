@@ -108,7 +108,10 @@ func (f *executionBackstopFixture) tick(t *testing.T) {
 		stores[i] = f.store
 	}
 	nudgeStalledPoolExecution(f.sp, f.cfg, f.store, sessions, work, stores, refs, false, f.now, f.rec,
-		func(name string) error { f.drained = append(f.drained, name); return nil }, &f.stdout)
+		func(sessionBead beads.Bead) error {
+			f.drained = append(f.drained, strings.TrimSpace(sessionBead.Metadata["session_name"]))
+			return nil
+		}, &f.stdout)
 }
 
 // idleFor backdates the runtime's last-activity so the predicate observes an
