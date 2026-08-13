@@ -3261,8 +3261,10 @@ func TestBuildDesiredState_NewPoolSessionBeadCreatedWithConcreteIdentity(t *test
 	if got.Metadata["agent_name"] != "rig/claude-1" {
 		t.Fatalf("agent_name = %q, want concrete slot identity", got.Metadata["agent_name"])
 	}
-	if got.Metadata["alias"] != "rig/claude-1" {
-		t.Fatalf("alias = %q, want concrete slot identity", got.Metadata["alias"])
+	// The slot identity lives in agent_name / title / label / pool_slot, never in
+	// the alias — see TestBuildDesiredState_PoolSlotSessionBeadCarriesNoSlotAlias.
+	if got.Metadata["alias"] != "" {
+		t.Fatalf("alias = %q, want empty for a transient pool slot", got.Metadata["alias"])
 	}
 	if got.Metadata["pool_slot"] != "1" {
 		t.Fatalf("pool_slot = %q, want 1", got.Metadata["pool_slot"])
@@ -5508,14 +5510,23 @@ func TestSelectOrCreatePoolSessionBead_SerializesAliasCheckAndCreate(t *testing.
 	if err != nil {
 		t.Fatalf("load session beads: %v", err)
 	}
-	aliasOwners := 0
+	// The race still produces one bead per goroutine — it did before this change
+	// too, where the loser's EnsureAliasAvailable probe failed and it was created
+	// without an alias. What changed is the discriminator: a transient slot is
+	// never persisted as an alias, so BOTH beads are unaliased and the slot lives
+	// only in agent_name / pool_slot. That is the pair claimPoolSlotWithConfigInfo's
+	// used-slot map and the duplicate-repair lanes already resolve the loser by,
+	// so nothing that resolved the duplicate before depends on the alias.
 	for _, bead := range sessionBeads {
-		if bead.Metadata["alias"] == "claude-1" {
-			aliasOwners++
+		if got := bead.Metadata["alias"]; got != "" {
+			t.Fatalf("pool bead %s alias = %q, want empty for a transient slot; beads=%#v", bead.ID, got, sessionBeads)
 		}
-	}
-	if aliasOwners != 1 {
-		t.Fatalf("pool alias owners = %d, want exactly one; beads=%#v", aliasOwners, sessionBeads)
+		if got := bead.Metadata["agent_name"]; got != "claude-1" {
+			t.Fatalf("pool bead %s agent_name = %q, want the slot identity", bead.ID, got)
+		}
+		if got := bead.Metadata["pool_slot"]; got != "1" {
+			t.Fatalf("pool bead %s pool_slot = %q, want 1", bead.ID, got)
+		}
 	}
 }
 
@@ -5748,7 +5759,9 @@ func TestRealizePoolDesiredSessions_ParallelizesDistinctAliasCreates(t *testing.
 		t.Fatalf("session bead creates max concurrency = %d, want at least %d", got, poolRealizeParallelism)
 	}
 
-	aliases := make(map[string]bool, requestCount)
+	// Transient pool slots carry no public alias, so per-entry distinctness is
+	// asserted on the logical instance name — the channel the slot still rides.
+	instances := make(map[string]bool, requestCount)
 	sessionNames := make(map[string]bool, requestCount)
 	slots := make(map[int]bool, requestCount)
 	for name, tp := range desired {
@@ -5756,13 +5769,16 @@ func TestRealizePoolDesiredSessions_ParallelizesDistinctAliasCreates(t *testing.
 			t.Fatalf("duplicate desired session name %q across pool entries", name)
 		}
 		sessionNames[name] = true
-		if tp.Alias == "" {
-			t.Fatalf("desired entry %q has empty alias; want unique per-slot alias", name)
+		if tp.Alias != "" {
+			t.Fatalf("desired entry %q alias = %q, want empty for a transient pool slot", name, tp.Alias)
 		}
-		if aliases[tp.Alias] {
-			t.Fatalf("duplicate alias %q across desired entries (session %q)", tp.Alias, name)
+		if tp.InstanceName == "" {
+			t.Fatalf("desired entry %q has empty instance name; want unique per-slot identity", name)
 		}
-		aliases[tp.Alias] = true
+		if instances[tp.InstanceName] {
+			t.Fatalf("duplicate instance name %q across desired entries (session %q)", tp.InstanceName, name)
+		}
+		instances[tp.InstanceName] = true
 		if slots[tp.PoolSlot] {
 			t.Fatalf("duplicate pool_slot %d across desired entries (session %q)", tp.PoolSlot, name)
 		}
@@ -8646,14 +8662,17 @@ func TestBuildDesiredState_StoreBackedPoolUsesLogicalInstanceIdentity(t *testing
 		if tp.PoolSlot != slot {
 			t.Fatalf("PoolSlot(%q) = %d, want %d", tp.InstanceName, tp.PoolSlot, slot)
 		}
-		if tp.Alias != tp.InstanceName {
-			t.Fatalf("Alias(%q) = %q, want %q", tp.InstanceName, tp.Alias, tp.InstanceName)
+		// The slot is the LOGICAL instance identity (InstanceName / PoolSlot) but
+		// never a public one: a rebinding slot must not reach GC_ALIAS, or the
+		// worker claims work under a name that outlives it.
+		if tp.Alias != "" {
+			t.Fatalf("Alias(%q) = %q, want empty for a transient pool slot", tp.InstanceName, tp.Alias)
 		}
-		if got := tp.Env["GC_AGENT"]; got != tp.InstanceName {
-			t.Fatalf("GC_AGENT(%q) = %q, want %q", tp.InstanceName, got, tp.InstanceName)
+		if got := tp.Env["GC_ALIAS"]; got != "" {
+			t.Fatalf("GC_ALIAS(%q) = %q, want empty for a transient pool slot", tp.InstanceName, got)
 		}
-		if got := tp.Env["GC_ALIAS"]; got != tp.InstanceName {
-			t.Fatalf("GC_ALIAS(%q) = %q, want %q", tp.InstanceName, got, tp.InstanceName)
+		if got := tp.Env["GC_AGENT"]; got != tp.SessionName {
+			t.Fatalf("GC_AGENT(%q) = %q, want session name %q", tp.InstanceName, got, tp.SessionName)
 		}
 		delete(want, tp.InstanceName)
 	}
@@ -8709,11 +8728,16 @@ func TestBuildDesiredState_StoreBackedPoolUsesQualifiedInstanceNameForBindings(t
 	if got.InstanceName != wantInstance {
 		t.Fatalf("InstanceName = %q, want %q", got.InstanceName, wantInstance)
 	}
-	if got.Alias != wantInstance {
-		t.Fatalf("Alias = %q, want %q", got.Alias, wantInstance)
+	// Binding qualification governs the logical instance name and the work dir;
+	// the public identity stays empty because the slot is transient.
+	if got.Alias != "" {
+		t.Fatalf("Alias = %q, want empty for a transient pool slot", got.Alias)
 	}
-	if got.Env["GC_AGENT"] != wantInstance {
-		t.Fatalf("GC_AGENT = %q, want %q", got.Env["GC_AGENT"], wantInstance)
+	if got.Env["GC_ALIAS"] != "" {
+		t.Fatalf("GC_ALIAS = %q, want empty for a transient pool slot", got.Env["GC_ALIAS"])
+	}
+	if got.Env["GC_AGENT"] != got.SessionName {
+		t.Fatalf("GC_AGENT = %q, want session name %q", got.Env["GC_AGENT"], got.SessionName)
 	}
 	wantWorkDir := filepath.Join(cityPath, ".gc", "worktrees", "ops.worker-1")
 	if got.WorkDir != wantWorkDir {
@@ -10399,8 +10423,10 @@ func TestSelectOrCreateDependencyPoolSessionBead_SkipsDrained(t *testing.T) {
 	if got := result.AgentName; got != "claude-1" {
 		t.Fatalf("dependency agent_name = %q, want claude-1", got)
 	}
-	if got := result.Alias; got != "claude-1" {
-		t.Fatalf("dependency alias = %q, want claude-1", got)
+	// The slot rides agent_name / title / pool_slot; it is not an alias, so a
+	// dependency-floor worker claims under its session name like any pool member.
+	if got := result.Alias; got != "" {
+		t.Fatalf("dependency alias = %q, want empty for a transient pool slot", got)
 	}
 	if got := result.PoolSlot; got != "1" {
 		t.Fatalf("dependency pool_slot = %q, want 1", got)
@@ -11687,9 +11713,16 @@ func TestBuildDesiredState_PoolBeadIdentityAgreesAcrossRealizeAndCanonicalHelper
 		t.Fatalf("canonicalSessionIdentity qn = %q, want %q", helperQN, want)
 	}
 
-	if realizeAlias := realizeTP.Env["GC_ALIAS"]; realizeAlias != helperQN {
-		t.Fatalf("realize GC_ALIAS = %q, canonical helper qn = %q — runtime identity diverged across rediscovery/realize",
-			realizeAlias, helperQN)
+	// A transient pool slot has no public identity, so the agreement is on the
+	// LOGICAL instance name — the channel that still carries the slot. GC_ALIAS
+	// must be blank on both sides; a slot leaking back into it is the ownership
+	// bug this test now guards against from the other direction.
+	if realizeTP.InstanceName != helperQN {
+		t.Fatalf("realize InstanceName = %q, canonical helper qn = %q — logical identity diverged across rediscovery/realize",
+			realizeTP.InstanceName, helperQN)
+	}
+	if realizeAlias := realizeTP.Env["GC_ALIAS"]; realizeAlias != "" {
+		t.Fatalf("realize GC_ALIAS = %q, want empty for a transient pool slot", realizeAlias)
 	}
 	if want := "gascity/dog"; realizeTP.Env["GC_TEMPLATE"] != want {
 		t.Fatalf("realize GC_TEMPLATE = %q, want base %q", realizeTP.Env["GC_TEMPLATE"], want)
