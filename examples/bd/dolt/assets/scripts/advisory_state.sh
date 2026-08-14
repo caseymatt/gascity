@@ -17,12 +17,11 @@
 # routed through this dedup, so a true outage always alerts.
 #
 # advisory_archive_superseded is the mailbox half of the same lifecycle: the
-# signature dedup bounds how often an advisory is SENT, and the sweep bounds how
-# many *unread* advisory beads stay OPEN — at most one, the latest snapshot.
-# Read-but-open advisories are left alone (the sweep does not pass
-# --include-read).
+# signature dedup bounds how often an advisory is sent, and the sweep bounds
+# how many advisory beads stay open — at most one, the latest snapshot.
+# Read and unread alerts share the same recovery lifecycle.
 #
-# Sourced by mol-dog-doctor.sh; unit-tested by test/dolt/advisory_dedup_test.sh.
+# Sourced by mol-dog-doctor.sh; covered by dog_exec_scripts_test.go.
 
 # advisory_changed SIGNATURE STATE_FILE — exit 0 when SIGNATURE differs from the
 # signature recorded in STATE_FILE (or none is recorded yet); exit 1 when they
@@ -62,17 +61,17 @@ advisory_clear() {
 }
 
 # advisory_archive_superseded SUBJECT_PREFIX RECIPIENT [LIMIT] — archive open
-# unread advisories addressed to RECIPIENT whose subject starts with
-# SUBJECT_PREFIX, so the mailbox holds at most one standing advisory. The
-# caller invokes it just before sending a fresh advisory (the new send carries
-# the full current status block, so older snapshots — including any backlog
-# minted before the dedup existed — are stale the moment it lands; sweeping
-# first avoids archiving the message about to be sent) and again when the
-# server returns to healthy (the condition cleared, so no advisory should stay
-# open). Archiving retains the beads (closed, body kept), so history stays
-# queryable. Best-effort: a failed or absent `gc mail archive` is ignored
-# (fails open — the worst case is the pre-sweep behavior, a lingering advisory
-# bead, never a lost alert).
+# advisories addressed to RECIPIENT whose subject starts with SUBJECT_PREFIX,
+# including read-but-open messages. Reading an alert inspects it; it does not
+# acknowledge an active condition or opt the message out of recovery cleanup.
+# The caller invokes this just before sending a fresh advisory (the new send
+# carries the full current status block, so older snapshots — including any
+# backlog minted before the dedup existed — are stale the moment it lands;
+# sweeping first avoids archiving the message about to be sent) and again when
+# the server returns to healthy (the condition cleared, so no advisory should
+# stay open). Archiving retains the beads (closed, body kept), so history stays
+# queryable. The return status reports whether `gc mail archive` completed, so
+# recovery callers can retain their state marker and retry a transient failure.
 advisory_archive_superseded() {
   _adv_subj="${1:-}"
   _adv_rcpt="${2:-}"
@@ -80,5 +79,5 @@ advisory_archive_superseded() {
   [ -n "$_adv_subj" ] || return 0
   [ -n "$_adv_rcpt" ] || return 0
   gc mail archive --to "$_adv_rcpt" --subject-prefix "$_adv_subj" \
-    --limit "$_adv_limit" >/dev/null 2>&1 || true
+    --include-read --limit "$_adv_limit" >/dev/null 2>&1
 }
