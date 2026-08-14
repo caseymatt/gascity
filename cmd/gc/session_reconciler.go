@@ -5503,14 +5503,53 @@ func resolveTaskWorkDir(cityPath string, store beads.Store, assignees ...string)
 			continue
 		}
 		for _, b := range assigned {
-			wd := strings.TrimSpace(b.Metadata["work_dir"])
-			if wd == "" {
-				continue
+			if sourceWorkDir := resolveDrainSourceWorkDir(cityPath, store, b); sourceWorkDir != "" {
+				return sourceWorkDir
 			}
-			resolved := resolveWorkDirAgainstCity(cityPath, wd)
-			if info, err := os.Stat(resolved); err == nil && info.IsDir() {
-				return resolved
+			for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+				wd := strings.TrimSpace(b.Metadata[key])
+				if wd == "" {
+					continue
+				}
+				resolved := resolveWorkDirAgainstCity(cityPath, wd)
+				if info, err := os.Stat(resolved); err == nil && info.IsDir() {
+					return resolved
+				}
 			}
+		}
+	}
+	return ""
+}
+
+// resolveDrainSourceWorkDir returns the prepared source anchor's worktree for
+// a drain item step. The drain recipe is materialized before prepare-worktree
+// creates that directory, so copied step metadata can still name the launcher
+// checkout. The source anchor is the durable post-prepare authority.
+func resolveDrainSourceWorkDir(cityPath string, store beads.Store, bead beads.Bead) string {
+	root := bead
+	if rootID := strings.TrimSpace(bead.Metadata[beadmeta.RootBeadIDMetadataKey]); rootID != "" && rootID != bead.ID {
+		resolvedRoot, err := store.Get(rootID)
+		if err != nil {
+			return ""
+		}
+		root = resolvedRoot
+	}
+	memberID := strings.TrimSpace(root.Metadata[beadmeta.DrainMemberIDMetadataKey])
+	if memberID == "" {
+		return ""
+	}
+	source, err := store.Get(memberID)
+	if err != nil {
+		return ""
+	}
+	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+		workDir := strings.TrimSpace(source.Metadata[key])
+		if workDir == "" {
+			continue
+		}
+		resolved := resolveWorkDirAgainstCity(cityPath, workDir)
+		if info, err := os.Stat(resolved); err == nil && info.IsDir() {
+			return resolved
 		}
 	}
 	return ""
