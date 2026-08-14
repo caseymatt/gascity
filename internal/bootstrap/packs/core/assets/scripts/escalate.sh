@@ -47,4 +47,4 @@ if [ -n "$SEVERITY" ] && ! printf '%s' "$SUBJECT" | grep -Eq '\[[^]]+\]$'; then
 fi
 
 RECIPIENT="${GC_ESCALATION_RECIPIENT:-human}"
-gc mail send "$RECIPIENT" -s "$SUBJECT" -m "$MESSAGE"
+gc mail send --from controller "$RECIPIENT" -s "$SUBJECT" -m "$MESSAGE"

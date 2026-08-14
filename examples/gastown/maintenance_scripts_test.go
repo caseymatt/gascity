@@ -3783,7 +3783,7 @@ exit 0
 		t.Fatalf("ReadFile(gc log): %v", err)
 	}
 	gcLogText := string(gcData)
-	if !strings.Contains(gcLogText, "mail send human -s ESCALATION: Reaper anomalies detected [MEDIUM]") {
+	if !strings.Contains(gcLogText, "mail send --from controller human -s ESCALATION: Reaper anomalies detected [MEDIUM]") {
 		t.Fatalf("reaper did not send escalation mail for session-state prune failure:\n%s", gcLogText)
 	}
 	if !strings.Contains(gcLogText, "gm: terminal session-state prune failed: session prune exploded") {
@@ -3893,7 +3893,7 @@ exit 0
 		t.Fatalf("ReadFile(gc log): %v", err)
 	}
 	gcLogText := string(gcData)
-	if !strings.Contains(gcLogText, "mail send human -s ESCALATION: Reaper anomalies detected [MEDIUM]") {
+	if !strings.Contains(gcLogText, "mail send --from controller human -s ESCALATION: Reaper anomalies detected [MEDIUM]") {
 		t.Fatalf("reaper did not send escalation mail for session-prune anomaly:\n%s", gcLogText)
 	}
 	if !strings.Contains(gcLogText, "gm: 1500 closed session beads pruned (pattern=gm-* threshold: 1000)") {
@@ -4937,7 +4937,7 @@ exit 0
 		t.Fatalf("ReadFile(gc log): %v", err)
 	}
 	gcLogText := string(gcData)
-	if !strings.Contains(gcLogText, "mail send human -s ESCALATION: Reaper anomalies detected [MEDIUM]") {
+	if !strings.Contains(gcLogText, "mail send --from controller human -s ESCALATION: Reaper anomalies detected [MEDIUM]") {
 		t.Fatalf("reaper did not escalate Dolt commit failure:\n%s", gcLogText)
 	}
 	if !strings.Contains(gcLogText, "Dolt commit failed for beads") {
@@ -5392,7 +5392,7 @@ exit 0
 	if !strings.Contains(gcLogText, "closed:1") || !strings.Contains(gcLogText, "skipped_non_city_issues:1") {
 		t.Fatalf("reaper summary did not report city close and non-city skip:\n%s", gcLogText)
 	}
-	if strings.Contains(gcLogText, "mail send human -s ESCALATION") || strings.Contains(gcLogText, "non-city database") {
+	if strings.Contains(gcLogText, "mail send --from controller human -s ESCALATION") || strings.Contains(gcLogText, "non-city database") {
 		t.Fatalf("reaper escalated expected non-city stale issue skips:\n%s", gcLogText)
 	}
 }
@@ -6371,7 +6371,7 @@ exit 0
 		t.Fatalf("ReadFile(gc log): %v", err)
 	}
 	gcLogText := string(gcData)
-	if strings.Contains(gcLogText, "mail send human -s ESCALATION") || strings.Contains(gcLogText, "Dolt commit found nothing to commit") {
+	if strings.Contains(gcLogText, "mail send --from controller human -s ESCALATION") || strings.Contains(gcLogText, "Dolt commit found nothing to commit") {
 		t.Fatalf("reaper escalated benign nothing-to-commit race:\n%s", gcLogText)
 	}
 }
