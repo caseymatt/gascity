@@ -38,6 +38,9 @@ GO_BUILD_INPUT_SUFFIXES = frozenset(
     }
 )
 
+FULL_TEST_PATHS = frozenset({"go.mod", "go.sum", "go.work", "go.work.sum"})
+SCRIPT_TEST_PATH_PREFIXES = (".githooks/", "scripts/")
+
 EMBED_FILE_FIELDS = ("EmbedFiles", "TestEmbedFiles", "XTestEmbedFiles")
 EMBED_PATTERN_FIELDS = ("EmbedPatterns", "TestEmbedPatterns", "XTestEmbedPatterns")
 
@@ -89,9 +92,12 @@ def parse_name_status(output: bytes) -> list[tuple[str, str]]:
     return records
 
 
-def diff_records() -> list[tuple[str, str]]:
-    scope = os.environ.get("LINT_CHANGED_SCOPE", "worktree")
-    ref = os.environ.get("LINT_CHANGED_REF", "HEAD")
+def diff_records(
+    scope_variable: str = "LINT_CHANGED_SCOPE",
+    ref_variable: str = "LINT_CHANGED_REF",
+) -> list[tuple[str, str]]:
+    scope = os.environ.get(scope_variable, "worktree")
+    ref = os.environ.get(ref_variable, "HEAD")
     common = [
         "git",
         "diff",
@@ -105,7 +111,7 @@ def diff_records() -> list[tuple[str, str]]:
         return parse_name_status(command_output([*common, "--cached", "--"]))
     if scope not in {"tracked", "worktree"}:
         raise SelectionError(
-            f"unknown LINT_CHANGED_SCOPE={scope}; expected staged, tracked, or worktree"
+            f"unknown {scope_variable}={scope}; expected staged, tracked, or worktree"
         )
 
     resolved_ref = os.fsdecode(
@@ -382,6 +388,44 @@ def lint_affected(
     return run_static_checks(lint_tool, go_tool, lint_flags, packages)
 
 
+def run_tests(go_tool: str, test_flags: list[str], packages: list[str]) -> int:
+    return run_tool([go_tool, "test", *test_flags, *packages])
+
+
+def full_tests(
+    go_tool: str, test_flags: list[str], reason: Exception
+) -> int:
+    print(f"test-affected: selecting full repository: {reason}", file=sys.stderr)
+    return run_tests(go_tool, test_flags, ["./..."])
+
+
+def test_affected(go_tool: str, test_flags: list[str]) -> int:
+    try:
+        records = diff_records("TEST_CHANGED_SCOPE", "TEST_CHANGED_REF")
+    except SelectionError as error:
+        return full_tests(go_tool, test_flags, error)
+    if not records:
+        print("test-affected: no changed paths")
+        return 0
+    try:
+        if any(path in FULL_TEST_PATHS for _, path in records):
+            raise SelectionError("Go module or workspace inputs changed")
+        packages = set(affected_package_args(records, go_tool))
+    except SelectionError as error:
+        return full_tests(go_tool, test_flags, error)
+    if any(
+        path == "Makefile" or path.startswith(SCRIPT_TEST_PATH_PREFIXES)
+        for _, path in records
+    ):
+        packages.add("./scripts")
+    if not packages:
+        print("test-affected: no affected Go packages")
+        return 0
+    selected = sorted(packages)
+    print(f"test-affected: {' '.join(selected)}")
+    return run_tests(go_tool, test_flags, selected)
+
+
 def fmt_check_changed(tool: str) -> int:
     try:
         records = diff_records()
@@ -410,24 +454,27 @@ def is_regular_file(path: str) -> bool:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 3 or argv[1] not in {"lint-affected", "fmt-check-changed"}:
+    modes = {"lint-affected", "fmt-check-changed", "test-affected"}
+    if len(argv) < 3 or argv[1] not in modes:
         print(
-            "usage: ci-static-select {lint-affected|fmt-check-changed} "
-            "GOLANGCI_LINT [GO [LINT_FLAG ...]]",
+            "usage: ci-static-select "
+            "{lint-affected|fmt-check-changed|test-affected} TOOL [ARGS ...]",
             file=sys.stderr,
         )
         return 2
     mode = argv[1]
-    lint_tool = argv[2]
+    tool = argv[2]
     if mode == "fmt-check-changed":
         if len(argv) != 3:
             print("fmt-check-changed only accepts GOLANGCI_LINT", file=sys.stderr)
             return 2
-        return fmt_check_changed(lint_tool)
+        return fmt_check_changed(tool)
+    if mode == "test-affected":
+        return test_affected(tool, argv[3:])
     if len(argv) < 4:
         print("lint-affected requires GOLANGCI_LINT and GO", file=sys.stderr)
         return 2
-    return lint_affected(lint_tool, argv[3], argv[4:])
+    return lint_affected(tool, argv[3], argv[4:])
 
 
 if __name__ == "__main__":

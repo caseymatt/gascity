@@ -68,6 +68,12 @@ func Value() int { return alpha.Value() }
 		fixture.requireGoCalls(t, []string{"vet", "./alpha", "./consumer"})
 
 		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTarget("test-affected"); err != nil {
+			t.Errorf("test-affected failed for one changed Go file: %v\n%s", err, output)
+		}
+		fixture.requireGoCalls(t, []string{"test", "./alpha", "./consumer"})
+
+		fixture.resetCalls(t)
 		if output, err := fixture.runMakeTarget("fmt-check-changed"); err != nil {
 			t.Errorf("fmt-check-changed failed for one changed Go file: %v\n%s", err, output)
 		}
@@ -272,6 +278,12 @@ func Moved() int {
 		}
 		fixture.requireCalls(t, []string{"run", "./..."})
 		fixture.requireGoCalls(t, []string{"vet", "./..."})
+
+		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTargetWithRef("test-affected", "refs/heads/missing-static-base"); err != nil {
+			t.Errorf("test-affected did not fail closed for an invalid ref: %v\n%s", err, output)
+		}
+		fixture.requireGoCalls(t, []string{"test", "./..."})
 
 		fixture.resetCalls(t)
 		if output, err := fixture.runMakeTargetWithRef("fmt-check-changed", "refs/heads/missing-static-base"); err != nil {
@@ -883,7 +895,7 @@ printf 'END\000' >> "$STATIC_SCOPE_LINT_LOG"
 set -eu
 : "${STATIC_SCOPE_GO_LOG:?}"
 : "${STATIC_SCOPE_REAL_GO:?}"
-if [ "${1-}" = "vet" ]; then
+if [ "${1-}" = "vet" ] || [ "${1-}" = "test" ]; then
   printf 'CALL\000' >> "$STATIC_SCOPE_GO_LOG"
   for arg in "$@"; do
     printf 'ARG\000%s\000' "$arg" >> "$STATIC_SCOPE_GO_LOG"
@@ -942,6 +954,10 @@ func (f prStaticScopeFixture) runMakeTargetWithOptions(target, ref, goTool strin
 		"LINT_CHANGED_SCOPE=tracked",
 		"LINT_CHANGED_REF="+ref,
 		"LINT_FLAGS=",
+		"TEST_CHANGED_SCOPE=tracked",
+		"TEST_CHANGED_REF="+ref,
+		"TEST_AFFECTED_FLAGS=",
+		"EXTRA_TEST_ENV=STATIC_SCOPE_LINT_LOG="+f.lintLog+" STATIC_SCOPE_GO_LOG="+f.goLog+" STATIC_SCOPE_REAL_GO="+f.realGo,
 		"SYS_USR_CGO_FALLBACK=0",
 		target,
 	)

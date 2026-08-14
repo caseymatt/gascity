@@ -198,7 +198,7 @@ func localTestCgroupEnv(t *testing.T, version, limit, current string) []string {
 	}
 }
 
-func TestPrePushUsesCanonicalMachineAwareConcurrency(t *testing.T) {
+func TestPrePushUsesAffectedGateAndKeepsFullGateCanonical(t *testing.T) {
 	repoRoot := repoRoot(t)
 	script, err := os.ReadFile(filepath.Join(repoRoot, ".githooks", "pre-push"))
 	if err != nil {
@@ -208,8 +208,15 @@ func TestPrePushUsesCanonicalMachineAwareConcurrency(t *testing.T) {
 	if strings.Contains(content, `LOCAL_TEST_JOBS="${LOCAL_TEST_JOBS:-3}"`) {
 		t.Fatal("pre-push hook must not replace the canonical machine-aware default with a fixed three-job cap")
 	}
-	if !strings.Contains(content, "exec make test-fast-parallel") {
-		t.Fatal("pre-push hook must continue delegating the unchanged fast-suite inventory to make test-fast-parallel")
+	for _, marker := range []string{
+		"git push --dry-run --no-verify",
+		"make test-affected",
+		"make test-fast-parallel",
+		"push-gate-receipt.sh",
+	} {
+		if !strings.Contains(content, marker) {
+			t.Fatalf("pre-push hook is missing %q", marker)
+		}
 	}
 	for _, path := range []string{"Makefile", filepath.Join("scripts", "test-local-parallel")} {
 		content, err := os.ReadFile(filepath.Join(repoRoot, path))
@@ -396,14 +403,18 @@ func TestPreCommitFailsClosedWhenGoBlockStagesSpecAsSideEffectAndNpmAbsent(t *te
 	hookPath := filepath.Join(repoRoot, ".githooks", "pre-commit")
 
 	tmpRepo := t.TempDir()
+	isolatedHome := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = tmpRepo
-		cmd.Env = append(os.Environ(),
+		cmd.Env = []string{
+			"PATH=" + os.Getenv("PATH"),
+			"HOME=" + isolatedHome,
+			"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
 			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.invalid",
 			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.invalid",
-		)
+		}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -427,7 +438,7 @@ func TestPreCommitFailsClosedWhenGoBlockStagesSpecAsSideEffectAndNpmAbsent(t *te
 		filepath.Join(tmpRepo, "docs", "reference", "cli.md"),
 	}
 
-	runGit("init")
+	runGit("init", "-q", "-b", "main")
 	writeTestFile(t, goFilePath, "package main\n\nfunc main() {}\n")
 	for _, p := range generatedPaths {
 		writeTestFile(t, p, "{}\n")
@@ -452,7 +463,7 @@ func TestPreCommitFailsClosedWhenGoBlockStagesSpecAsSideEffectAndNpmAbsent(t *te
 
 	goStub := `#!/usr/bin/env bash
 set -euo pipefail
-if [ "$1" = "run" ] && [ "$2" = "./cmd/genspec" ]; then
+if [ "${1-}" = "run" ] && [ "${2-}" = "./cmd/genspec" ]; then
   printf '{"changed":true}\n' > internal/api/openapi.json
 fi
 exit 0
@@ -471,7 +482,9 @@ exit 0
 			// exercised for control-flow only.
 			"go": goStub,
 		}),
-		"HOME=" + t.TempDir(),
+		"HOME=" + isolatedHome,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
 	}
 	out, err := cmd.CombinedOutput()
 	if err == nil {

@@ -293,6 +293,10 @@ QUALITY_GATE_GOFLAGS = $$(go env GOFLAGS | sed -E 's/(^|[[:space:]])-mod=[^[:spa
 CI_STATIC_SELECT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/ci-static-select
 CI_STATIC_GO ?= go
 
+TEST_CHANGED_REF ?= HEAD
+TEST_CHANGED_SCOPE ?= worktree
+TEST_AFFECTED_FLAGS ?= -count=1 -timeout 15m
+
 ## lint: run full-repo golangci-lint
 lint: lint-full
 
@@ -349,6 +353,12 @@ lint-changed: $(GOLANGCI_LINT)
 ## lint-affected: lint packages affected by changed Go build inputs or embedded files
 lint-affected: $(GOLANGCI_LINT)
 	@GOFLAGS="$(QUALITY_GATE_GOFLAGS)" "$(CI_STATIC_SELECT)" lint-affected "$(GOLANGCI_LINT)" "$(CI_STATIC_GO)" $(LINT_FLAGS)
+
+## test-affected: test changed Go packages and all in-repository reverse dependents
+test-affected:
+	@$(TEST_ENV) GOFLAGS="$(QUALITY_GATE_GOFLAGS)" GC_FAST_UNIT=1 \
+		TEST_CHANGED_SCOPE="$(TEST_CHANGED_SCOPE)" TEST_CHANGED_REF="$(TEST_CHANGED_REF)" \
+		"$(CI_STATIC_SELECT)" test-affected "$(CI_STATIC_GO)" $(TEST_AFFECTED_FLAGS)
 
 ## fmt-check: fail if formatting would change files
 fmt-check: $(GOLANGCI_LINT)

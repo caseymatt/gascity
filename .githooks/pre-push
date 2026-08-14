@@ -1,55 +1,167 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Heavy `go test` fan-out runs here, at push time, instead of on every commit
-# (#3628). pre-commit previously invoked `make test-fast-parallel` on every
-# commit. Its outer shard fan-out can compile ~2.8 GiB test binaries per job,
-# so the canonical runner now derives concurrency from both CPU and available
-# memory while preserving an explicit LOCAL_TEST_JOBS override. Running the
-# suite at push time also fires it only when Go sources actually change.
+# Keep push-time verification proportional and reusable. The publication
+# route is dry-run first so an authorization or remote-policy rejection fails
+# before tests. Successful gates are recorded by exact local/base trees,
+# toolchain, and gate definition; the ownership guard still runs on every
+# non-deletion push.
 #
 # git feeds "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref
-# on stdin (see githooks(5)).
+# on stdin (see githooks(5)). argv is "<remote-name> <remote-url>".
 
+[ "$#" -ge 2 ] || {
+  echo "pre-push: missing remote name or URL" >&2
+  exit 2
+}
+remote_name="$1"
+remote_url="$2"
 zero="0000000000000000000000000000000000000000"
+base_ref="${PUSH_GATE_BASE_REF:-refs/remotes/origin/main}"
 
-go_changed=0
+go_relevant_changed=0
 any_non_deletion=0
-while read -r _local_ref local_sha _remote_ref remote_sha; do
-  # Branch deletion — nothing to test, nothing to guard.
+full_gate=0
+local_commit=""
+gate_base=""
+refspecs=()
+local_commits=()
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
   if [ "$local_sha" = "$zero" ]; then
+    refspecs+=(":$remote_ref")
     continue
   fi
+
   any_non_deletion=1
-  # New remote branch: no cheap base to diff against — run the suite.
-  if [ "$remote_sha" = "$zero" ]; then
-    go_changed=1
-    continue
+  refspecs+=("${local_sha}:$remote_ref")
+  local_commits+=("$local_sha")
+  if [ -n "$local_commit" ] && [ "$local_commit" != "$local_sha" ]; then
+    full_gate=1
+  else
+    local_commit="$local_sha"
   fi
-  if git diff --name-only "$remote_sha" "$local_sha" -- '*.go' 2>/dev/null | grep -q .; then
-    go_changed=1
+
+  base_commit="$remote_sha"
+  if [ "$remote_sha" = "$zero" ]; then
+    if resolved_base="$(git rev-parse --verify --end-of-options "${base_ref}^{commit}" 2>/dev/null)" &&
+      base_commit="$(git merge-base "$local_sha" "$resolved_base" 2>/dev/null)" &&
+      [ -n "$base_commit" ]; then
+      :
+    else
+      full_gate=1
+      go_relevant_changed=1
+      continue
+    fi
+  fi
+
+  if [ -n "$gate_base" ] && [ "$gate_base" != "$base_commit" ]; then
+    full_gate=1
+  else
+    gate_base="$base_commit"
+  fi
+
+  if changed_paths="$(git diff --name-only "$base_commit" "$local_sha" -- \
+    '*.go' '.githooks/pre-push' 'Makefile' \
+    'scripts/ci-static-select' 'scripts/push-gate-receipt.sh' 2>/dev/null)"; then
+    if [ -n "$changed_paths" ]; then
+      go_relevant_changed=1
+    fi
+  else
+    full_gate=1
+    go_relevant_changed=1
   fi
 done
 
-# Bead ownership/staleness guard (ga-fip9ps.1): re-checks bd claim state
-# immediately before this push leaves the machine, once per invocation
-# (not per ref) regardless of whether Go sources changed. A mayor ruling
-# (reassign/close/hold/reroute) that landed after this push was queued
-# must not be allowed to clobber a branch another agent has since taken
-# over. Bypass: `git push --no-verify`.
-if [ "$any_non_deletion" -eq 1 ]; then
-  repo_root="$(git rev-parse --show-toplevel)"
-  # shellcheck source=../scripts/push-ownership-guard.sh disable=SC1091
-  . "$repo_root/scripts/push-ownership-guard.sh"
-  if ! assert_bead_still_claimed; then
+if [ "$any_non_deletion" -eq 0 ]; then
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+github_https=0
+case "$remote_url" in
+  https://github.com/*|https://*@github.com/*) github_https=1 ;;
+esac
+
+if [ "$go_relevant_changed" -eq 1 ] && [ "$github_https" -eq 1 ]; then
+  if ! GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags "$remote_name"; then
+    echo "pre-push: publication preflight could not refresh $remote_name; tests were not run" >&2
+    exit 1
+  fi
+
+  workflow_commits=""
+  for candidate in "${local_commits[@]}"; do
+    if ! candidate_workflows="$(git rev-list "$candidate" --not --remotes="$remote_name" -- .github/workflows 2>/dev/null)"; then
+      echo "pre-push: publication preflight could not inspect workflow changes; tests were not run" >&2
+      exit 1
+    fi
+    if [ -n "$candidate_workflows" ]; then
+      workflow_commits="$candidate_workflows"
+      break
+    fi
+  done
+
+  if [ -n "$workflow_commits" ]; then
+    if ! command -v gh >/dev/null 2>&1; then
+      echo "pre-push: publication preflight cannot verify GitHub workflow authorization because gh is unavailable; tests were not run" >&2
+      exit 1
+    fi
+    if ! token_scopes="$(gh auth status --active --hostname github.com --json hosts \
+      --jq '.hosts["github.com"][0].scopes' 2>/dev/null)"; then
+      echo "pre-push: publication preflight could not inspect the active GitHub credential; tests were not run" >&2
+      exit 1
+    fi
+    normalized_scopes="${token_scopes//[[:space:]]/}"
+    case ",$normalized_scopes," in
+      *,workflow,*) ;;
+      *)
+        echo "pre-push: publication preflight failed: commits not on $remote_name change .github/workflows, but the active GitHub OAuth token lacks workflow scope; tests were not run" >&2
+        echo "pre-push: run 'gh auth refresh -h github.com -s workflow', switch to an authorized account, or use SSH" >&2
+        exit 1
+        ;;
+    esac
+  fi
+fi
+
+if [ "$go_relevant_changed" -eq 1 ]; then
+  if ! GIT_TERMINAL_PROMPT=0 git push --dry-run --no-verify "$remote_url" "${refspecs[@]}"; then
+    echo "pre-push: publication preflight failed for $remote_name; tests were not run" >&2
     exit 1
   fi
 fi
 
-if [ "$go_changed" -eq 0 ]; then
+# Bead ownership/staleness guard (ga-fip9ps.1): re-check bd claim state once
+# per invocation immediately before the push leaves the machine. A mayor
+# ruling that landed after this push was queued must not be overwritten.
+# Bypass remains the standard `git push --no-verify`.
+# shellcheck source=../scripts/push-ownership-guard.sh disable=SC1091
+. "$repo_root/scripts/push-ownership-guard.sh"
+if ! assert_bead_still_claimed; then
+  exit 1
+fi
+
+if [ "$go_relevant_changed" -eq 0 ]; then
   exit 0
 fi
 
-# The Makefile and direct sharded runner share scripts/test-local-job-count as
-# their default policy. Do not shadow it here; an explicit override still wins.
-exec make test-fast-parallel
+if [ "$full_gate" -eq 1 ]; then
+  gate_id="pre-push-full-v1"
+  receipt_base="-"
+else
+  gate_id="pre-push-affected-v1"
+  receipt_base="$gate_base"
+fi
+receipt_tool="$repo_root/scripts/push-gate-receipt.sh"
+
+if "$receipt_tool" check "$local_commit" "$receipt_base" "$gate_id"; then
+  echo "pre-push: exact tree already passed $gate_id; skipping tests"
+  exit 0
+fi
+
+if [ "$full_gate" -eq 1 ]; then
+  make test-fast-parallel
+else
+  TEST_CHANGED_SCOPE=tracked TEST_CHANGED_REF="$gate_base" make test-affected
+fi
+"$receipt_tool" record "$local_commit" "$receipt_base" "$gate_id"
