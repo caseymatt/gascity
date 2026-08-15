@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Needs`), with a deterministic bead-ID tiebreak for independent steps
   and steps carrying no dependency data. (gascity#4699)
 
+- **`check-core-boundary.sh` no longer false-positives on an in-tree Go
+  build cache.** The `org_` boundary scan walked the whole working tree
+  (`grep -r --exclude-dir=vendor --exclude-dir=testdata`), so any untracked
+  in-tree Go module cache tripped false violations on third-party module
+  sources — the common case is GitLab CI's canonical
+  `$CI_PROJECT_DIR/.cache/go-mod` layout. The scan now runs over
+  `git ls-files` instead, so an untracked cache or build-artifact directory
+  is invisible to it regardless of name, while vendor/testdata (tracked or
+  not) stay excluded as before. (gascity#4479)
+
 - **ACP activity is now available across process boundaries.** ACP
   `session/update` timestamps are published through an atomic, coalesced
   sidecar, allowing a process other than the session owner to report
