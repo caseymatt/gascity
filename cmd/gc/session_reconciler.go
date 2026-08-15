@@ -5567,19 +5567,26 @@ func resolveTaskWorkDir(cityPath string, store beads.Store, assignees ...string)
 			continue
 		}
 		for _, b := range assigned {
-			if sourceWorkDir := resolveDrainSourceWorkDir(cityPath, store, b); sourceWorkDir != "" {
-				return sourceWorkDir
+			if workDir := resolveTaskBeadWorkDir(cityPath, store, b); workDir != "" {
+				return workDir
 			}
-			for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
-				wd := strings.TrimSpace(b.Metadata[key])
-				if wd == "" {
-					continue
-				}
-				resolved := resolveWorkDirAgainstCity(cityPath, wd)
-				if info, err := os.Stat(resolved); err == nil && info.IsDir() {
-					return resolved
-				}
-			}
+		}
+	}
+	return ""
+}
+
+func resolveTaskBeadWorkDir(cityPath string, store beads.Store, bead beads.Bead) string {
+	if sourceWorkDir := resolveDrainSourceWorkDir(cityPath, store, bead); sourceWorkDir != "" {
+		return sourceWorkDir
+	}
+	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+		workDir := strings.TrimSpace(bead.Metadata[key])
+		if workDir == "" {
+			continue
+		}
+		resolved := resolveWorkDirAgainstCity(cityPath, workDir)
+		if info, err := os.Stat(resolved); err == nil && info.IsDir() {
+			return resolved
 		}
 	}
 	return ""
