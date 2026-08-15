@@ -1248,6 +1248,13 @@ func resolvePreparedTaskWorkDir(
 	store beads.Store,
 	workDirResolver taskWorkDirResolver,
 ) string {
+	if triggerID := strings.TrimSpace(candidate.info.TriggerBeadID); triggerID != "" && store != nil {
+		if trigger, err := store.Get(triggerID); err == nil {
+			if workDir := resolveTaskBeadWorkDir(cityPath, store, trigger); workDir != "" {
+				return workDir
+			}
+		}
+	}
 	if workDirResolver != nil {
 		if workDir := workDirResolver(candidate, cfg); workDir != "" {
 			return workDir

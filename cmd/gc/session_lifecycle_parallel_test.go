@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/agent"
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/clock"
 	"github.com/gastownhall/gascity/internal/config"
@@ -792,6 +793,79 @@ func TestPrepareStartCandidate_UsesSessionIDForTaskWorkDir(t *testing.T) {
 	}
 	if prepared.cfg.WorkDir != workDir {
 		t.Fatalf("prepared.cfg.WorkDir = %q, want %q", prepared.cfg.WorkDir, workDir)
+	}
+}
+
+func TestPrepareStartCandidate_UsesTriggerBeadWorkDirBeforeClaim(t *testing.T) {
+	store := beads.NewMemStore()
+	sourceWorkDir := t.TempDir()
+	launcherWorkDir := t.TempDir()
+	source, err := store.Create(beads.Bead{
+		Title: "implementation source anchor",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.LegacyWorkDirMetadataKey: sourceWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := store.Create(beads.Bead{
+		Title: "drain item workflow",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.DrainMemberIDMetadataKey: source.ID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := store.Create(beads.Bead{
+		Title:  "unclaimed implementation step",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: root.ID,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:frontend/worker-1"},
+		Metadata: map[string]string{
+			"template":                              "worker",
+			"session_name":                          "custom-worker-1",
+			"pool_slot":                             "1",
+			beadmeta.TriggerBeadIDMetadataKey:       trigger.ID,
+			beadmeta.TriggerBeadStoreRefMetadataKey: "rig:frontend",
+			beadmeta.WorkDirMetadataKey:             launcherWorkDir,
+			beadmeta.LegacyWorkDirMetadataKey:       launcherWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := prepareStartCandidate(startCandidate{
+		info: sessiontest.SeedBead(t, session),
+		tp: TemplateParams{
+			TemplateName: "frontend/worker",
+			SessionName:  "custom-worker-1",
+			WorkDir:      launcherWorkDir,
+		},
+	}, &config.City{
+		Agents: []config.Agent{
+			{Name: "worker", Dir: "frontend", MinActiveSessions: intPtr(1), MaxActiveSessions: intPtr(2)},
+		},
+	}, store, &clock.Fake{Time: time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("prepareStartCandidate: %v", err)
+	}
+	if prepared.cfg.WorkDir != sourceWorkDir {
+		t.Fatalf("prepared.cfg.WorkDir = %q, want trigger source work dir %q", prepared.cfg.WorkDir, sourceWorkDir)
 	}
 }
 
