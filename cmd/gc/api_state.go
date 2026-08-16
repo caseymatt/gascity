@@ -541,13 +541,68 @@ func (cs *controllerState) startBeadEventWatcher(ctx context.Context) {
 }
 
 // reconcileExecutionCompletions repairs graph.v2 completion facts from the
-// authoritative graph store. It is safe to call at startup and on patrol ticks:
+// authoritative graph store, over the WHOLE corpus. It is the convergence
+// backstop: safe to call at startup and from the background sweep, because
 // ReconcileCompleted uses the event journal's exact fact as its idempotency
 // record, so repeated passes do not duplicate lifecycle events.
+//
+// It is deliberately not on the tick. Walking every workflow root ever created,
+// closed ones included, was 72.4s of a ~360s tick (ga-l7jdg); the tick runs
+// reconcileExecutionCompletionsDelta instead.
 func (cs *controllerState) reconcileExecutionCompletions() {
-	ep := cs.EventProvider()
+	ep, graphStores := cs.completionReconcileInputs(reconcilePlane)
 	if ep == nil {
 		return
+	}
+	executionevent.ReconcileCompletedStores(ep, graphStores, "execution-reconcile")
+}
+
+// reconcileExecutionCompletionsDelta repairs completion facts for the roots the
+// journal named since the last pass. With no named roots it reads nothing at
+// all — neither the graph stores nor the journal — which is the steady tick.
+func (cs *controllerState) reconcileExecutionCompletionsDelta(rootIDs []string) int {
+	if len(rootIDs) == 0 {
+		return 0
+	}
+	ep, graphStores := cs.completionReconcileInputs(runtimePlane)
+	if ep == nil {
+		return 0
+	}
+	return executionevent.ReconcileCompletedRoots(ep, graphStores, rootIDs, "execution-reconcile")
+}
+
+// completionReconcileInputs resolves the journal and the graph-store fan a
+// completion lane reads, so the delta pass and the sweep can never disagree
+// about which stores hold the execution DAG.
+//
+// The PLANE decides how wide that fan is. On the runtime plane it is the graph
+// class store alone: the operator invariant (ga-l7jdg) is that city operations
+// touch the infra/class binding only, and a work-ledger leg on the tick is a
+// misrouting bug rather than a cost to amortize. resolveGraphStore already
+// answers "the binding if the graph class is relocated, the city store
+// otherwise", so the rule needs no special case for a single-store city — there,
+// the work store IS the infra store.
+//
+// The reconcile plane keeps the whole fan, because converging the stores the
+// runtime plane no longer reads is exactly what an off-tick convergence lane is
+// for.
+//
+// The narrowing is a break after the first surviving leg, which is correct only
+// because this list is BUILT graph-first. That coupling is the fragile part: a
+// future edit that reorders the fan would silently hand the tick the city work
+// store instead of the binding, and nothing here would notice. It is left as-is
+// rather than defended with a second derivation of "which store serves the graph
+// class", because a second derivation is the split-store bug class itself
+// (#5125, #5127) — the durable fix is the same one the TODO below names.
+//
+// TODO(ga-l7jdg/ga-qdt5y): this narrowing belongs in the resolver, as a
+// runtime-plane intent that cannot HAND a caller a ledger leg. It is expressed
+// here rather than in Plan() because that is the S4 relevance-descriptor surface
+// this slice was told not to grow.
+func (cs *controllerState) completionReconcileInputs(plane storePlane) (events.Provider, []beads.GraphStore) {
+	ep := cs.EventProvider()
+	if ep == nil {
+		return nil, nil
 	}
 
 	// Graph coordination may be relocated from the city work store, while
@@ -588,8 +643,13 @@ func (cs *controllerState) reconcileExecutionCompletions() {
 			seen[key] = struct{}{}
 		}
 		graphStores = append(graphStores, beads.GraphStore{Store: store})
+		if plane == runtimePlane {
+			// The graph store leads the list, so the first surviving leg IS the
+			// class store this city serves the execution DAG from.
+			break
+		}
 	}
-	executionevent.ReconcileCompletedStores(ep, graphStores, "execution-reconcile")
+	return ep, graphStores
 }
 
 // uncachedBeadStore peels the controller's policy/cache read layers so a

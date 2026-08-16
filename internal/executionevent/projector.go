@@ -162,7 +162,30 @@ func currentWorkAssociations(store beads.WorkStore, rootID, convoyID string) ([]
 	return associations, nil
 }
 
+// stepRow pairs a projected step definition with the physical row it was
+// decided from. Callers that need the step's Status or its full metadata read
+// them here instead of re-Getting the bead: the ListByMetadata below already
+// carried both, and a per-step Get made the completions reconcile cost
+// O(roots x steps) sequential round trips against stores whose remote leg
+// answers in seconds.
+type stepRow struct {
+	definition StepDefinition
+	bead       beads.Bead
+}
+
 func currentSteps(store beads.GraphStore, rootID string) ([]StepDefinition, error) {
+	rows, err := currentStepRows(store, rootID)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]StepDefinition, 0, len(rows))
+	for _, row := range rows {
+		steps = append(steps, row.definition)
+	}
+	return steps, nil
+}
+
+func currentStepRows(store beads.GraphStore, rootID string) ([]stepRow, error) {
 	rows, err := store.ListByMetadata(
 		map[string]string{beadmeta.RootBeadIDMetadataKey: rootID},
 		0,
@@ -181,7 +204,7 @@ func currentSteps(store beads.GraphStore, rootID string) ([]StepDefinition, erro
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	steps := make([]StepDefinition, 0, len(ids))
+	steps := make([]stepRow, 0, len(ids))
 	for _, id := range ids {
 		row := byID[id]
 		if row.ID == rootID || !eventexport.IsOpaqueRef(row.ID) {
@@ -191,11 +214,14 @@ func currentSteps(store beads.GraphStore, rootID string) ([]StepDefinition, erro
 		if !validNativeStepID(stepID) {
 			continue
 		}
-		steps = append(steps, StepDefinition{
-			BeadID:           row.ID,
-			ExecutionRunID:   rootID,
-			StepID:           stepID,
-			DependsOnStepIDs: canonicalTopology(row.Metadata[beadmeta.NativeStepDependenciesMetadataKey], stepID),
+		steps = append(steps, stepRow{
+			definition: StepDefinition{
+				BeadID:           row.ID,
+				ExecutionRunID:   rootID,
+				StepID:           stepID,
+				DependsOnStepIDs: canonicalTopology(row.Metadata[beadmeta.NativeStepDependenciesMetadataKey], stepID),
+			},
+			bead: row,
 		})
 	}
 	return steps, nil
@@ -325,22 +351,112 @@ func ReconcileCompletedStores(recorder events.Provider, graphStores []beads.Grap
 		return 0
 	}
 
-	existing, err := completedFacts(recorder)
-	if err != nil {
-		// If the journal cannot be read, avoid generating duplicate recovery
-		// facts. A later reconciliation pass can safely retry.
+	// One unbounded chunk IS the whole sweep, so the startup pass and the
+	// background lane's chunks cannot drift apart in what they visit or how they
+	// decide it.
+	return (&CompletionBackstop{}).Pass(recorder, graphStores, actor).Emitted
+}
+
+// ReconcileCompletedRoots is the DELTA form of ReconcileCompletedStores: it
+// repairs completion facts for the named roots only.
+//
+// The full pass walks every workflow root ever created, closed ones included,
+// against a corpus that only grows — 72.4s +/- 0.9s of a ~360s controller tick
+// on maintainer-city (ga-l7jdg). Only a root something happened to since the
+// last pass can have a stranded close, and the journal already names those: the
+// RunID of an execution.step_* fact, and the gc.root_bead_id of a bead.closed
+// step snapshot. The caller decodes them; this projects them.
+//
+// With no named roots it reads NOTHING — not the stores, not the journal. That
+// is the steady tick, and it is the whole point: the journal read alone is
+// O(retained history).
+//
+// It is the delta half of a two-lane doctrine, never a replacement. A close can
+// exist with no event naming it — a controller can crash between the durable
+// step close and the best-effort append, and graph stores emit no bead.closed by
+// design — so the full pass remains the convergence backstop.
+func ReconcileCompletedRoots(recorder events.Provider, graphStores []beads.GraphStore, rootIDs []string, actor string) int {
+	if recorder == nil || len(rootIDs) == 0 {
 		return 0
 	}
-	completed := make(map[completedFactKey]struct{}, len(existing))
-	for _, event := range existing {
-		if event.Type == events.ExecutionStepCompleted {
-			completed[completedFactKeyFor(event)] = struct{}{}
-		}
+	completed, ok := loadCompletedFactIndex(recorder)
+	if !ok {
+		return 0
 	}
-
 	emitted := 0
 	for _, graphStore := range graphStores {
 		if graphStore.Store == nil {
+			continue
+		}
+		// One batched read for every named root this store might hold, rather
+		// than one Get per root per store.
+		roots, err := graphStore.List(beads.ListQuery{
+			IDs:           rootIDs,
+			IncludeClosed: true,
+			TierMode:      beads.TierBoth,
+		})
+		if err != nil {
+			continue
+		}
+		sort.Slice(roots, func(i, j int) bool { return roots[i].ID < roots[j].ID })
+		emitted += reconcileRoots(recorder, graphStore, roots, completed, actor)
+	}
+	return emitted
+}
+
+// CompletionBackstop is the chunked, resumable form of the full pass.
+//
+// The full sweep is minutes of sequential reads on a large city, so the
+// background lane runs it a chunk at a time and RESUMES: a pass that is cut
+// short leaves a cursor, and the next one continues from it instead of
+// restarting at the first root. Without that, a corpus larger than one budget
+// starves its own convergence — it would forever re-walk the same prefix.
+//
+// The cursor is free because the pass already sorts roots. A sweep ends when the
+// last store's last root is visited, and the next Pass starts a fresh one: this
+// is a convergence scan, not a one-shot migration.
+type CompletionBackstop struct {
+	// ChunkSize caps the roots one Pass visits. Zero means the whole sweep.
+	ChunkSize int
+
+	storeIndex  int
+	afterRootID string
+}
+
+// CompletionBackstopResult is one chunk's outcome.
+type CompletionBackstopResult struct {
+	Emitted      int
+	RootsVisited int
+	// SweepComplete reports that this Pass finished a full traversal, so the
+	// cursor has wrapped and the next Pass begins a new sweep.
+	SweepComplete bool
+	// ListErrors names the stores whose root list this chunk could not read. A
+	// store that cannot be listed is silently skipped by the traversal so one
+	// dark store does not stall the sweep — which is correct, and is exactly why
+	// it has to be REPORTED: a convergence lane that quietly converges nothing
+	// is indistinguishable from one with nothing to do.
+	ListErrors []error
+}
+
+// Pass visits at most ChunkSize roots, resuming from the last Pass's cursor.
+func (b *CompletionBackstop) Pass(recorder events.Provider, graphStores []beads.GraphStore, actor string) CompletionBackstopResult {
+	var result CompletionBackstopResult
+	if recorder == nil || len(graphStores) == 0 {
+		result.SweepComplete = true
+		return result
+	}
+	completed, ok := loadCompletedFactIndex(recorder)
+	if !ok {
+		return result
+	}
+	for b.storeIndex < len(graphStores) {
+		if b.ChunkSize > 0 && result.RootsVisited >= b.ChunkSize {
+			return result
+		}
+		graphStore := graphStores[b.storeIndex]
+		if graphStore.Store == nil {
+			b.storeIndex++
+			b.afterRootID = ""
 			continue
 		}
 		roots, err := graphStore.ListByMetadata(
@@ -350,37 +466,99 @@ func ReconcileCompletedStores(recorder events.Provider, graphStores []beads.Grap
 			beads.WithBothTiers,
 		)
 		if err != nil {
+			// A store that cannot be listed does not stall the sweep; the next
+			// sweep retries it. The caller is told, so a lane converging nothing
+			// cannot look like a lane with nothing to converge.
+			result.ListErrors = append(result.ListErrors, fmt.Errorf("listing workflow roots in graph store %d: %w", b.storeIndex, err))
+			b.storeIndex++
+			b.afterRootID = ""
 			continue
 		}
 		sort.Slice(roots, func(i, j int) bool { return roots[i].ID < roots[j].ID })
-		for _, root := range roots {
-			if root.Metadata[beadmeta.FormulaContractMetadataKey] != beadmeta.FormulaContractGraphV2 {
+		// Resume strictly after the last root this cursor visited. The list is
+		// re-read each Pass, so a root created mid-sweep before the cursor is
+		// picked up by the NEXT sweep rather than being skipped forever.
+		remaining := roots
+		for len(remaining) > 0 && b.afterRootID != "" && remaining[0].ID <= b.afterRootID {
+			remaining = remaining[1:]
+		}
+		budget := len(remaining)
+		if b.ChunkSize > 0 {
+			if left := b.ChunkSize - result.RootsVisited; left < budget {
+				budget = left
+			}
+		}
+		chunk := remaining[:budget]
+		result.Emitted += reconcileRoots(recorder, graphStore, chunk, completed, actor)
+		result.RootsVisited += len(chunk)
+		if len(chunk) > 0 {
+			b.afterRootID = chunk[len(chunk)-1].ID
+		}
+		if len(chunk) == len(remaining) {
+			b.storeIndex++
+			b.afterRootID = ""
+		}
+	}
+	b.storeIndex = 0
+	b.afterRootID = ""
+	result.SweepComplete = true
+	return result
+}
+
+// reconcileRoots projects the closed steps of the supplied roots and records the
+// completion facts the journal is missing. completed is updated as it goes so
+// one pass cannot emit the same fact twice across stores.
+func reconcileRoots(recorder events.Recorder, graphStore beads.GraphStore, roots []beads.Bead, completed map[completedFactKey]struct{}, actor string) int {
+	emitted := 0
+	for _, root := range roots {
+		if root.Metadata[beadmeta.KindMetadataKey] != beadmeta.KindWorkflow ||
+			root.Metadata[beadmeta.FormulaContractMetadataKey] != beadmeta.FormulaContractGraphV2 {
+			continue
+		}
+		rows, err := currentStepRows(graphStore, root.ID)
+		if err != nil {
+			continue
+		}
+		for _, row := range rows {
+			// The row the steps List already returned decides the status.
+			// Re-Getting it would only narrow a window the journal-keyed
+			// idempotency record already covers: a step that closes between
+			// the List and the write is repaired by the next pass.
+			step := row.bead
+			if !strings.EqualFold(strings.TrimSpace(step.Status), "closed") {
 				continue
 			}
-			definitions, err := currentSteps(graphStore, root.ID)
-			if err != nil {
+			event, ok := LifecycleEvent(events.ExecutionStepCompleted, root, step, actor)
+			if !ok {
 				continue
 			}
-			for _, definition := range definitions {
-				step, err := graphStore.Get(definition.BeadID)
-				if err != nil || !strings.EqualFold(strings.TrimSpace(step.Status), "closed") {
-					continue
-				}
-				event, ok := LifecycleEvent(events.ExecutionStepCompleted, root, step, actor)
-				if !ok {
-					continue
-				}
-				key := completedFactKeyFor(event)
-				if _, exists := completed[key]; exists {
-					continue
-				}
-				recorder.Record(event)
-				completed[key] = struct{}{}
-				emitted++
+			key := completedFactKeyFor(event)
+			if _, exists := completed[key]; exists {
+				continue
 			}
+			recorder.Record(event)
+			completed[key] = struct{}{}
+			emitted++
 		}
 	}
 	return emitted
+}
+
+// loadCompletedFactIndex reads the retained completion journal into the exact-fact
+// idempotency set. A journal that cannot be read reports !ok: emitting without it
+// would duplicate recovery facts, and a later pass can safely retry.
+func loadCompletedFactIndex(recorder events.Provider) (map[completedFactKey]struct{}, bool) {
+	existing, err := completedFacts(recorder)
+	if err != nil {
+		return nil, false
+	}
+	completed := make(map[completedFactKey]struct{}, len(existing))
+	for _, event := range existing {
+		if event.Type == events.ExecutionStepCompleted {
+			completed[completedFactKeyFor(event)] = struct{}{}
+		}
+	}
+	return completed, true
 }
 
 // completedFacts returns the retained completion journal, including a
