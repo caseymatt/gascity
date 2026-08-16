@@ -260,12 +260,8 @@ var (
 	_ runtime.ServerLifecycleProvider = (*forceLifecycleProvider)(nil)
 )
 
-// TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep deterministically
-// lands an admitted async runtime after force shutdown's late sweep has already
-// captured an empty provider snapshot. Shutdown must join the admitted start,
-// take a final settled sweep, stop that runtime, and only then tear down the
-// provider server.
-func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
+func startForceShutdownWorker(t *testing.T, shutdownTimeout string) (*CityRuntime, *forceLifecycleProvider) {
+	t.Helper()
 	store := beads.NewMemStore()
 	clk := &clock.Fake{Time: time.Date(2026, 4, 26, 12, 1, 30, 0, time.UTC)}
 	session, err := store.Create(beads.Bead{
@@ -287,7 +283,7 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 	}
 	sp := newForceLifecycleProvider()
 	cfg := &config.City{
-		Daemon: config.DaemonConfig{ShutdownTimeout: "500ms"},
+		Daemon: config.DaemonConfig{ShutdownTimeout: shutdownTimeout},
 		Agents: []config.Agent{{Name: "worker"}},
 	}
 	forceStop := &atomic.Bool{}
@@ -328,6 +324,16 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 		t.Fatalf("woken = %d, want 1", got)
 	}
 	sp.waitForStarts(t, 1)
+	return cr, sp
+}
+
+// TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep deterministically
+// lands an admitted async runtime after force shutdown's late sweep has already
+// captured an empty provider snapshot. Shutdown must join the admitted start,
+// take a final settled sweep, stop that runtime, and only then tear down the
+// provider server.
+func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
+	cr, sp := startForceShutdownWorker(t, "500ms")
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -376,5 +382,57 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 	}
 	if sp.IsRunning("worker") {
 		t.Fatal("force shutdown returned with the late async-started runtime still live")
+	}
+}
+
+// TestCityRuntimeForceShutdownBoundsUnsettledAsyncStart pins the force-stop
+// timeout contract. Closing admission gives the final join a fixed population,
+// but a provider Start can still fail to return. Shutdown must keep the shared
+// server alive rather than block forever or tear it down beneath that start.
+func TestCityRuntimeForceShutdownBoundsUnsettledAsyncStart(t *testing.T) {
+	for _, shutdownTimeout := range []string{"0s", "50ms"} {
+		t.Run(shutdownTimeout, func(t *testing.T) {
+			cr, sp := startForceShutdownWorker(t, shutdownTimeout)
+
+			shutdownDone := make(chan struct{})
+			go func() {
+				cr.shutdown()
+				close(shutdownDone)
+			}()
+
+			select {
+			case <-sp.lateSweepCaptured:
+			case <-time.After(hangBudget):
+				sp.release("worker")
+				t.Fatal("timed out waiting for force shutdown's late async-start sweep")
+			}
+			close(sp.allowLateSweepReturn)
+
+			select {
+			case <-shutdownDone:
+			case <-time.After(time.Second):
+				// Release the provider before failing so an unbounded join
+				// cannot strand the test process.
+				sp.release("worker")
+				<-shutdownDone
+				t.Fatal("force shutdown exceeded its configured async-start join bound")
+			}
+
+			if teardowns, _, _ := teardownEvents(sp.snapshotEvents()); teardowns != 0 {
+				t.Fatalf("force shutdown tore down the provider server with an unsettled admitted start (events: %v)", sp.snapshotEvents())
+			}
+
+			// Let the admitted call finish after shutdown returned, then clean
+			// up the fake runtime. The provider server stayed alive for this.
+			sp.release("worker")
+			select {
+			case <-sp.workerStarted:
+			case <-time.After(hangBudget):
+				t.Fatal("timed out waiting for the admitted provider start to settle")
+			}
+			if err := sp.Stop("worker"); err != nil {
+				t.Fatalf("Stop(worker): %v", err)
+			}
+		})
 	}
 }

@@ -2974,21 +2974,21 @@ func (cr *CityRuntime) requestAsyncStartFollowUpTick() {
 	}
 }
 
+func (cr *CityRuntime) asyncStartShutdownTimeout() time.Duration {
+	if cr == nil || cr.cfg == nil {
+		return 5 * time.Second
+	}
+	return cr.cfg.Daemon.ShutdownTimeoutDuration()
+}
+
 func (cr *CityRuntime) waitForAsyncStarts() bool {
 	if cr == nil {
 		return true
 	}
-	timeout := time.Duration(0)
-	if cr.cfg != nil {
-		timeout = cr.cfg.Daemon.ShutdownTimeoutDuration()
-	}
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
+	timeout := cr.asyncStartShutdownTimeout()
 	// The tracker closes async-start admission before it waits. Force shutdown
 	// may abandon this bounded wait so it can begin stopping sessions promptly;
-	// shutdown joins those already-admitted starts at the final force-sweep
-	// boundary before provider teardown.
+	// shutdown makes one final bounded join before provider teardown.
 	if !cr.asyncStarts.waitUntil(timeout, cr.forceStopRequested) {
 		if cr.stderr != nil && !cr.forceStopRequested() {
 			fmt.Fprintf(cr.stderr, "%s: async session starts still running after %s; continuing shutdown\n", cr.logPrefix, timeout) //nolint:errcheck // best-effort stderr
@@ -4045,12 +4045,20 @@ func (cr *CityRuntime) shutdown() {
 			}
 
 			// The first wait closed admission under asyncStarts.mu, so this
-			// join has a fixed population. Do not hold that mutex while waiting:
-			// each admitted goroutine must be able to call Done. Once the join
-			// completes, no runtime can appear after the final sweep.
+			// join has a fixed population. Keep it bounded: a provider Start
+			// can violate cancellation and never return. If that happens, the
+			// stale sweep is not evidence that the server is safe to tear down.
 			forceStopSweep("late async-start")
-			cr.asyncStarts.wait(-1)
-			forceStopSweep("settled async-start")
+			if cr.asyncStarts.wait(cr.asyncStartShutdownTimeout()) {
+				forceStopSweep("settled async-start")
+			} else {
+				sweepEnumerated = false
+				fmt.Fprintf(cr.stderr, "%s: force shutdown left provider server running after async session starts exceeded %s\n", cr.logPrefix, cr.asyncStartShutdownTimeout()) //nolint:errcheck // best-effort stderr
+			}
+		} else if !asyncStartsDrained {
+			// A graceful wait that exhausted its budget has the same safety
+			// constraint: a start may land after the visible fleet snapshot.
+			sweepEnumerated = false
 		}
 		// With every enumerated session stopped, tear down the provider's
 		// shared server, exactly like the standalone stop path (cmdStopBody
