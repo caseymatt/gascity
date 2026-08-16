@@ -2963,10 +2963,10 @@ func (cr *CityRuntime) waitForAsyncStarts() bool {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	// A force stop may leave provider Start calls to finish after shutdown has
-	// stopped waiting. That favors bounded shutdown; the next controller start
-	// re-lists live runtime sessions after the first stop pass so late-created
-	// sessions do not survive the shutdown that abandoned the async wait.
+	// The tracker closes async-start admission before it waits. Force shutdown
+	// may abandon this bounded wait so it can begin stopping sessions promptly;
+	// shutdown joins those already-admitted starts at the final force-sweep
+	// boundary before provider teardown.
 	if !cr.asyncStarts.waitUntil(timeout, cr.forceStopRequested) {
 		if cr.stderr != nil && !cr.forceStopRequested() {
 			fmt.Fprintf(cr.stderr, "%s: async session starts still running after %s; continuing shutdown\n", cr.logPrefix, timeout) //nolint:errcheck // best-effort stderr
@@ -3998,19 +3998,29 @@ func (cr *CityRuntime) shutdown() {
 		markCityStopSessionSleepReason(sessionFrontDoor(store.Store), cr.stderr)
 		gracefulStopAllWithForceSignal(running, cr.sp, gracefulTimeout, cr.rec, cr.cfg, store, cr.stdout, cr.stderr, cr.forceStopRequested)
 		if !asyncStartsDrained && cr.forceStopRequested() {
-			lateRunning, lateListErr := cr.sp.ListRunning("")
-			if lateListErr != nil {
-				sweepEnumerated = false
-				if runtime.IsPartialListError(lateListErr) {
-					fmt.Fprintf(cr.stderr, "%s: force shutdown late async-start listing partially failed; stopping %d visible agent(s): %v\n", cr.logPrefix, len(lateRunning), lateListErr) //nolint:errcheck // best-effort stderr
-				} else {
-					fmt.Fprintf(cr.stderr, "%s: force shutdown late async-start listing failed: %v\n", cr.logPrefix, lateListErr) //nolint:errcheck // best-effort stderr
+			forceStopSweep := func(phase string) {
+				lateRunning, lateListErr := cr.sp.ListRunning("")
+				if lateListErr != nil {
+					sweepEnumerated = false
+					if runtime.IsPartialListError(lateListErr) {
+						fmt.Fprintf(cr.stderr, "%s: force shutdown %s listing partially failed; stopping %d visible agent(s): %v\n", cr.logPrefix, phase, len(lateRunning), lateListErr) //nolint:errcheck // best-effort stderr
+					} else {
+						fmt.Fprintf(cr.stderr, "%s: force shutdown %s listing failed: %v\n", cr.logPrefix, phase, lateListErr) //nolint:errcheck // best-effort stderr
+					}
+				}
+				if len(lateRunning) > 0 {
+					markCityStopSessionSleepReason(sessionFrontDoor(store.Store), cr.stderr)
+					gracefulStopAllWithForceSignal(lateRunning, cr.sp, 0, cr.rec, cr.cfg, store, cr.stdout, cr.stderr, cr.forceStopRequested)
 				}
 			}
-			if len(lateRunning) > 0 {
-				markCityStopSessionSleepReason(sessionFrontDoor(store.Store), cr.stderr)
-				gracefulStopAllWithForceSignal(lateRunning, cr.sp, 0, cr.rec, cr.cfg, store, cr.stdout, cr.stderr, cr.forceStopRequested)
-			}
+
+			// The first wait closed admission under asyncStarts.mu, so this
+			// join has a fixed population. Do not hold that mutex while waiting:
+			// each admitted goroutine must be able to call Done. Once the join
+			// completes, no runtime can appear after the final sweep.
+			forceStopSweep("late async-start")
+			cr.asyncStarts.wait(-1)
+			forceStopSweep("settled async-start")
 		}
 		// With every enumerated session stopped, tear down the provider's
 		// shared server, exactly like the standalone stop path (cmdStopBody
