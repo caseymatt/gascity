@@ -1305,6 +1305,102 @@ func TestProcessDrainPropagatesDistinctSourceWorkDirsToParallelItemWorkflows(t *
 	assertWorkDirs("reset expansion", mustDrainManifest(t, mustGetBead(t, graph, drain.ID)), initialRoots)
 }
 
+func TestDrainMemberRoutingPreservesGraphClassOwnerAcrossRetainedWorkCopy(t *testing.T) {
+	work := beads.NewMemStore()
+	graph := beads.NewMemStoreFrom(1000, nil, nil)
+	work.HonorExplicitIDs = true
+	graph.HonorExplicitIDs = true
+
+	parent := beads.Bead{ID: "gc-parent", Title: "legacy input convoy", Type: "convoy"}
+	if _, err := work.Create(parent); err != nil {
+		t.Fatalf("Create(work parent): %v", err)
+	}
+	if _, err := graph.Create(parent); err != nil {
+		t.Fatalf("Create(graph parent): %v", err)
+	}
+
+	canonicalWorkDir := filepath.Join(t.TempDir(), "canonical-graph-worktree")
+	staleWorkDir := filepath.Join(t.TempDir(), "retained-work-copy")
+	member := beads.Bead{
+		ID:       "gc-member",
+		Title:    "legacy graph-owned member",
+		Type:     "task",
+		ParentID: parent.ID,
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: "gc-root",
+			beadmeta.WorkDirMetadataKey:    canonicalWorkDir,
+		},
+	}
+	if _, err := graph.Create(member); err != nil {
+		t.Fatalf("Create(graph member): %v", err)
+	}
+	stale := member
+	stale.Metadata = map[string]string{
+		beadmeta.RootBeadIDMetadataKey: "gc-root",
+		beadmeta.WorkDirMetadataKey:    staleWorkDir,
+	}
+	if _, err := work.Create(stale); err != nil {
+		t.Fatalf("Create(retained work member): %v", err)
+	}
+
+	blocker, err := graph.Create(beads.Bead{
+		ID:    "gc-blocker",
+		Title: "graph blocker",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: "gc-root",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(graph blocker): %v", err)
+	}
+	if err := graph.DepAdd(member.ID, blocker.ID, "blocks"); err != nil {
+		t.Fatalf("DepAdd(graph member): %v", err)
+	}
+
+	opts := ProcessOptions{MemberStores: []beads.Store{work}}
+	members, err := drainConvoyMembers(graph, parent.ID, opts)
+	if err != nil {
+		t.Fatalf("drainConvoyMembers: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("members = %+v, want one graph-owned legacy child", members)
+	}
+	if got := members[0].Metadata[beadmeta.WorkDirMetadataKey]; got != canonicalWorkDir {
+		t.Errorf("member work dir = %q, want canonical graph owner %q", got, canonicalWorkDir)
+	}
+
+	depStore, err := drainMemberDepStore(graph, member.ID, opts)
+	if err != nil {
+		t.Fatalf("drainMemberDepStore: %v", err)
+	}
+	deps, err := depStore.DepList(member.ID, "down")
+	if err != nil {
+		t.Fatalf("DepList(member): %v", err)
+	}
+	if len(deps) != 1 || deps[0].DependsOnID != blocker.ID {
+		t.Errorf("member dependencies = %+v, want canonical graph blocker %s", deps, blocker.ID)
+	}
+
+	control := beads.Bead{
+		ID: "gc-drain",
+		Metadata: map[string]string{
+			beadmeta.DrainMemberAccessMetadataKey: beadmeta.DrainMemberAccessExclusive,
+		},
+	}
+	if err := reserveDrainMember(graph, control, member, opts); err != nil {
+		t.Fatalf("reserveDrainMember: %v", err)
+	}
+	gotGraph := mustGetBead(t, graph, member.ID)
+	gotWork := mustGetBead(t, work, member.ID)
+	if got := gotGraph.Metadata[beadmeta.ExclusiveDrainReservationMetadataKey]; got != control.ID {
+		t.Errorf("graph owner reservation = %q, want %q", got, control.ID)
+	}
+	if got := gotWork.Metadata[beadmeta.ExclusiveDrainReservationMetadataKey]; got != "" {
+		t.Errorf("retained work copy reservation = %q, want empty", got)
+	}
+}
+
 func TestProcessDrainAppliesItemFormulaDefaultsToRootMetadata(t *testing.T) {
 	formulatest.EnableV2ForTest(t)
 	dir := t.TempDir()
