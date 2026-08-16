@@ -1609,6 +1609,18 @@ type nativeDoltTx struct {
 	tx    beadslib.Transaction
 }
 
+func (t *nativeDoltTx) Get(id string) (Bead, error) {
+	issue, err := t.tx.GetIssue(t.ctx, id)
+	if err != nil {
+		return Bead{}, nativeStoreError(id, err)
+	}
+	bead, err := beadFromNativeIssue(issue)
+	if err != nil {
+		return Bead{}, nativeStoreError(id, err)
+	}
+	return bead, nil
+}
+
 func (t *nativeDoltTx) Create(b Bead) (Bead, error) {
 	return t.store.applyCreateInTx(t.ctx, t.tx, b)
 }

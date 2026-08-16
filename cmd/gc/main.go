@@ -379,6 +379,7 @@ func newRootCmdWithOptions(stdout, stderr io.Writer, options rootCommandOptions)
 		newConvergeCmd(stdout, stderr),
 		newWorkflowCmd(stdout, stderr),
 		newRuntimeCmd(stdout, stderr),
+		newRunCmd(stdout, stderr),
 		newFormulaCmd(stdout, stderr),
 		newBdCmd(stdout, stderr),
 		newBdStoreBridgeCmd(stdout, stderr),

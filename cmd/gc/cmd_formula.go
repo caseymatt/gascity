@@ -9,12 +9,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/dispatch"
 	"github.com/gastownhall/gascity/internal/executionevent"
 	"github.com/gastownhall/gascity/internal/formula"
+	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/graphroute"
 	"github.com/gastownhall/gascity/internal/graphv2"
 	"github.com/gastownhall/gascity/internal/molecule"
@@ -34,6 +37,7 @@ the file format, the formulas v2 contract, and the [requires]
 formula_compiler opt-in.`,
 	}
 
+	cmd.AddCommand(newFormulaAdoptCmd(stdout, stderr))
 	cmd.AddCommand(newFormulaListCmd(stdout, stderr))
 	cmd.AddCommand(newFormulaShowCmd(stdout, stderr))
 	cmd.AddCommand(newFormulaCatalogCmd(stdout, stderr))
@@ -601,6 +605,95 @@ func formulaShowJSONFromRecipe(recipe *formula.Recipe, cityPath string, scope fo
 		})
 	}
 	return out
+}
+
+type formulaAdoptFunc func(beads.Store, beads.Store, string, dispatch.AdoptAttemptOptions) (dispatch.AdoptAttemptResult, error)
+
+func newFormulaAdoptCmd(stdout, stderr io.Writer) *cobra.Command {
+	return newFormulaAdoptCmdWith(stdout, stderr, dispatch.AdoptRalphAttempt)
+}
+
+func newFormulaAdoptCmdWith(stdout, stderr io.Writer, adopt formulaAdoptFunc) *cobra.Command {
+	var sourceID string
+	var actor string
+	var reason string
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:   "adopt <ralph-control-id>",
+		Short: "Adopt reviewed work into a stranded Ralph attempt",
+		Long: `Adopt a reviewed, externally completed drain source into the unique
+open attempt owned by a Ralph control bead.
+
+The source must be a closed passing bead named by the workflow root's
+gc.drain_member_id. It must carry a full gc.implementation.commit, an absolute
+gc.implementation.summary_path to a non-empty regular file under the workflow
+or source worktree, and the same gc.work_dir as the open attempt.
+
+The operation records the source identity and revision time, actor, reason,
+adoption timestamp, commit, summary, and passing outcome on the attempt, then
+closes only that attempt. The normal dispatcher check, summary, review,
+finalize, and publish lifecycle remains responsible for every downstream
+transition. Repeating the same adoption is idempotent; conflicting, changing,
+or ambiguous attempts and sources fail closed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			cityPath, err := resolveCity()
+			if err != nil {
+				return formulaCommandError(stderr, "gc formula adopt", jsonOutput, err)
+			}
+			cfg, err := loadCityConfig(cityPath, stderr)
+			if err != nil {
+				return formulaCommandError(stderr, "gc formula adopt", jsonOutput, err)
+			}
+			scope, err := resolveFormulaScope(cfg, cityPath, stderr)
+			if err != nil {
+				return formulaCommandError(stderr, "gc formula adopt", jsonOutput, err)
+			}
+			baseStore, err := openStoreAtForCity(scope.storeRoot, cityPath)
+			if err != nil {
+				return formulaCommandError(stderr, "gc formula adopt", jsonOutput, err)
+			}
+			attemptStore, err := classRoutedStoreForID(cityPath, args[0], baseStore)
+			if err != nil {
+				return formulaCommandError(stderr, "gc formula adopt", jsonOutput, err)
+			}
+			sourceStore, err := classRoutedStoreForID(cityPath, sourceID, baseStore)
+			if err != nil {
+				return formulaCommandError(stderr, "gc formula adopt", jsonOutput, err)
+			}
+			result, err := adopt(attemptStore, sourceStore, args[0], dispatch.AdoptAttemptOptions{
+				SourceID:  sourceID,
+				Actor:     actor,
+				Reason:    reason,
+				AdoptedAt: time.Now().UTC(),
+				FS:        fsys.OSFS{},
+			})
+			if err != nil {
+				return formulaCommandError(stderr, "gc formula adopt", jsonOutput, err)
+			}
+			if jsonOutput {
+				return json.NewEncoder(stdout).Encode(result)
+			}
+			var message string
+			if result.AlreadyApplied {
+				message = fmt.Sprintf("Adoption already applied: control %s, attempt %s, source %s\n", result.ControlID, result.AttemptID, result.SourceID)
+			} else {
+				message = fmt.Sprintf("Adopted source %s into attempt %s for control %s\n", result.SourceID, result.AttemptID, result.ControlID)
+			}
+			if _, err := io.WriteString(stdout, message); err != nil {
+				return formulaCommandError(stderr, "gc formula adopt", jsonOutput, fmt.Errorf("writing result: %w", err))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&sourceID, "source", "", "closed passing source bead with reviewed implementation evidence")
+	cmd.Flags().StringVar(&actor, "actor", "", "operator identity recorded in the adoption audit")
+	cmd.Flags().StringVar(&reason, "reason", "", "operator reason recorded in the adoption audit")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit JSON result")
+	_ = cmd.MarkFlagRequired("source")
+	_ = cmd.MarkFlagRequired("actor")
+	_ = cmd.MarkFlagRequired("reason")
+	return cmd
 }
 
 func newFormulaCookCmd(stdout, stderr io.Writer) *cobra.Command {

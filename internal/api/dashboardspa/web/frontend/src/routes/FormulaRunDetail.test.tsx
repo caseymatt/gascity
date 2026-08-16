@@ -231,6 +231,45 @@ describe('FormulaRunDetailPage', () => {
       '· Finalization',
     ]);
   });
+  it('reports owner, workflow, delivery, publish, and merge as separate lifecycle states', async () => {
+    currentDetail = {
+      ...detail,
+      ownerLifecycle: {
+        status: 'awaiting_owner_close',
+        rootStatus: 'open',
+        owned: true,
+        awaitingOwnerClose: true,
+      },
+      workflowControl: {
+        status: 'complete',
+        total: 4,
+        open: 0,
+        closed: 4,
+        blocked: 0,
+        failed: 0,
+      },
+      delivery: {
+        status: 'delivered',
+        finalReportPath: '/tmp/final-report.md',
+      },
+      publish: {
+        status: 'noop',
+        action: 'noop',
+        reason: 'publishing disabled',
+      },
+      merge: {
+        status: 'unreported',
+      },
+    };
+
+    renderPage();
+    const lifecycle = await screen.findByRole('region', { name: /run lifecycle/i });
+    expect(within(lifecycle).getByText('Awaiting owner close')).toBeTruthy();
+    expect(within(lifecycle).getByText('Complete · 4 closed')).toBeTruthy();
+    expect(within(lifecycle).getByText('Delivered')).toBeTruthy();
+    expect(within(lifecycle).getByText('No publish · publishing disabled')).toBeTruthy();
+    expect(within(lifecycle).getByText('Not reported')).toBeTruthy();
+  });
 
   it('starts with no selected node and toggles exactly one selected node', async () => {
     renderPage();

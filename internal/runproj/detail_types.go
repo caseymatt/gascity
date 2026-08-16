@@ -47,6 +47,7 @@ type runSnapshot struct {
 	snapshotVersion   int
 	snapshotEventSeq  *int64
 	partial           bool
+	lifecycle         runLifecycleProjection
 	storesScanned     []string
 	beads             []runSnapshotBead
 	deps              []runSnapshotDep
@@ -272,6 +273,11 @@ type FormulaRunDetail struct {
 	SnapshotEventSeq  RunSnapshotSequence    `json:"snapshotEventSeq"`
 	Completeness      FormulaRunCompleteness `json:"completeness"`
 	Progress          FormulaRunProgress     `json:"progress"`
+	OwnerLifecycle    RunOwnerLifecycle      `json:"ownerLifecycle"`
+	WorkflowControl   RunWorkflowControl     `json:"workflowControl"`
+	Delivery          RunDelivery            `json:"delivery"`
+	Publish           RunPublish             `json:"publish"`
+	Merge             RunMerge               `json:"merge"`
 	Phase             string                 `json:"phase"`
 	Stages            []RunStage             `json:"stages"`
 	Nodes             []RunDisplayNode       `json:"nodes"`

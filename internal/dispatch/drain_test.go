@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1209,7 +1210,7 @@ func TestProcessDrainPassesParentRuntimeVarsToItemFormula(t *testing.T) {
 	}
 }
 
-func TestProcessDrainPropagatesSourceMemberWorkDirToItemWorkflow(t *testing.T) {
+func TestProcessDrainPropagatesDistinctSourceWorkDirsToParallelItemWorkflows(t *testing.T) {
 	formulatest.EnableV2ForTest(t)
 	dir := t.TempDir()
 	writeDrainItemFormula(t, dir)
@@ -1219,9 +1220,13 @@ func TestProcessDrainPropagatesSourceMemberWorkDirToItemWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convoycore.Members: %v", err)
 	}
-	sourceWorkDir := filepath.Join(t.TempDir(), "source-worktree")
-	if err := store.SetMetadata(members[0].ID, beadmeta.LegacyWorkDirMetadataKey, sourceWorkDir); err != nil {
-		t.Fatalf("SetMetadata(source legacy work dir): %v", err)
+	sourceWorkDirs := make(map[string]string, len(members))
+	for i, member := range members {
+		sourceWorkDir := filepath.Join(t.TempDir(), fmt.Sprintf("source-worktree-%d", i))
+		sourceWorkDirs[member.ID] = sourceWorkDir
+		if err := store.SetMetadata(member.ID, beadmeta.LegacyWorkDirMetadataKey, sourceWorkDir); err != nil {
+			t.Fatalf("SetMetadata(%s legacy work dir): %v", member.ID, err)
+		}
 	}
 	if err := store.SetMetadata(root.ID, beadmeta.WorkDirMetadataKey, filepath.Join(t.TempDir(), "launcher")); err != nil {
 		t.Fatalf("SetMetadata(launcher work dir): %v", err)
@@ -1231,26 +1236,25 @@ func TestProcessDrainPropagatesSourceMemberWorkDirToItemWorkflow(t *testing.T) {
 		t.Fatalf("ProcessControl(drain expand): %v", err)
 	}
 	manifest := mustDrainManifest(t, mustGetBead(t, store, drain.ID))
-	var itemRootID string
+	if len(manifest.Rows) != len(sourceWorkDirs) {
+		t.Fatalf("manifest rows = %d, want one per source member (%d)", len(manifest.Rows), len(sourceWorkDirs))
+	}
 	for _, row := range manifest.Rows {
-		if row.MemberID == members[0].ID {
-			itemRootID = row.ItemRootID
-			break
+		sourceWorkDir, ok := sourceWorkDirs[row.MemberID]
+		if !ok {
+			t.Fatalf("manifest row references unknown source member %s", row.MemberID)
 		}
-	}
-	if itemRootID == "" {
-		t.Fatalf("manifest rows = %+v, want item root for source member %s", manifest.Rows, members[0].ID)
-	}
-	itemRoot := mustGetBead(t, store, itemRootID)
-	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
-		if got := itemRoot.Metadata[key]; got != sourceWorkDir {
-			t.Fatalf("item root %s = %q, want source member work dir %q", key, got, sourceWorkDir)
+		itemRoot := mustGetBead(t, store, row.ItemRootID)
+		for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+			if got := itemRoot.Metadata[key]; got != sourceWorkDir {
+				t.Fatalf("item root %s for member %s = %q, want %q", key, row.MemberID, got, sourceWorkDir)
+			}
 		}
-	}
-	workStep := mustFindDrainItemWorkStep(t, store, itemRootID)
-	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
-		if got := workStep.Metadata[key]; got != sourceWorkDir {
-			t.Fatalf("item work step %s = %q, want source member work dir %q", key, got, sourceWorkDir)
+		workStep := mustFindDrainItemWorkStep(t, store, row.ItemRootID)
+		for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+			if got := workStep.Metadata[key]; got != sourceWorkDir {
+				t.Fatalf("item work step %s for member %s = %q, want %q", key, row.MemberID, got, sourceWorkDir)
+			}
 		}
 	}
 }

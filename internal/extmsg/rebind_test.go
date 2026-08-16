@@ -423,6 +423,10 @@ type atomicRecordingTx struct {
 	reopen  []string
 }
 
+func (tx *atomicRecordingTx) Get(id string) (beads.Bead, error) {
+	return tx.store.Get(id)
+}
+
 func (tx *atomicRecordingTx) Create(b beads.Bead) (beads.Bead, error) {
 	created, err := tx.store.Create(b)
 	if err == nil {
@@ -482,6 +486,10 @@ func (s *bdLikeStore) Tx(_ string, fn func(beads.Tx) error) error {
 type bdLikeTx struct {
 	store  *beads.MemStore
 	closes []string
+}
+
+func (tx *bdLikeTx) Get(id string) (beads.Bead, error) {
+	return tx.store.Get(id)
 }
 
 func (tx *bdLikeTx) Create(b beads.Bead) (beads.Bead, error) { return tx.store.Create(b) }

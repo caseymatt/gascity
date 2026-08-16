@@ -67,6 +67,29 @@
       },
       "terminal": false
     },
+    "ownerLifecycle": {
+      "status": "open",
+      "rootStatus": "open",
+      "owned": false,
+      "awaitingOwnerClose": false
+    },
+    "workflowControl": {
+      "status": "active",
+      "total": 2,
+      "open": 1,
+      "closed": 1,
+      "blocked": 0,
+      "failed": 0
+    },
+    "delivery": {
+      "status": "pending"
+    },
+    "publish": {
+      "status": "pending"
+    },
+    "merge": {
+      "status": "unreported"
+    },
     "nodes": [
       {
         "id": "gc-adopt-pr-active",
