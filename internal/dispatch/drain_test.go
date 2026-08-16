@@ -1214,49 +1214,95 @@ func TestProcessDrainPropagatesDistinctSourceWorkDirsToParallelItemWorkflows(t *
 	formulatest.EnableV2ForTest(t)
 	dir := t.TempDir()
 	writeDrainItemFormula(t, dir)
-	store, drain := seedDrainWorkflow(t)
-	root := mustGetBead(t, store, drain.Metadata["gc.root_bead_id"])
-	members, err := convoycore.Members(store, root.Metadata["gc.input_convoy_id"], false)
-	if err != nil {
-		t.Fatalf("convoycore.Members: %v", err)
-	}
-	sourceWorkDirs := make(map[string]string, len(members))
-	for i, member := range members {
-		sourceWorkDir := filepath.Join(t.TempDir(), fmt.Sprintf("source-worktree-%d", i))
-		sourceWorkDirs[member.ID] = sourceWorkDir
-		if err := store.SetMetadata(member.ID, beadmeta.LegacyWorkDirMetadataKey, sourceWorkDir); err != nil {
-			t.Fatalf("SetMetadata(%s legacy work dir): %v", member.ID, err)
+	work, graph, drain, memberIDs := seedSplitClassDrainWorkflow(t, false)
+	opts := ProcessOptions{FormulaSearchPaths: []string{dir}, MemberStores: []beads.Store{work}}
+	graph.HonorExplicitIDs = true
+	launcherWorkDir := filepath.Join(t.TempDir(), "launcher")
+	root := mustGetBead(t, graph, drain.Metadata[beadmeta.RootBeadIDMetadataKey])
+	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+		if err := graph.SetMetadata(root.ID, key, launcherWorkDir); err != nil {
+			t.Fatalf("SetMetadata(root %s): %v", key, err)
 		}
-	}
-	if err := store.SetMetadata(root.ID, beadmeta.WorkDirMetadataKey, filepath.Join(t.TempDir(), "launcher")); err != nil {
-		t.Fatalf("SetMetadata(launcher work dir): %v", err)
 	}
 
-	if _, err := ProcessControl(store, drain, ProcessOptions{FormulaSearchPaths: []string{dir}}); err != nil {
-		t.Fatalf("ProcessControl(drain expand): %v", err)
-	}
-	manifest := mustDrainManifest(t, mustGetBead(t, store, drain.ID))
-	if len(manifest.Rows) != len(sourceWorkDirs) {
-		t.Fatalf("manifest rows = %d, want one per source member (%d)", len(manifest.Rows), len(sourceWorkDirs))
-	}
-	for _, row := range manifest.Rows {
-		sourceWorkDir, ok := sourceWorkDirs[row.MemberID]
-		if !ok {
-			t.Fatalf("manifest row references unknown source member %s", row.MemberID)
-		}
-		itemRoot := mustGetBead(t, store, row.ItemRootID)
+	sourceWorkDirs := make(map[string]string, len(memberIDs))
+	for i, memberID := range memberIDs {
+		sourceWorkDir := filepath.Join(t.TempDir(), fmt.Sprintf("source-worktree-%d", i))
+		sourceWorkDirs[memberID] = sourceWorkDir
 		for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
-			if got := itemRoot.Metadata[key]; got != sourceWorkDir {
-				t.Fatalf("item root %s for member %s = %q, want %q", key, row.MemberID, got, sourceWorkDir)
+			if err := work.SetMetadata(memberID, key, sourceWorkDir); err != nil {
+				t.Fatalf("SetMetadata(%s %s): %v", memberID, key, err)
 			}
 		}
-		workStep := mustFindDrainItemWorkStep(t, store, row.ItemRootID)
-		for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
-			if got := workStep.Metadata[key]; got != sourceWorkDir {
-				t.Fatalf("item work step %s for member %s = %q, want %q", key, row.MemberID, got, sourceWorkDir)
-			}
+		if _, err := graph.Create(beads.Bead{
+			ID:    memberID,
+			Title: "stale graph copy of " + memberID,
+			Type:  "task",
+			Metadata: map[string]string{
+				beadmeta.WorkDirMetadataKey:       launcherWorkDir,
+				beadmeta.LegacyWorkDirMetadataKey: launcherWorkDir,
+			},
+		}); err != nil {
+			t.Fatalf("Create(stale graph copy %s): %v", memberID, err)
 		}
 	}
+
+	assertWorkDirs := func(stage string, manifest drainManifest, previousRoots map[string]string) map[string]string {
+		t.Helper()
+		if len(manifest.Rows) != len(sourceWorkDirs) {
+			t.Fatalf("%s manifest rows = %d, want one per source member (%d)", stage, len(manifest.Rows), len(sourceWorkDirs))
+		}
+		roots := make(map[string]string, len(manifest.Rows))
+		for _, row := range manifest.Rows {
+			sourceWorkDir, ok := sourceWorkDirs[row.MemberID]
+			if !ok {
+				t.Fatalf("%s manifest row references unknown source member %s", stage, row.MemberID)
+			}
+			if previousRoots != nil && row.ItemRootID == previousRoots[row.MemberID] {
+				t.Fatalf("%s item root for member %s reused failed root %s", stage, row.MemberID, row.ItemRootID)
+			}
+			roots[row.MemberID] = row.ItemRootID
+			for _, bead := range []beads.Bead{
+				mustGetBead(t, graph, row.ItemRootID),
+				mustFindDrainItemWorkStep(t, graph, row.ItemRootID),
+			} {
+				for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+					if got := bead.Metadata[key]; got != sourceWorkDir {
+						t.Fatalf("%s bead %s for member %s %s = %q, want canonical source worktree %q (not stale graph copy %q)",
+							stage, bead.ID, row.MemberID, key, got, sourceWorkDir, launcherWorkDir)
+					}
+				}
+			}
+		}
+		return roots
+	}
+
+	if _, err := ProcessControl(graph, drain, opts); err != nil {
+		t.Fatalf("ProcessControl(fresh drain expand): %v", err)
+	}
+	manifest := mustDrainManifest(t, mustGetBead(t, graph, drain.ID))
+	initialRoots := assertWorkDirs("fresh expansion", manifest, nil)
+
+	// Reset every parallel row as a failed materialization. Re-entry reloads
+	// members from the persisted manifest instead of rebuilding convoy
+	// membership; it must still select the canonical work-store source anchor.
+	for i := range manifest.Rows {
+		row := &manifest.Rows[i]
+		if err := graph.SetMetadata(row.ItemRootID, beadmeta.MoleculeFailedMetadataKey, "true"); err != nil {
+			t.Fatalf("mark failed item root %s: %v", row.ItemRootID, err)
+		}
+		row.ItemRootID = ""
+		row.Status = "unit-created"
+	}
+	if err := persistDrainManifest(graph, drain.ID, manifest, map[string]string{
+		beadmeta.DrainStateMetadataKey: beadmeta.DrainStateExpanding,
+	}); err != nil {
+		t.Fatalf("persist reset manifest: %v", err)
+	}
+	if _, err := ProcessControl(graph, mustGetBead(t, graph, drain.ID), opts); err != nil {
+		t.Fatalf("ProcessControl(reset drain expand): %v", err)
+	}
+	assertWorkDirs("reset expansion", mustDrainManifest(t, mustGetBead(t, graph, drain.ID)), initialRoots)
 }
 
 func TestProcessDrainAppliesItemFormulaDefaultsToRootMetadata(t *testing.T) {
