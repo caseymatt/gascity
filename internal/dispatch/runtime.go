@@ -64,14 +64,15 @@ type ProcessOptions struct {
 	// roots. When set, workflow-finalize uses it to avoid closing a source bead
 	// while any live root in another store still references that source.
 	SourceWorkflowStores func() ([]SourceWorkflowStore, error)
-	// MemberStores is the work-class store tail probed (after the primary
-	// graph store) when a drain reads convoy membership. A control bead and
-	// its drain item-root molecules live in the graph store, but the convoy
-	// members a drain expands over are work beads that may live in a different
-	// per-class store; MemberStores supplies those additional stores to
-	// convoycore.Members so member Gets resolve across the class boundary.
-	// Empty (the default for single-store callers) collapses the probe set to
-	// the primary store, exactly matching the pre-seam single-store behavior.
+	// MemberStores names the work-class stores probed before the ambient graph
+	// store when a drain resolves convoy members. A control bead and its
+	// item-root molecules live in the graph store, but the members are work
+	// beads; work-first resolution keeps canonical source-anchor metadata
+	// authoritative over stale migration copies in the graph binding.
+	// MemberStores also supplies the additional handles convoycore.Members needs
+	// to resolve membership across the class boundary. Empty (the default for
+	// single-store callers) collapses the probe set to the primary store,
+	// exactly matching the pre-seam single-store behavior.
 	MemberStores []beads.Store
 	Tracef       func(format string, args ...any)
 

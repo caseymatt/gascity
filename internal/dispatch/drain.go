@@ -288,29 +288,33 @@ func (e drainUnresolvedMemberError) Unwrap() error {
 }
 
 // drainMemberProbeSet returns the ordered store set used to resolve a drain
-// member bead: the primary graph store first, then the work-class member store
-// tail from opts.MemberStores. A drain control and its item-root molecules live
-// in the graph store, but the convoy members a drain reserves and reloads are
-// work beads that may live in a different per-class store. Resolving through this
-// set keeps member access consistent with the fresh convoycore.Members build
-// (which already threads opts.MemberStores). Empty MemberStores (single-store
-// callers) collapses the probe to the primary store, matching the pre-seam
-// store.Get behavior exactly.
+// member bead: the work-class member stores first, then the ambient graph store
+// as a fallback.
+//
+// Drain members are work beads. A migrated city may still carry a stale copy of
+// a member in the graph binding, so graph-first lookup can return launcher-era
+// metadata after the canonical work-store anchor has been prepared. The
+// work-first order keeps fresh convoy expansion, persisted-manifest reloads, and
+// reservation/dependency writes on the same authoritative source anchor.
+//
+// Empty MemberStores (single-store callers) collapses the probe to the primary
+// store, matching the pre-seam store.Get behavior exactly.
 func drainMemberProbeSet(store beads.Store, opts ProcessOptions) []beads.Store {
 	probe := make([]beads.Store, 0, 1+len(opts.MemberStores))
-	probe = append(probe, store)
 	probe = append(probe, opts.MemberStores...)
+	probe = append(probe, store)
 	return probe
 }
 
 // drainMemberOwningStore returns the store that owns memberID, probing the
-// primary graph store then the work-class member tail and returning the first
-// store whose Get succeeds. Because ids are prefix-disjoint across stores the
-// member lives in exactly one, so the first hit is authoritative. A store's
-// not-found probe is skipped; any other error is returned. When no probed store
-// has the member (every probe a clean not-found), it falls back to the primary
-// store so reservation reads/writes preserve their pre-seam not-found handling
-// (reserveDrainMember/releaseDrainReservations treat ErrNotFound as a no-op).
+// authoritative work-class stores before the ambient graph fallback. The
+// work-first order is load-bearing for migration-era co-resident copies: only
+// the work-store row owns current source-anchor metadata and reservation writes.
+// A store's not-found probe is skipped; any other error is returned. When no
+// probed store has the member (every probe a clean not-found), it falls back to
+// the primary store so reservation reads/writes preserve their pre-seam
+// not-found handling (reserveDrainMember/releaseDrainReservations treat
+// ErrNotFound as a no-op).
 func drainMemberOwningStore(store beads.Store, memberID string, opts ProcessOptions) (beads.Store, error) {
 	for _, probe := range drainMemberProbeSet(store, opts) {
 		if probe == nil {
@@ -1162,18 +1166,18 @@ func orderDrainMembersByDependencies(store beads.Store, members []beads.Bead, op
 // unit convoys through: the work-class member stores first, then the ambient
 // store.
 //
-// It is the reverse of drainMemberProbeSet, and deliberately so. A unit convoy is
-// a SYNTHETIC convoy and a synthetic convoy is a WORK bead (coordclass.Classify),
-// so the work class is the authoritative answer and the ambient graph binding is
-// only a fallback for rows that predate that ruling. Asking the binding first
-// gets the wrong answer on a real converged city: cities migrated under the
-// previous classification carry an EDGELESS copy of every synthetic convoy in
-// their binding (`gc storage migrate` copied the row; importInfraSnapshot re-added
+// It deliberately matches drainMemberProbeSet. A unit convoy is a SYNTHETIC
+// convoy and a synthetic convoy is a WORK bead (coordclass.Classify), so the
+// work class is the authoritative answer and the ambient graph binding is only
+// a fallback for rows that predate that ruling. Asking the binding first gets
+// the wrong answer on a real converged city: cities migrated under the previous
+// classification carry an EDGELESS copy of every synthetic convoy in their
+// binding (`gc storage migrate` copied the row; importInfraSnapshot re-added
 // only the edges whose both endpoints were infra), so the binding can answer
 // gc.drain_unit_key with a convoy that has no tracks edge and cannot grow one.
 //
-// With no member stores configured — every single-store caller — this is the one
-// ambient store, so every read through it is the single read it is today.
+// With no member stores configured — every single-store caller — this is the
+// one ambient store, so every read through it is the single read it is today.
 func drainUnitConvoyProbeSet(store beads.Store, opts ProcessOptions) []beads.Store {
 	probe := make([]beads.Store, 0, 1+len(opts.MemberStores))
 	probe = append(probe, opts.MemberStores...)
