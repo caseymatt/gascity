@@ -42,6 +42,11 @@ function runDetail(overrides: Partial<FormulaRunDetail> = {}): FormulaRunDetail 
     snapshotVersion: 1,
     snapshotEventSeq: { kind: 'known', seq: 100 },
     completeness: { kind: 'complete' },
+    ownerLifecycle: { status: 'open', rootStatus: 'open', owned: false, awaitingOwnerClose: false },
+    workflowControl: { status: 'not_started', total: 0, open: 0, closed: 0, blocked: 0, failed: 0 },
+    delivery: { status: 'pending' },
+    publish: { status: 'pending' },
+    merge: { status: 'unreported' },
     progress: {
       snapshotVersion: 1,
       snapshotEventSeq: { kind: 'known', seq: 100 },

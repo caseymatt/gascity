@@ -428,6 +428,23 @@ describe('run projection endpoints', () => {
       snapshotEventSeq: { kind: 'known', seq: 100 },
       completeness: { kind: 'complete' },
       progress: { statusCounts: {} },
+      ownerLifecycle: {
+        status: 'open',
+        rootStatus: 'open',
+        owned: false,
+        awaitingOwnerClose: false,
+      },
+      workflowControl: {
+        status: 'not_started',
+        total: 0,
+        open: 0,
+        closed: 0,
+        blocked: 0,
+        failed: 0,
+      },
+      delivery: { status: 'pending' },
+      publish: { status: 'pending' },
+      merge: { status: 'unreported' },
       phase: 'intake',
       stages: [],
       nodes: [],
@@ -448,6 +465,31 @@ describe('run projection endpoints', () => {
       '/api/city/test-city/runs/mol%3Aadopt-1/detail',
       expect.objectContaining({ method: 'GET' }),
     );
+
+    for (const field of [
+      'ownerLifecycle',
+      'workflowControl',
+      'delivery',
+      'publish',
+      'merge',
+    ] as const) {
+      const incomplete: Record<string, unknown> = { ...detail };
+      delete incomplete[field];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(JSON.stringify(incomplete), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+        ),
+      );
+      await expect(api.runDetail('mol:adopt-1')).rejects.toMatchObject({
+        name: 'ApiResponseDecodeError',
+        message: expect.stringContaining(`formula run detail.${field} must be an object`),
+      });
+    }
   });
 
   it('surfaces the 422 run-detail reason on the thrown ApiClientError', async () => {

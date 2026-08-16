@@ -672,6 +672,16 @@ type strictTx struct {
 	store *StrictStore
 }
 
+func (t *strictTx) Get(id string) (beads.Bead, error) {
+	readTx, ok := t.tx.(interface {
+		Get(string) (beads.Bead, error)
+	})
+	if !ok {
+		return beads.Bead{}, fmt.Errorf("strict store transaction does not support reads")
+	}
+	return readTx.Get(id)
+}
+
 // Create guards and post-checks exactly like StrictStore.Create, against the
 // transaction's write surface.
 func (t *strictTx) Create(b beads.Bead) (beads.Bead, error) {

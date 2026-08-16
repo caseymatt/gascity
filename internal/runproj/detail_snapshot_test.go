@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 )
 
@@ -105,6 +106,45 @@ func TestBuildRunDetailFromSnapshotMatchesGolden(t *testing.T) {
 	}
 	if !bytes.Equal(gotSnap, gotTwo) {
 		t.Errorf("from-snapshot detail differs from two-call detail:\n%s", unifiedDiff(string(gotTwo), string(gotSnap)))
+	}
+}
+
+func TestBuildRunDetailReportsDistinctLifecycleSurfaces(t *testing.T) {
+	beadList := loadDetailFixture(t)
+	for i := range beadList {
+		switch beadList[i].ID {
+		case detailGoldenRunID:
+			beadList[i].Labels = append(beadList[i].Labels, "owned")
+			beadList[i].Metadata["gc.build.publish_status"] = "noop"
+			beadList[i].Metadata["gc.build.publish_action"] = "noop"
+			beadList[i].Metadata["gc.build.publish_reason"] = "publishing disabled"
+			beadList[i].Metadata["merge_result"] = "pull_request"
+			beadList[i].Metadata["pr_url"] = "https://example.test/pull/42"
+		case detailGoldenRunID + ".1":
+			beadList[i].Metadata[beadmeta.KindMetadataKey] = beadmeta.KindWorkflowFinalize
+			beadList[i].Metadata["gc.build.implementation_summary_path"] = "/tmp/implementation.md"
+			beadList[i].Metadata["gc.build.final_report_path"] = "/tmp/final.md"
+		}
+	}
+
+	detail, err := BuildRunDetail(beadList, detailGoldenRunID, detailGoldenSnapshotVersion, detailGoldenSnapshotEventSeq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.OwnerLifecycle.Status != "awaiting_owner_close" || !detail.OwnerLifecycle.Owned {
+		t.Errorf("owner lifecycle = %+v", detail.OwnerLifecycle)
+	}
+	if detail.WorkflowControl.Status != "complete" || detail.WorkflowControl.Closed != 1 {
+		t.Errorf("workflow control = %+v", detail.WorkflowControl)
+	}
+	if detail.Delivery.Status != "delivered" || detail.Delivery.FinalReportPath != "/tmp/final.md" {
+		t.Errorf("delivery = %+v", detail.Delivery)
+	}
+	if detail.Publish.Status != "noop" || detail.Publish.Reason != "publishing disabled" {
+		t.Errorf("publish = %+v", detail.Publish)
+	}
+	if detail.Merge.Status != "pull_request" || detail.Merge.PullRequestURL != "https://example.test/pull/42" {
+		t.Errorf("merge = %+v", detail.Merge)
 	}
 }
 

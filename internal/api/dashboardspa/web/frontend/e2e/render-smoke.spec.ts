@@ -108,6 +108,11 @@ test.describe('dashboard render smoke over the seeded corpus', () => {
     const graph = page.getByRole('region', { name: 'Formula run graph' });
     await expect(graph.getByRole('button', { name: /preflight step/ })).toBeVisible();
     await expect(graph.getByRole('button', { name: /review step/ })).toBeVisible();
+    const lifecycle = page.getByRole('region', { name: 'Run lifecycle' });
+    await expect(lifecycle).toBeVisible();
+    for (const label of ['Owner', 'Workflow', 'Delivery', 'Publish', 'Merge']) {
+      await expect(lifecycle.getByText(label, { exact: true })).toBeVisible();
+    }
   });
 
   test('agents renders the seeded agent/rig', async ({ page }) => {

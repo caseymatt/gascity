@@ -2358,6 +2358,60 @@ func TestProcessWorkflowFinalizeClosesWorkflow(t *testing.T) {
 	}
 }
 
+func TestProcessWorkflowFinalizeLeavesOwnerHeldRootOpen(t *testing.T) {
+	t.Parallel()
+
+	store := beads.NewMemStore()
+	workflow := mustCreateWorkflowBead(t, store, beads.Bead{
+		Title:  "workflow",
+		Type:   "task",
+		Labels: []string{"owned"},
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+			beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+		},
+	})
+	completed := mustCreateWorkflowBead(t, store, beads.Bead{
+		Title:  "completed work",
+		Type:   "task",
+		Status: "closed",
+		Metadata: map[string]string{
+			beadmeta.OutcomeMetadataKey: beadmeta.OutcomePass,
+		},
+	})
+	finalizer := mustCreateWorkflowBead(t, store, beads.Bead{
+		Title: "Finalize workflow",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:       beadmeta.KindWorkflowFinalize,
+			beadmeta.RootBeadIDMetadataKey: workflow.ID,
+		},
+	})
+
+	mustDepAdd(t, store, finalizer.ID, completed.ID, "blocks")
+	mustDepAdd(t, store, workflow.ID, finalizer.ID, "blocks")
+
+	result, err := ProcessControl(store, finalizer, ProcessOptions{})
+	if err != nil {
+		t.Fatalf("ProcessControl(workflow-finalize): %v", err)
+	}
+	if !result.Processed || result.Action != "workflow-awaiting_owner_close" {
+		t.Fatalf("workflow result = %+v, want processed workflow-awaiting_owner_close", result)
+	}
+
+	rootAfter := mustGetBead(t, store, workflow.ID)
+	if rootAfter.Status != "open" {
+		t.Fatalf("workflow status = %q, want open", rootAfter.Status)
+	}
+	if got := rootAfter.Metadata[beadmeta.OutcomeMetadataKey]; got != beadmeta.OutcomePass {
+		t.Fatalf("workflow outcome = %q, want pass", got)
+	}
+	finalizerAfter := mustGetBead(t, store, finalizer.ID)
+	if finalizerAfter.Status != "closed" {
+		t.Fatalf("finalizer status = %q, want closed", finalizerAfter.Status)
+	}
+}
+
 // Regression test for gastownhall/gascity#1657, finalize sibling site: a
 // workflow-finalize blocker with gc.on_fail=abort_scope that closed bare (no
 // gc.outcome) must fail the workflow instead of finalizing it green.

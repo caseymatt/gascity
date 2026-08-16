@@ -216,6 +216,7 @@ export function FormulaRunDetailPage() {
       ) : readyRun ? (
         <>
           <RunMetadata detail={readyRun.detail} />
+          <RunLifecycle detail={readyRun.detail} />
           <StageLadder stages={readyRun.detail.stages} label={readyRun.detail.title} />
           <FormulaRunPartialNotice detail={readyRun.detail} />
           <div className="mt-8 grid gap-10 lg:grid-cols-[minmax(0,0.95fr)_minmax(22rem,1.05fr)]">
@@ -275,6 +276,58 @@ function RunMetadata({ detail }: { detail: FormulaRunDetailData }) {
       <Meta label="Store" value={detail.resolvedRootStore || detail.rootStoreRef || 'unknown'} />
     </dl>
   );
+}
+function RunLifecycle({ detail }: { detail: FormulaRunDetailData }) {
+  return (
+    <section className="mt-8" aria-labelledby="run-lifecycle-heading">
+      <h2
+        id="run-lifecycle-heading"
+        className="mb-3 text-label uppercase tracking-wider text-fg-faint"
+      >
+        Run lifecycle
+      </h2>
+      <dl className="grid gap-x-8 gap-y-3 sm:grid-cols-2 lg:grid-cols-5">
+        <Meta label="Owner" value={lifecycleStatusLabel(detail.ownerLifecycle.status)} />
+        <Meta label="Workflow" value={workflowControlLabel(detail.workflowControl)} />
+        <Meta label="Delivery" value={lifecycleStatusLabel(detail.delivery.status)} />
+        <Meta label="Publish" value={publishStatusLabel(detail.publish)} />
+        <Meta
+          label="Merge"
+          value={
+            detail.merge.status === 'unreported'
+              ? 'Not reported'
+              : lifecycleStatusLabel(detail.merge.status)
+          }
+        />
+      </dl>
+    </section>
+  );
+}
+
+function workflowControlLabel(control: FormulaRunDetailData['workflowControl']): string {
+  const status = lifecycleStatusLabel(control.status);
+  switch (control.status) {
+    case 'complete':
+      return `${status} · ${control.closed} closed`;
+    case 'active':
+      return `${status} · ${control.open} open`;
+    case 'blocked':
+      return `${status} · ${control.blocked} blocked`;
+    case 'failed':
+      return `${status} · ${control.failed} failed`;
+    case 'not_started':
+      return status;
+  }
+}
+
+function publishStatusLabel(publish: FormulaRunDetailData['publish']): string {
+  const status = publish.status === 'noop' ? 'No publish' : lifecycleStatusLabel(publish.status);
+  return publish.reason ? `${status} · ${publish.reason}` : status;
+}
+
+function lifecycleStatusLabel(status: string): string {
+  const words = status.replaceAll('_', ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function Meta({ label, value }: { label: string; value: string }) {

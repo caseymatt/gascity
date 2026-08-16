@@ -376,6 +376,11 @@ export const decodeFormulaRunDetail = objectDecoder<FormulaRunDetail>(
     requireObjectField(record, url, 'formula run detail', 'completeness');
     const progress = requireRecord(record['progress'], url, 'formula run detail.progress');
     requireObjectField(progress, url, 'formula run detail.progress', 'statusCounts');
+    requireObjectField(record, url, 'formula run detail', 'ownerLifecycle');
+    requireObjectField(record, url, 'formula run detail', 'workflowControl');
+    requireObjectField(record, url, 'formula run detail', 'delivery');
+    requireObjectField(record, url, 'formula run detail', 'publish');
+    requireObjectField(record, url, 'formula run detail', 'merge');
     requireArrayField(record, url, 'formula run detail', 'stages');
     requireArrayField(record, url, 'formula run detail', 'nodes');
     requireArrayField(record, url, 'formula run detail', 'edges');

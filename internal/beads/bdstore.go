@@ -1831,6 +1831,14 @@ func (tx *bdStoreTx) item(id string) (*bdStoreTxItem, error) {
 	return item, nil
 }
 
+func (tx *bdStoreTx) Get(id string) (Bead, error) {
+	item, err := tx.item(id)
+	if err != nil {
+		return Bead{}, err
+	}
+	return cloneBead(item.current), nil
+}
+
 // Create persists a bead immediately. The bd CLI has no multi-statement
 // transaction, so a create cannot be staged: subsequent staged writes in the
 // same Tx may reference the new bead's ID, which only exists after creation.
