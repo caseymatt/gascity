@@ -57,6 +57,10 @@ type bufferedMeta struct {
 	kvs map[string]string
 }
 
+func (b *bufferingTx) Get(id string) (beads.Bead, error) {
+	return b.base.Get(id)
+}
+
 func (b *bufferingTx) Create(beads.Bead) (beads.Bead, error) {
 	return beads.Bead{}, errors.New("bufferingTx.Create unused in this test")
 }

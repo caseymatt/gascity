@@ -1603,6 +1603,10 @@ type sqliteStoreTx struct {
 	tx    *sql.Tx
 }
 
+func (t *sqliteStoreTx) Get(id string) (Bead, error) {
+	return t.store.getTx(t.ctx, t.tx, id)
+}
+
 func (t *sqliteStoreTx) Create(b Bead) (Bead, error) {
 	stored := t.store.normalizeCreate(b)
 	if b.ID == "" {

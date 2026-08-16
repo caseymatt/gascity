@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -821,28 +822,33 @@ func processWorkflowFinalize(store beads.Store, bead beads.Bead, opts ProcessOpt
 		return ControlResult{}, fmt.Errorf("%s: resolving workflow outcome: %w", bead.ID, err)
 	}
 
-	// On success, propagate the closure across the gc.source_bead_id chain so
-	// parent source beads in other stores (e.g. the city-scope "Adopt PR"
-	// request that spawned a rig-scope mol-adopt-pr-v2 workflow) don't accumulate
-	// as orphans. Failures intentionally leave parent sources open so a human
-	// can investigate via list - the bead IS the audit handle.
-	if outcome == beadmeta.OutcomePass {
-		if err := preflightSourceBeadChain(store, rootID, opts); err != nil {
-			return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: preflighting source bead chain: %w", rootID, err))
-		}
-	}
-	// Close the root BEFORE the finalize bead. If the root close fails and
-	// the control-dispatcher crashes, the finalize bead stays open so the
-	// next serve cycle will retry. Source-chain propagation is preflighted first
-	// so retryable scan failures keep the root live for singleton scans, but
-	// source beads are not mutated until the root is durably closed.
-	if err := setOutcomeAndClose(store, rootID, outcome); err != nil {
+	root, err := store.Get(rootID)
+	if err != nil {
 		if errors.Is(err, beads.ErrNotFound) {
 			if closeErr := setOutcomeAndClose(store, bead.ID, beadmeta.OutcomeMissingRoot); closeErr != nil {
 				return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: closing orphaned finalizer (root %s missing): %w", bead.ID, rootID, closeErr))
 			}
 			return ControlResult{Processed: true, Action: "workflow-missing_root"}, nil
 		}
+		return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: reading workflow root: %w", rootID, err))
+	}
+	ownerHeld := slices.Contains(root.Labels, "owned")
+
+	// On success, propagate the closure across the gc.source_bead_id chain so
+	// parent source beads in other stores (e.g. the city-scope "Adopt PR"
+	// request that spawned a rig-scope mol-adopt-pr-v2 workflow) don't accumulate
+	// as orphans. Failures intentionally leave parent sources open so a human
+	// can investigate via list - the bead IS the audit handle.
+	if outcome == beadmeta.OutcomePass && !ownerHeld {
+		if err := preflightSourceBeadChain(store, rootID, opts); err != nil {
+			return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: preflighting source bead chain: %w", rootID, err))
+		}
+	}
+	if ownerHeld {
+		if err := store.SetMetadataBatch(rootID, map[string]string{beadmeta.OutcomeMetadataKey: outcome}); err != nil {
+			return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: recording owner-held workflow outcome: %w", rootID, err))
+		}
+	} else if err := setOutcomeAndClose(store, rootID, outcome); err != nil {
 		return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: completing workflow head: %w", rootID, err))
 	}
 	// Generated spec sidecars are topology records rather than executable
@@ -861,19 +867,29 @@ func processWorkflowFinalize(store beads.Store, bead beads.Bead, opts ProcessOpt
 	if err != nil {
 		return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: resolving teardown members: %w", rootID, err))
 	}
+	excludeFromSweep := excludeTeardown
+	if ownerHeld {
+		excludeFromSweep = func(candidate beads.Bead) bool {
+			return candidate.ID == rootID || excludeTeardown(candidate)
+		}
+	}
 	if _, err := molecule.CloseSubtreeWithMetadataExcept(store, rootID, map[string]string{
 		beadmeta.OutcomeMetadataKey: beadmeta.OutcomeSkipped,
 		"close_reason":              sourceworkflow.WorkflowSkippedCloseReason,
-	}, excludeTeardown); err != nil {
+	}, excludeFromSweep); err != nil {
 		return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: closing terminal workflow members: %w", rootID, err))
 	}
-	if outcome == beadmeta.OutcomePass {
+	if outcome == beadmeta.OutcomePass && !ownerHeld {
 		if err := closeSourceBeadChain(store, rootID, opts); err != nil {
 			return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: closing source bead chain: %w", rootID, err))
 		}
 	}
 	if err := setOutcomeAndClose(store, bead.ID, beadmeta.OutcomePass); err != nil {
 		return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: completing workflow finalizer: %w", bead.ID, err))
+	}
+
+	if ownerHeld {
+		return ControlResult{Processed: true, Action: "workflow-awaiting_owner_close"}, nil
 	}
 
 	// Purge the molecule-scoped artifact tree now that the workflow has

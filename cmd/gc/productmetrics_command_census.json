@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "next_id": 203,
+  "next_id": 205,
   "permanent_ids": [
     {
       "name": "help",
@@ -1590,6 +1590,21 @@
       "canonical_target": "@help",
       "owner": "structural",
       "id": 1
+    },
+    {
+      "path": "gc formula adopt",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "formula-adopt",
+      "owner": "immediate",
+      "id": 203
     },
     {
       "path": "gc formula catalog",
@@ -3320,6 +3335,37 @@
       "classification": "rig-suspend",
       "owner": "immediate",
       "id": 129
+    },
+    {
+      "path": "gc run",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "structural",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "help",
+      "canonical_target": "@help",
+      "owner": "structural",
+      "id": 1
+    },
+    {
+      "path": "gc run status",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "run-status",
+      "owner": "immediate",
+      "id": 204
     },
     {
       "path": "gc runtime",

@@ -16,6 +16,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/dispatch"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/formulatest"
@@ -1585,5 +1586,61 @@ title = "Do work for {{convoy_id}}"
 		if c.Metadata["gc.synthetic"] == "true" {
 			t.Fatalf("synthetic input convoy %s left open after post-prepare failure (status=%q); want it closed", c.ID, c.Status)
 		}
+	}
+}
+
+func TestFormulaAdoptCommandMapsAuditFlagsAndEmitsJSON(t *testing.T) {
+	cityDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(`[workspace]
+name = "adopt-city"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GC_CITY_PATH", cityDir)
+
+	var called bool
+	runner := func(attemptStore, sourceStore beads.Store, controlID string, opts dispatch.AdoptAttemptOptions) (dispatch.AdoptAttemptResult, error) {
+		called = true
+		if attemptStore == nil || sourceStore == nil {
+			t.Fatal("runner received nil store")
+		}
+		if controlID != "gc-control" || opts.SourceID != "gc-source" || opts.Actor != "operator@example.test" || opts.Reason != "reviewed evidence" {
+			t.Fatalf("runner arguments: control=%q opts=%+v", controlID, opts)
+		}
+		if opts.AdoptedAt.IsZero() || opts.FS == nil {
+			t.Fatalf("runner missing timestamp or filesystem: %+v", opts)
+		}
+		return dispatch.AdoptAttemptResult{
+			ControlID: "gc-control",
+			AttemptID: "gc-attempt",
+			SourceID:  "gc-source",
+		}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := newFormulaAdoptCmdWith(&stdout, &stderr, runner)
+	cmd.SetArgs([]string{"gc-control", "--source", "gc-source", "--actor", "operator@example.test", "--reason", "reviewed evidence", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("gc formula adopt: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !called {
+		t.Fatal("adoption runner was not called")
+	}
+	var got dispatch.AdoptAttemptResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode output %q: %v", stdout.String(), err)
+	}
+	if got.ControlID != "gc-control" || got.AttemptID != "gc-attempt" || got.SourceID != "gc-source" || got.AlreadyApplied {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestFormulaAdoptCommandRequiresAuditFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	cmd := newFormulaCmd(&stdout, &stderr)
+	cmd.SetArgs([]string{"adopt", "gc-control"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `required flag(s) "actor", "reason", "source"`) {
+		t.Fatalf("error = %v", err)
 	}
 }
