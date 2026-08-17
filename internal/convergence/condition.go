@@ -144,6 +144,7 @@ func (ce ConditionEnv) Environ() []string {
 		"BEADS_DOLT_SERVER_PORT",
 		"BEADS_DOLT_SERVER_USER",
 		"BEADS_DOLT_PASSWORD",
+		"BD_IGNORE_SCHEMA_SKEW",
 		"GC_DOLT",
 		"GC_DOLT_HOST",
 		"GC_DOLT_PORT",
