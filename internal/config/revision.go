@@ -29,6 +29,7 @@ type revisionSnapshot struct {
 // plural pack lists and city-level packs).
 func Revision(fs fsys.FS, prov *Provenance, cfg *City, cityRoot string) string {
 	h := sha256.New()
+	var liveDirHashes revisionDirHashState
 
 	// Hash all config source files in stable order.
 	sources := make([]string, len(prov.Sources))
@@ -54,14 +55,14 @@ func Revision(fs fsys.FS, prov *Provenance, cfg *City, cityRoot string) string {
 	for _, r := range rigs {
 		for _, ref := range r.Includes {
 			topoDir, _ := resolvePackRef(ref, cityRoot, cityRoot)
-			writeRevisionDirHash(h, prov, "pack:"+r.Name+":"+ref, fs, topoDir)
+			writeRevisionDirHash(h, prov, "pack:"+r.Name+":"+ref, fs, topoDir, &liveDirHashes)
 		}
 	}
 
 	// Hash city-level pack directory contents.
 	for _, ref := range cfg.Workspace.LegacyIncludes() {
 		topoDir, _ := resolvePackRef(ref, cityRoot, cityRoot)
-		writeRevisionDirHash(h, prov, "city-pack:"+ref, fs, topoDir)
+		writeRevisionDirHash(h, prov, "city-pack:"+ref, fs, topoDir, &liveDirHashes)
 	}
 
 	// Remote PackV2 imports resolve through packs.lock, so lockfile changes
@@ -89,7 +90,7 @@ func Revision(fs fsys.FS, prov *Provenance, cfg *City, cityRoot string) string {
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}
-		writeRevisionDirHash(h, prov, "city-packdir:"+dir, fs, dir)
+		writeRevisionDirHash(h, prov, "city-packdir:"+dir, fs, dir, &liveDirHashes)
 	}
 	rigPackDirNames := make([]string, 0, len(cfg.RigPackDirs))
 	for name := range cfg.RigPackDirs {
@@ -101,13 +102,13 @@ func Revision(fs fsys.FS, prov *Provenance, cfg *City, cityRoot string) string {
 			if strings.TrimSpace(dir) == "" {
 				continue
 			}
-			writeRevisionDirHash(h, prov, "rig-packdir:"+rigName+":"+dir, fs, dir)
+			writeRevisionDirHash(h, prov, "rig-packdir:"+rigName+":"+dir, fs, dir, &liveDirHashes)
 		}
 	}
 	// Hash convention-discovered city-pack trees so adding or editing
 	// agents/commands/doctor content changes the effective revision too.
 	for _, dir := range revisionConventionDirs(prov, fs, cityRoot) {
-		writeRevisionDirHash(h, prov, "city-discovery:"+dir, fs, dir)
+		writeRevisionDirHash(h, prov, "city-discovery:"+dir, fs, dir, &liveDirHashes)
 	}
 
 	return fmt.Sprintf("%x", h.Sum(nil))
@@ -123,8 +124,9 @@ func (p *Provenance) captureRevisionSnapshot(fs fsys.FS, cfg *City, cityRoot str
 		fileContents: make(map[string][]byte),
 		fileKnown:    make(map[string]bool),
 	}
+	var liveDirHashes revisionDirHashState
 	recordDir := func(label, dir string) {
-		snap.dirHashes[label] = PackContentHashRecursive(fs, dir)
+		snap.dirHashes[label] = liveDirHashes.hash(fs, dir)
 	}
 
 	for _, r := range cfg.Rigs {
@@ -186,10 +188,58 @@ func (p *Provenance) recordMissingSourceContents(fs fsys.FS) {
 	}
 }
 
-func writeRevisionDirHash(h hash.Hash, prov *Provenance, label string, fs fsys.FS, dir string) {
+type revisionDirHashState struct {
+	hashes map[string]string
+}
+
+func (s *revisionDirHashState) hash(fs fsys.FS, dir string) string {
+	cacheKey, err := filepath.Abs(dir)
+	if err != nil {
+		cacheKey = dir
+	}
+	if topoHash, ok := s.hashes[cacheKey]; ok {
+		return topoHash
+	}
+
+	// Revision hashes are content identities, so they cannot trust the
+	// process-wide PackContentHashRecursive cache's size+mtime fingerprint:
+	// some filesystems preserve both for an in-place, equal-size edit. A
+	// loaded snapshot (or live fallback) hashes each distinct tree once.
+	topoHash := revisionPackContentHashFresh(fs, dir)
+	if s.hashes == nil {
+		s.hashes = make(map[string]string)
+	}
+	s.hashes[cacheKey] = topoHash
+	return topoHash
+}
+
+func revisionPackContentHashFresh(fs fsys.FS, dir string) string {
+	var paths []string
+	collectFiles(fs, dir, "", &paths)
+	sort.Strings(paths)
+
+	h := sha256.New()
+	for _, relPath := range paths {
+		data, err := fs.ReadFile(filepath.Join(dir, relPath))
+		if err != nil {
+			continue
+		}
+		writeRevisionBytes(h, relPath, data)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func writeRevisionDirHash(
+	h hash.Hash,
+	prov *Provenance,
+	label string,
+	fs fsys.FS,
+	dir string,
+	liveDirHashes *revisionDirHashState,
+) {
 	topoHash, ok := revisionSnapshotDirHash(prov, label)
 	if !ok {
-		topoHash = PackContentHashRecursive(fs, dir)
+		topoHash = liveDirHashes.hash(fs, dir)
 	}
 	writeRevisionBytes(h, label, []byte(topoHash))
 }

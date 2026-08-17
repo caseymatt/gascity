@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -656,10 +657,16 @@ func TestWatchDirs_Deduplicates(t *testing.T) {
 // decline it.
 //
 // Every read of the snapshot already falls back to reading from disk
-// (writeRevisionDirHash -> PackContentHashRecursive, revisionSnapshotFile ->
-// fs.ReadFile, revisionConventionDirs -> existingConventionDiscoveryDirsFS), so
+// (writeRevisionDirHash -> revisionPackContentHashFresh,
+// revisionSnapshotFile -> fs.ReadFile, revisionConventionDirs ->
+// existingConventionDiscoveryDirsFS), so
 // declining it must not change a revision VALUE for anybody. The tests below pin
 // that, and pin that the option stays opt-in.
+
+const (
+	revisionSnapshotOriginalPackContent = "worker prompt body\n"
+	revisionSnapshotEditedPackContent   = "edited prompt body\n"
+)
 
 // writeRevisionSnapshotOptCity builds a city whose revision covers more than
 // city.toml: a city pack directory and a convention-discovered agents tree, so
@@ -675,7 +682,7 @@ includes = ["packs/shared"]
 name = "shared"
 schema = 1
 `)
-	writeFile(t, dir, "packs/shared/prompts/worker.md", "worker prompt body\n")
+	writeFile(t, dir, "packs/shared/prompts/worker.md", revisionSnapshotOriginalPackContent)
 	writeFile(t, dir, "agents/worker/prompt.template.md", "first prompt\n")
 	return dir
 }
@@ -715,10 +722,13 @@ func TestSkipRevisionSnapshot_PreservesRevisionValue(t *testing.T) {
 // TestSkipRevisionSnapshot_StillDetectsPackContentChange pins that declining the
 // prefetch does not blind revision comparison: editing a file inside a pack must
 // still change the revision, which is the property the reconciler depends on
-// (regression guard gastownhall/gascity#779). The default arm is a control — it
-// proves the edited file participates in the revision at all, so a passing
-// skipped arm means something.
+// (regression guard gastownhall/gascity#779). The equal-size edit preserves the
+// original mtime so the test cannot pass through the pack hash cache's metadata
+// fingerprint. The default arm is a control proving the file participates.
 func TestSkipRevisionSnapshot_StillDetectsPackContentChange(t *testing.T) {
+	if len(revisionSnapshotOriginalPackContent) != len(revisionSnapshotEditedPackContent) {
+		t.Fatal("pack content fixtures must have equal lengths")
+	}
 	for _, tc := range []struct {
 		name string
 		opts LoadOptions
@@ -736,7 +746,15 @@ func TestSkipRevisionSnapshot_StillDetectsPackContentChange(t *testing.T) {
 			}
 			before := Revision(fsys.OSFS{}, prov, cfg, dir)
 
-			writeFile(t, dir, "packs/shared/prompts/worker.md", "edited prompt body\n")
+			packPath := filepath.Join(dir, "packs/shared/prompts/worker.md")
+			info, err := os.Stat(packPath)
+			if err != nil {
+				t.Fatalf("stat pack content: %v", err)
+			}
+			writeFile(t, dir, "packs/shared/prompts/worker.md", revisionSnapshotEditedPackContent)
+			if err := os.Chtimes(packPath, info.ModTime(), info.ModTime()); err != nil {
+				t.Fatalf("preserve pack content mtime: %v", err)
+			}
 
 			reloadedCfg, reloadedProv, err := LoadWithIncludesOptions(fsys.OSFS{}, cityPath, tc.opts)
 			if err != nil {
