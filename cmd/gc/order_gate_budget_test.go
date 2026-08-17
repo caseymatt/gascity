@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -190,16 +192,16 @@ func drainOrderDispatch(t *testing.T, m *memoryOrderDispatcher) {
 // TestConditionChecksRunConcurrentlyWithinTheirCap is the parallel half of the
 // leg, and it proves real overlap rather than measuring wall clock.
 //
-// Every check registers itself in a shared directory and then waits, bounded, to
-// SEE a sibling registered. Overlap is therefore the pass condition: with a cap
-// that admits more than one, the checks see each other and every order fires;
-// with a cap of one, no check ever sees a sibling and nothing fires. Each check
-// exits normally either way and removes its own registration on the way out, so
-// the two arms differ only in whether the pass ran them at the same time.
+// Every check registers through a FIFO, then blocks on its own release FIFO.
+// The coordinator gives the cap-admitted wave a passing verdict only after all
+// four registrations arrive. Because no check can exit before that release, all
+// four were live at once. With a cap of one, the coordinator gives each check a
+// failing verdict as soon as it registers, allowing the next check to start
+// without ever overlapping it.
 //
 // The same fixture is its own control, and neither outcome is reachable by a
-// pass that simply stopped running checks: that one fires nothing AND leaves the
-// registration directory empty, which the first arm asserts against.
+// pass that simply stopped running checks: the coordinator requires one unique
+// registration from every check.
 func TestConditionChecksRunConcurrentlyWithinTheirCap(t *testing.T) {
 	const wave = 4
 	for _, tc := range []struct {
@@ -216,22 +218,96 @@ func TestConditionChecksRunConcurrentlyWithinTheirCap(t *testing.T) {
 			t.Cleanup(func() { orderConditionCheckConcurrency = prev })
 
 			cityPath, cfg, _ := newExecOrderFixture(t)
-			liveDir := filepath.Join(t.TempDir(), "live")
-			ranMarker := filepath.Join(t.TempDir(), "ran")
-			// Register, then wait up to ~1s to see a sibling registration. Exit
-			// 0 only on overlap; always exit normally so the trap unregisters.
-			check := fmt.Sprintf(
-				`mkdir -p %[1]s; echo . >> %[3]s; f=$(mktemp %[1]s/w.XXXXXX); trap 'rm -f "$f"' EXIT; `+
-					`i=0; while [ $i -lt 50 ]; do if [ "$(ls %[1]s | wc -l)" -ge 2 ]; then exit 0; fi; sleep 0.02; i=$((i+1)); done; exit 1`,
-				liveDir, wave, ranMarker)
+			barrierDir := t.TempDir()
+			shellQuote := func(s string) string {
+				return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+			}
+			readyPath := filepath.Join(barrierDir, "ready")
+			if err := syscall.Mkfifo(readyPath, 0o600); err != nil {
+				t.Fatalf("create ready FIFO: %v", err)
+			}
+			// Holding both ends open keeps registrations from seeing EOF between
+			// writers and lets the coordinator queue a release before a check has
+			// reached its read.
+			ready, err := os.OpenFile(readyPath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatalf("open ready FIFO: %v", err)
+			}
+			t.Cleanup(func() { _ = ready.Close() })
+
+			releases := make(map[string]*os.File, wave)
+			releasePaths := make([]string, wave)
+			for i := range wave {
+				id := fmt.Sprintf("%d", i)
+				releasePaths[i] = filepath.Join(barrierDir, "release-"+id)
+				if err := syscall.Mkfifo(releasePaths[i], 0o600); err != nil {
+					t.Fatalf("create release FIFO %s: %v", id, err)
+				}
+				release, err := os.OpenFile(releasePaths[i], os.O_RDWR, 0)
+				if err != nil {
+					t.Fatalf("open release FIFO %s: %v", id, err)
+				}
+				t.Cleanup(func() { _ = release.Close() })
+				releases[id] = release
+			}
+
+			barrierDone := make(chan error, 1)
+			go func() {
+				scanner := bufio.NewScanner(ready)
+				seen := make(map[string]struct{}, wave)
+				releaseAll := func(verdict string) error {
+					for id, release := range releases {
+						if _, err := fmt.Fprintln(release, verdict); err != nil {
+							return fmt.Errorf("release check %s: %w", id, err)
+						}
+					}
+					return nil
+				}
+				fail := func(err error) {
+					_ = releaseAll("fail")
+					barrierDone <- err
+				}
+
+				for len(seen) < wave {
+					if !scanner.Scan() {
+						fail(fmt.Errorf("read registration: %w", scanner.Err()))
+						return
+					}
+					id := scanner.Text()
+					release, ok := releases[id]
+					if !ok {
+						fail(fmt.Errorf("unexpected check registration %q", id))
+						return
+					}
+					if _, duplicate := seen[id]; duplicate {
+						fail(fmt.Errorf("duplicate check registration %q", id))
+						return
+					}
+					seen[id] = struct{}{}
+					if tc.cap < wave {
+						if _, err := fmt.Fprintln(release, "fail"); err != nil {
+							fail(fmt.Errorf("release serial check %s: %w", id, err))
+							return
+						}
+					}
+				}
+
+				if tc.cap >= wave {
+					barrierDone <- releaseAll("pass")
+					return
+				}
+				barrierDone <- nil
+			}()
 
 			aa := make([]orders.Order, 0, wave)
 			for i := range wave {
 				aa = append(aa, orders.Order{
-					Name:         fmt.Sprintf("barrier-order-%d", i),
-					Exec:         "true",
-					Trigger:      "condition",
-					Check:        check,
+					Name:    fmt.Sprintf("barrier-order-%d", i),
+					Exec:    "true",
+					Trigger: "condition",
+					Check: fmt.Sprintf(
+						`printf '%d\n' > %s; IFS= read -r verdict < %s; [ "$verdict" = pass ]`,
+						i, shellQuote(readyPath), shellQuote(releasePaths[i])),
 					CheckTimeout: "10s",
 				})
 			}
@@ -242,22 +318,26 @@ func TestConditionChecksRunConcurrentlyWithinTheirCap(t *testing.T) {
 			m.execRun = func(context.Context, string, string, []string) ([]byte, error) { return nil, nil }
 
 			m.dispatch(context.Background(), cityPath, time.Now())
+			// A completion sentinel turns a missing registration into a
+			// coordinator error instead of an unbounded wait.
+			if _, err := fmt.Fprintln(ready, "dispatch-complete"); err != nil {
+				t.Fatalf("finish ready FIFO: %v", err)
+			}
+			if err := <-barrierDone; err != nil {
+				t.Fatalf("coordinate condition checks: %v", err)
+			}
+			if err := ready.Close(); err != nil {
+				t.Fatalf("close ready FIFO: %v", err)
+			}
 			drainOrderDispatch(t, m)
 
 			if got := len(trackingBeads(t, m.ordersStoreFor(store), labelOrderTracking)); got != tc.wantRun {
 				t.Fatalf("%d order(s) fired, want %d: with cap %d the %d checks %s",
 					got, tc.wantRun, tc.cap, wave,
-					map[bool]string{true: "overlap and see each other", false: "run one at a time and never do"}[tc.cap >= 2])
+					map[bool]string{true: "overlap and see each other", false: "run one at a time and never do"}[tc.cap >= wave])
 			}
-			// Control: every check DID run, so a zero above is "no overlap" and
-			// not "no checks".
-			data, err := os.ReadFile(ranMarker)
-			if err != nil {
-				t.Fatalf("no check ran at all: %v", err)
-			}
-			if got := strings.Count(string(data), "."); got != wave {
-				t.Fatalf("%d of %d checks ran; the fire count above is not measuring overlap", got, wave)
-			}
+			// Control: the coordinator observed one unique registration from
+			// every check, so a zero above is "no overlap" and not "no checks".
 		})
 	}
 }
