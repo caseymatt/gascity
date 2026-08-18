@@ -570,6 +570,7 @@ type managedDoltPreflightOrderStore struct {
 
 type managedDoltPreflightOrderDispatcher struct {
 	store beads.Store
+	done  chan struct{}
 }
 
 func (d *managedDoltPreflightOrderDispatcher) dispatch(context.Context, string, time.Time) {
@@ -578,7 +579,12 @@ func (d *managedDoltPreflightOrderDispatcher) dispatch(context.Context, string, 
 		Title:  "order:preflight-due",
 		Labels: []string{"order-run:preflight-due", labelOrderTracking},
 	})
+	if d.done != nil {
+		close(d.done)
+	}
 }
+
+func (d *managedDoltPreflightOrderDispatcher) cancel() {}
 
 func (d *managedDoltPreflightOrderDispatcher) drain(context.Context) bool {
 	return true
@@ -1067,7 +1073,8 @@ func TestCityRuntimeTickPreflightsManagedDoltBeforeDueOrderDispatch(t *testing.T
 		Store:  beads.NewMemStore(),
 		events: orderEvents,
 	}
-	ad := &managedDoltPreflightOrderDispatcher{store: store}
+	dispatchDone := make(chan struct{})
+	ad := &managedDoltPreflightOrderDispatcher{store: store, done: dispatchDone}
 	sp := runtime.NewFake()
 	cr := &CityRuntime{
 		cityPath: cityPath,
@@ -1103,6 +1110,11 @@ func TestCityRuntimeTickPreflightsManagedDoltBeforeDueOrderDispatch(t *testing.T
 	lastProviderName := ""
 	prevPoolRunning := map[string]bool{}
 	cr.tick(context.Background(), dirty, &lastProviderName, cr.cityPath, &prevPoolRunning, "patrol")
+	select {
+	case <-dispatchDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("order dispatch did not complete")
+	}
 
 	preflightIndex := orderEvents.index("preflight")
 	orderListIndex := orderEvents.index("order-list")
@@ -1473,6 +1485,7 @@ func TestCityRuntimeAsyncStartLimiterResizePreservesInFlightBudget(t *testing.T)
 type recordingOrderDispatcher struct {
 	called      atomic.Bool
 	calls       atomic.Int32
+	cancelCalls atomic.Int32
 	onDispatch  func(context.Context, string, time.Time)
 	drainCalls  int
 	drainCtxErr error
@@ -1485,6 +1498,8 @@ func (r *recordingOrderDispatcher) dispatch(ctx context.Context, cityRoot string
 		r.onDispatch(ctx, cityRoot, now)
 	}
 }
+
+func (r *recordingOrderDispatcher) cancel() { r.cancelCalls.Add(1) }
 
 func (r *recordingOrderDispatcher) drain(ctx context.Context) bool {
 	r.drainCalls++
@@ -1508,6 +1523,8 @@ func newBlockingOrderDispatcher() *blockingOrderDispatcher {
 }
 
 func (b *blockingOrderDispatcher) dispatch(context.Context, string, time.Time) {}
+
+func (b *blockingOrderDispatcher) cancel() {}
 
 func (b *blockingOrderDispatcher) drain(ctx context.Context) bool {
 	b.mu.Lock()
@@ -1547,9 +1564,19 @@ func (b *blockingOrderDispatcher) drainContextErrors() []error {
 	return append([]error(nil), b.ctxErrs...)
 }
 
-func TestCityRuntimeTickDispatchesOrdersBeforeDemandSnapshot(t *testing.T) {
+func TestCityRuntimeTickDoesNotWaitForOrderDispatch(t *testing.T) {
 	store := beads.NewMemStore()
-	od := &recordingOrderDispatcher{}
+	dispatchStarted := make(chan struct{})
+	dispatchRelease := make(chan struct{})
+	dispatchDone := make(chan struct{})
+	od := &recordingOrderDispatcher{
+		onDispatch: func(context.Context, string, time.Time) {
+			close(dispatchStarted)
+			<-dispatchRelease
+			close(dispatchDone)
+		},
+	}
+	demandReached := make(chan struct{})
 	cr := &CityRuntime{
 		cityName:            "test-city",
 		cityPath:            t.TempDir(),
@@ -1561,19 +1588,42 @@ func TestCityRuntimeTickDispatchesOrdersBeforeDemandSnapshot(t *testing.T) {
 		stderr:              io.Discard,
 	}
 	cr.buildFnWithSessionBeads = func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
-		if !od.called.Load() {
-			t.Fatal("order dispatch should happen before demand snapshot build")
-		}
+		close(demandReached)
 		return DesiredStateResult{State: map[string]TemplateParams{}}
 	}
 
 	var dirty atomic.Bool
 	var lastProviderName string
 	var prevPoolRunning map[string]bool
-	cr.tick(context.Background(), &dirty, &lastProviderName, cr.cityPath, &prevPoolRunning, "patrol")
+	tickDone := make(chan struct{})
+	go func() {
+		cr.tick(context.Background(), &dirty, &lastProviderName, cr.cityPath, &prevPoolRunning, "patrol")
+		close(tickDone)
+	}()
 
-	if !od.called.Load() {
-		t.Fatal("order dispatcher was not called")
+	select {
+	case <-dispatchStarted:
+	case <-time.After(time.Second):
+		t.Fatal("order dispatch did not start")
+	}
+	select {
+	case <-demandReached:
+	case <-time.After(100 * time.Millisecond):
+		close(dispatchRelease)
+		<-tickDone
+		t.Fatal("session demand waited for blocked order dispatch")
+	}
+	select {
+	case <-tickDone:
+	case <-time.After(time.Second):
+		close(dispatchRelease)
+		t.Fatal("tick did not complete while order dispatch was blocked")
+	}
+	close(dispatchRelease)
+	select {
+	case <-dispatchDone:
+	case <-time.After(time.Second):
+		t.Fatal("order dispatch did not finish after release")
 	}
 }
 
@@ -1682,13 +1732,18 @@ func TestCityRuntimeSweepReconcilesGraphStepClosedWithNoEvent(t *testing.T) {
 		t.Fatalf("completed events after a second sweep = %#v, want exact-fact no-op", got)
 	}
 
-	// And the delta lane agrees: a tick that DOES name the root emits nothing
-	// further. Without this row, "the tick emits nothing" above would be
-	// satisfied by a delta lane that is wired to nothing at all.
+	// And the event-fed delta worker agrees without waiting for another
+	// controller tick. Without this row, the sweep assertions above would be
+	// satisfied by a delta lane wired to nothing at all.
+	cr.startCompletionsDeltaLoop(ctx, lane)
 	lane.observe(events.Event{Type: events.ExecutionStepCompleted, RunID: root.ID})
-	cr.tick(ctx, &dirty, &lastProviderName, cr.cityPath, &prevPoolRunning, "patrol")
+	select {
+	case <-lane.processed:
+	case <-time.After(time.Second):
+		t.Fatal("completion delta worker did not process the named root")
+	}
 	if got := completedFacts(); len(got) != 1 {
-		t.Fatalf("completed events after a tick that named the root = %#v, want the one fact", got)
+		t.Fatalf("completed events after the delta worker named the root = %#v, want the one fact", got)
 	}
 }
 
@@ -1720,39 +1775,6 @@ func TestCityRuntimeTickReturnsBeforeDemandWhenCanceled(t *testing.T) {
 
 	if od.called.Load() {
 		t.Fatal("order dispatcher should not run after city context is canceled")
-	}
-}
-
-func TestCityRuntimeTickReturnsBeforeDemandWhenCanceledDuringOrderDispatch(t *testing.T) {
-	store := beads.NewMemStore()
-	ctx, cancel := context.WithCancel(context.Background())
-	od := &recordingOrderDispatcher{
-		onDispatch: func(context.Context, string, time.Time) {
-			cancel()
-		},
-	}
-	cr := &CityRuntime{
-		cityName:            "test-city",
-		cityPath:            t.TempDir(),
-		cfg:                 &config.City{Workspace: config.Workspace{Name: "test-city"}},
-		sp:                  runtime.NewFake(),
-		standaloneCityStore: store,
-		od:                  od,
-		stdout:              io.Discard,
-		stderr:              io.Discard,
-	}
-	cr.buildFnWithSessionBeads = func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
-		t.Fatal("demand snapshot should not run after order dispatch cancels the city context")
-		return DesiredStateResult{State: map[string]TemplateParams{}}
-	}
-
-	var dirty atomic.Bool
-	var lastProviderName string
-	var prevPoolRunning map[string]bool
-	cr.tick(ctx, &dirty, &lastProviderName, cr.cityPath, &prevPoolRunning, "patrol")
-
-	if !od.called.Load() {
-		t.Fatal("order dispatcher was not called")
 	}
 }
 
@@ -5442,6 +5464,7 @@ func TestCityRuntimeManualHardReloadRepliesBeforeDispatch(t *testing.T) {
 	dirty.Store(true)
 	sp := runtime.NewFake()
 	var stdout bytes.Buffer
+	dispatchDone := make(chan struct{})
 
 	// recordingOrderDispatcher is a pure in-process fake (no order subprocesses),
 	// so it carries none of the tempdir-cleanup races the real dispatcher would.
@@ -5450,6 +5473,7 @@ func TestCityRuntimeManualHardReloadRepliesBeforeDispatch(t *testing.T) {
 			if len(doneCh) == 0 {
 				t.Error("dispatchOrders ran before the manual hard-reload reply was sent (#3206)")
 			}
+			close(dispatchDone)
 		},
 	}
 	cr := newTestCityRuntime(t, CityRuntimeParams{
@@ -5478,6 +5502,11 @@ func TestCityRuntimeManualHardReloadRepliesBeforeDispatch(t *testing.T) {
 
 	cr.tick(context.Background(), dirty, &lastProviderName, cityPath, &prevPoolRunning, "poke")
 
+	select {
+	case <-dispatchDone:
+	case <-time.After(time.Second):
+		t.Fatal("order dispatcher was not called")
+	}
 	if !od.called.Load() {
 		t.Fatal("order dispatcher was not called")
 	}
@@ -6481,6 +6510,9 @@ func TestCityRuntimeShutdownDrainsOrderDispatch(t *testing.T) {
 
 	cr.shutdown()
 
+	if got := od.cancelCalls.Load(); got != 1 {
+		t.Fatalf("cancelCalls = %d, want 1", got)
+	}
 	if od.drainCalls != 1 {
 		t.Fatalf("drainCalls = %d, want 1", od.drainCalls)
 	}

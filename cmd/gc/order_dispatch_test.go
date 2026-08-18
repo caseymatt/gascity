@@ -9088,6 +9088,47 @@ func TestOrderDispatcherCancelTerminatesInFlight(t *testing.T) {
 	}
 }
 
+func TestOrderActionSurvivesEvaluationContextCancellation(t *testing.T) {
+	store := beads.NewMemStore()
+	execStarted := make(chan struct{})
+	probe := make(chan struct{})
+	observed := make(chan error, 1)
+	fakeExec := func(ctx context.Context, _, _ string, _ []string) ([]byte, error) {
+		close(execStarted)
+		<-probe
+		observed <- ctx.Err()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	aa := []orders.Order{{
+		Name:     "evaluation-context",
+		Trigger:  "cooldown",
+		Interval: "2m",
+		Exec:     "scripts/evaluation-context.sh",
+	}}
+	ad := buildOrderDispatcherFromListExec(aa, store, nil, fakeExec, nil)
+	m, ok := ad.(*memoryOrderDispatcher)
+	if !ok {
+		t.Fatalf("expected *memoryOrderDispatcher, got %T", ad)
+	}
+
+	evaluationCtx, cancelEvaluation := context.WithCancel(context.Background())
+	ad.dispatch(evaluationCtx, t.TempDir(), time.Now())
+	<-execStarted
+	cancelEvaluation()
+	close(probe)
+	if err := <-observed; err != nil {
+		t.Fatalf("action context after evaluation ended = %v, want live dispatcher context", err)
+	}
+
+	m.cancel()
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), time.Second)
+	defer cancelDrain()
+	if !ad.drain(drainCtx) {
+		t.Fatal("dispatcher action did not drain after dispatcher cancellation")
+	}
+}
+
 // lockedWriter must serialize concurrent Write calls so log lines emitted
 // from parallel dispatchOne goroutines do not interleave. Run under -race
 // to also catch the underlying data race on the shared writer.

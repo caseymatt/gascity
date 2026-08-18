@@ -121,13 +121,15 @@ var (
 // per due order's dispatch action. The tracking bead is created before the
 // goroutine launches to prevent re-fire on the next tick.
 //
-// drain waits for all in-flight dispatch goroutines spawned by prior
-// dispatch calls to complete, bounded by ctx. It returns true when all
-// tracked dispatches completed. Callers use this on controller exit and
-// config reload to ensure tracking bead outcome metadata is persisted
-// before the dispatcher is replaced or discarded.
+// cancel terminates the dispatcher's lifecycle context. drain then waits for
+// action goroutines to persist their canceled outcomes. Reload drains without
+// canceling; process shutdown cancels first.
+//
+// drain waits for all in-flight dispatch goroutines spawned by prior dispatch
+// calls, bounded by ctx. It returns true when all tracked dispatches completed.
 type orderDispatcher interface {
 	dispatch(ctx context.Context, cityPath string, now time.Time)
+	cancel()
 	drain(ctx context.Context) bool
 }
 
@@ -610,6 +612,9 @@ func (m *memoryOrderDispatcher) prefetchConditionResults(candidates []*orderDisp
 }
 
 func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, now time.Time) {
+	if ctx.Err() != nil {
+		return
+	}
 	// Skip all order dispatch when the city is suspended. Use the
 	// dispatcher's in-scope city path so suspension state resolves
 	// against the controlled city rather than the process cwd.
@@ -906,8 +911,16 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 		// launched, so it is released immediately to balance the reservation.
 		//
 		// Auto-triggered orders carry no args channel: vars/execEnv are nil.
+		actionCtx := ctx
+		if m.dispatchCtx != nil {
+			// The lane context bounds gate evaluation only. Once the tracking
+			// bead exists, the action belongs to the dispatcher lifecycle and
+			// survives the end of this evaluation pass; reload drains it and
+			// dispatcher cancel still terminates it at shutdown.
+			actionCtx = m.dispatchCtx
+		}
 		inFlight.Add(1)
-		trackingBead, err := m.launchResolvedDispatch(ctx, store, target, a, cityPath, nil, nil, inFlight.Done)
+		trackingBead, err := m.launchResolvedDispatch(actionCtx, store, target, a, cityPath, nil, nil, inFlight.Done)
 		if err != nil {
 			inFlight.Done()
 			logDispatchError(m.stderr, "gc: order dispatch: creating tracking bead for %s: %v", scoped, err)

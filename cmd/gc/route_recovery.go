@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
@@ -210,6 +211,7 @@ func (cr *CityRuntime) startTickDeltaLanes(ctx context.Context, prov events.Prov
 	route := cr.routeRecoveryLaneOf()
 	completions := cr.completionsLaneOf()
 	orphans := cr.detachedOrphanLaneOf()
+	cr.startCompletionsDeltaLoop(ctx, completions)
 	watchJournalForDeltaLanes(ctx, prov,
 		func() {
 			route.force(backstopReasonCursorGap)
@@ -219,13 +221,76 @@ func (cr *CityRuntime) startTickDeltaLanes(ctx context.Context, prov events.Prov
 		},
 		func(evt events.Event) {
 			route.observe(evt)
+			cr.absorbCompletionFact(evt)
 			completions.observe(evt)
 			orphans.observe(evt)
-			cr.absorbCompletionFact(evt)
 		})
 	go cr.runRouteRecoveryBackstopLoop(ctx, route)
 	go cr.runCompletionsSweepLoop(ctx, completions)
 	go cr.runDetachedOrphanBackstopLoop(ctx, orphans)
+}
+
+func (cr *CityRuntime) startCompletionsDeltaLoop(ctx context.Context, lane *completionsLane) {
+	if lane.beginWorkers() {
+		go cr.runCompletionsDeltaLoop(ctx, lane)
+	}
+}
+
+func (cr *CityRuntime) runCompletionsDeltaLoop(ctx context.Context, lane *completionsLane) {
+	var workers sync.WaitGroup
+	workers.Add(len(lane.shards))
+	defer func() {
+		workers.Wait()
+		lane.finishWorkers()
+	}()
+	for _, shard := range lane.shards {
+		go func() {
+			defer workers.Done()
+			cr.runCompletionDeltaShard(ctx, lane, shard)
+		}()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-lane.wake:
+		}
+		rootIDs := lane.takePending()
+		if len(rootIDs) == 0 {
+			continue
+		}
+		var batches [completionDeltaShardCount][]string
+		for _, rootID := range rootIDs {
+			shard := completionDeltaShardFor(rootID)
+			batches[shard] = append(batches[shard], rootID)
+		}
+		for shard, batch := range batches {
+			if len(batch) > 0 && lane.shards[shard].enqueue(batch) {
+				lane.force()
+			}
+		}
+	}
+}
+
+func (cr *CityRuntime) runCompletionDeltaShard(ctx context.Context, lane *completionsLane, shard *completionDeltaShard) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-shard.wake:
+		}
+		rootIDs := shard.takePending()
+		if len(rootIDs) == 0 || cr.cs == nil {
+			continue
+		}
+		result := cr.cs.reconcileExecutionCompletionsDeltaResult(rootIDs)
+		if result.Err != nil {
+			lane.requeue(rootIDs)
+			lane.force()
+			fmt.Fprintf(cr.stderr, "%s: completion delta: retaining %d root(s) after read failure: %v\n", cr.logPrefix, len(rootIDs), result.Err) //nolint:errcheck // best-effort stderr
+		}
+		lane.noteProcessed()
+	}
 }
 
 // runRouteRecoveryBackstopLoop polls the route-recovery cadence off-tick.
