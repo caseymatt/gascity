@@ -564,23 +564,26 @@ func (cs *controllerState) reconcileExecutionCompletions() {
 }
 
 // reconcileExecutionCompletionsDelta repairs completion facts for the roots the
-// journal named since the last pass. With no named roots it reads nothing at
-// all — neither the graph stores nor the journal — which is the steady tick.
-//
-// The idempotency record is kept WARM across ticks. Rebuilding it per pass was
-// a full O(retained-history) journal read on every tick that named a root, which
-// on maintainer-city is every tick: 69.7s of a 373s tick, paid to re-derive a
-// set that had not changed (ga-l7jdg). The index is owned by this method — the
-// tick goroutine is its only caller, and the off-tick sweep holds its own.
+// journal named since the last pass.
 func (cs *controllerState) reconcileExecutionCompletionsDelta(rootIDs []string) int {
+	return cs.reconcileExecutionCompletionsDeltaResult(rootIDs).Emitted
+}
+
+// reconcileExecutionCompletionsDeltaResult also reports transient store
+// failures so the off-tick worker can retain drained roots for retry.
+//
+// The idempotency record is kept warm across passes. Rebuilding it per pass was
+// a full O(retained-history) journal read whenever a root was named, which on
+// maintainer-city was every tick: 69.7s of a 373s tick.
+func (cs *controllerState) reconcileExecutionCompletionsDeltaResult(rootIDs []string) executionevent.CompletionReconcileResult {
 	if len(rootIDs) == 0 {
-		return 0
+		return executionevent.CompletionReconcileResult{}
 	}
 	ep, graphStores := cs.completionReconcileInputs(runtimePlane)
 	if ep == nil {
-		return 0
+		return executionevent.CompletionReconcileResult{}
 	}
-	return cs.completionsDeltaIndex.ReconcileRoots(ep, graphStores, rootIDs, "execution-reconcile")
+	return cs.completionsDeltaIndex.ReconcileRootsResult(ep, graphStores, rootIDs, "execution-reconcile")
 }
 
 // completionReconcileInputs resolves the journal and the graph-store fan a

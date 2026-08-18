@@ -190,12 +190,12 @@ func drainOrderDispatch(t *testing.T, m *memoryOrderDispatcher) {
 // TestConditionChecksRunConcurrentlyWithinTheirCap is the parallel half of the
 // leg, and it proves real overlap rather than measuring wall clock.
 //
-// Every check registers itself in a shared directory and then waits, bounded, to
-// SEE a sibling registered. Overlap is therefore the pass condition: with a cap
-// that admits more than one, the checks see each other and every order fires;
-// with a cap of one, no check ever sees a sibling and nothing fires. Each check
-// exits normally either way and removes its own registration on the way out, so
-// the two arms differ only in whether the pass ran them at the same time.
+// Every check registers itself in a shared directory and then waits, bounded,
+// for the whole wave to register. With a cap that admits the wave, all checks
+// cross the barrier and every order fires; with a cap of one, no check can cross
+// and nothing fires. Each check exits normally either way and removes its own
+// registration on the way out, so the two arms differ only in whether the pass
+// admitted concurrent checks.
 //
 // The same fixture is its own control, and neither outcome is reachable by a
 // pass that simply stopped running checks: that one fires nothing AND leaves the
@@ -218,12 +218,15 @@ func TestConditionChecksRunConcurrentlyWithinTheirCap(t *testing.T) {
 			cityPath, cfg, _ := newExecOrderFixture(t)
 			liveDir := filepath.Join(t.TempDir(), "live")
 			ranMarker := filepath.Join(t.TempDir(), "ran")
-			// Register, then wait up to ~1s to see a sibling registration. Exit
-			// 0 only on overlap; always exit normally so the trap unregisters.
+			barrierMarker := filepath.Join(t.TempDir(), "passed")
+			// Register, then wait up to ~1s for the full wave. The persistent
+			// marker keeps the barrier open after the first process crosses and
+			// unregisters, so later pollers observe the same verdict.
 			check := fmt.Sprintf(
 				`mkdir -p %[1]s; echo . >> %[3]s; f=$(mktemp %[1]s/w.XXXXXX); trap 'rm -f "$f"' EXIT; `+
-					`i=0; while [ $i -lt 50 ]; do if [ "$(ls %[1]s | wc -l)" -ge 2 ]; then exit 0; fi; sleep 0.02; i=$((i+1)); done; exit 1`,
-				liveDir, wave, ranMarker)
+					`i=0; while [ $i -lt 50 ]; do if [ "$(ls %[1]s | wc -l)" -ge %[2]d ]; then touch %[4]s; fi; `+
+					`if [ -f %[4]s ]; then exit 0; fi; sleep 0.02; i=$((i+1)); done; exit 1`,
+				liveDir, wave, ranMarker, barrierMarker)
 
 			aa := make([]orders.Order, 0, wave)
 			for i := range wave {

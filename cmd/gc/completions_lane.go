@@ -20,11 +20,11 @@ package main
 //
 // # The split
 //
-//   - The tick runs the DELTA pass: the roots the journal named since the last
-//     pass, and nothing else. Roots are named by an execution.step_* fact's RunID
-//     and by a bead.closed step snapshot's gc.root_bead_id. A steady tick names
-//     none and reads neither the stores nor the journal.
-//   - The full pass becomes a background sweep, chunked and resumable so a corpus
+//   - Four stable root shards run DELTA passes off-tick. The journal names roots
+//     from execution.step_* RunIDs and bead.closed gc.root_bead_id metadata.
+//     Repeated names coalesce, one root stays serialized on its stable shard,
+//     and unrelated roots can advance concurrently.
+//   - The full pass is a background sweep, chunked and resumable so a corpus
 //     bigger than one chunk cannot starve its own convergence, plus the startup
 //     pass that was already there.
 //
@@ -68,16 +68,80 @@ const (
 	// completionsCandidateCap bounds the pending root set. Overflow is a gap:
 	// the feed can no longer claim to name every changed root, so the sweep
 	// answers instead of candidates being dropped.
-	completionsCandidateCap = 4096
+	completionsCandidateCap   = 4096
+	completionDeltaShardCount = 4
+	completionDeltaShardCap   = completionsCandidateCap / completionDeltaShardCount
 )
+
+type completionDeltaShard struct {
+	mu      sync.Mutex
+	pending map[string]struct{}
+	wake    chan struct{}
+}
+
+func newCompletionDeltaShard() *completionDeltaShard {
+	return &completionDeltaShard{
+		pending: make(map[string]struct{}),
+		wake:    make(chan struct{}, 1),
+	}
+}
+
+func (s *completionDeltaShard) enqueue(rootIDs []string) bool {
+	s.mu.Lock()
+	overflow := false
+	for _, rootID := range rootIDs {
+		if _, exists := s.pending[rootID]; exists {
+			continue
+		}
+		if len(s.pending) >= completionDeltaShardCap {
+			s.pending = make(map[string]struct{})
+			overflow = true
+			break
+		}
+		s.pending[rootID] = struct{}{}
+	}
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+	return overflow
+}
+
+func (s *completionDeltaShard) takePending() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pending) == 0 {
+		return nil
+	}
+	rootIDs := make([]string, 0, len(s.pending))
+	for rootID := range s.pending {
+		rootIDs = append(rootIDs, rootID)
+	}
+	s.pending = make(map[string]struct{})
+	return rootIDs
+}
+
+func (s *completionDeltaShard) pendingCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending)
+}
 
 // completionsLane holds the delta feed's pending roots and the sweep's cadence.
 type completionsLane struct {
 	mu sync.Mutex
 
-	pending map[string]struct{}
+	pending       map[string]struct{}
+	wake          chan struct{}
+	processed     chan struct{}
+	shards        [completionDeltaShardCount]*completionDeltaShard
+	workerMu      sync.Mutex
+	workerStarted bool
+	workerDone    chan struct{}
 
 	forced          bool
+	forceGeneration uint64
 	sweepRan        bool
 	lastSweepAt     time.Time
 	lastSweepReason string
@@ -87,24 +151,64 @@ type completionsLane struct {
 	// convergence pass. The reason is latched from the chunk that STARTED the
 	// sweep: a sweep that began because the feed declared a gap is a gap-driven
 	// sweep even if its later chunks would have been due on cadence anyway.
-	sweepStartedAt time.Time
-	sweepReason    string
-	sweepEmitted   int
-	sweepRoots     int
+	sweepStartedAt       time.Time
+	sweepForceGeneration uint64
+	sweepReason          string
+	sweepEmitted         int
+	sweepRoots           int
 
 	interval time.Duration
 	poll     time.Duration
 }
 
 func newCompletionsLane() *completionsLane {
-	return &completionsLane{
-		pending:  map[string]struct{}{},
-		interval: completionsBackstopInterval,
-		poll:     completionsBackstopChunkInterval,
+	lane := &completionsLane{
+		pending:   map[string]struct{}{},
+		wake:      make(chan struct{}, 1),
+		processed: make(chan struct{}, 1),
+		interval:  completionsBackstopInterval,
+		poll:      completionsBackstopChunkInterval,
 		// Nothing has converged yet, so the first thing this lane does is sweep —
 		// expressed by sweepRan being false rather than by pre-setting the forced
 		// latch. Both make the first pass due; only this one lets it report itself
 		// as a startup pass instead of as a cursor gap that never happened.
+	}
+	for i := range lane.shards {
+		lane.shards[i] = newCompletionDeltaShard()
+	}
+	return lane
+}
+
+func (l *completionsLane) beginWorkers() bool {
+	l.workerMu.Lock()
+	defer l.workerMu.Unlock()
+	if l.workerStarted {
+		return false
+	}
+	l.workerStarted = true
+	l.workerDone = make(chan struct{})
+	return true
+}
+
+func (l *completionsLane) finishWorkers() {
+	l.workerMu.Lock()
+	defer l.workerMu.Unlock()
+	close(l.workerDone)
+}
+
+func (l *completionsLane) waitWorkers(ctx context.Context) bool {
+	l.workerMu.Lock()
+	if !l.workerStarted {
+		l.workerMu.Unlock()
+		return true
+	}
+	done := l.workerDone
+	l.workerMu.Unlock()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -123,6 +227,11 @@ func (l *completionsLane) pollEvery() time.Duration {
 func (l *completionsLane) force() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.forceLocked()
+}
+
+func (l *completionsLane) forceLocked() {
+	l.forceGeneration++
 	l.forced = true
 }
 
@@ -134,13 +243,19 @@ func (l *completionsLane) observe(evt events.Event) {
 		return
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	if _, exists := l.pending[rootID]; exists {
+		l.mu.Unlock()
+		return
+	}
 	if len(l.pending) >= completionsCandidateCap {
 		l.pending = map[string]struct{}{}
-		l.forced = true
+		l.forceLocked()
+		l.mu.Unlock()
 		return
 	}
 	l.pending[rootID] = struct{}{}
+	l.mu.Unlock()
+	l.signal()
 }
 
 // completionRootFromEvent extracts the execution run a journal event names.
@@ -179,6 +294,64 @@ func (l *completionsLane) takePending() []string {
 	return out
 }
 
+func (l *completionsLane) requeue(rootIDs []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, rootID := range rootIDs {
+		if _, exists := l.pending[rootID]; exists {
+			continue
+		}
+		if len(l.pending) >= completionsCandidateCap {
+			l.pending = map[string]struct{}{}
+			l.forceLocked()
+			return
+		}
+		l.pending[rootID] = struct{}{}
+	}
+}
+
+func (l *completionsLane) signalPending() {
+	l.mu.Lock()
+	pending := len(l.pending) > 0
+	l.mu.Unlock()
+	if pending {
+		l.signal()
+	}
+}
+
+func (l *completionsLane) pendingCount() int {
+	l.mu.Lock()
+	count := len(l.pending)
+	l.mu.Unlock()
+	for _, shard := range l.shards {
+		count += shard.pendingCount()
+	}
+	return count
+}
+
+func completionDeltaShardFor(rootID string) int {
+	hash := uint32(2166136261)
+	for i := range len(rootID) {
+		hash ^= uint32(rootID[i])
+		hash *= 16777619
+	}
+	return int(hash % completionDeltaShardCount)
+}
+
+func (l *completionsLane) signal() {
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (l *completionsLane) noteProcessed() {
+	select {
+	case l.processed <- struct{}{}:
+	default:
+	}
+}
+
 // sweepDue reports whether the full convergence sweep should run now, and WHY.
 //
 // The reason is not decoration. A sweep running because the event feed declared
@@ -201,15 +374,16 @@ func (l *completionsLane) sweepDue(now time.Time) (string, bool) {
 }
 
 // noteSweepChunk folds one chunk into the sweep in progress and, when the chunk
-// completed a full traversal, closes the sweep out: it clears the force latch,
-// advances the cadence, and returns the whole sweep's totals for the summary
-// line. A sweep still in progress returns done=false and keeps the lane due.
+// completed a full traversal, advances the cadence and returns the whole
+// sweep's totals. A force raised after this traversal started remains latched
+// so a fresh pass revisits roots the in-progress cursor may already have passed.
 func (l *completionsLane) noteSweepChunk(now time.Time, reason string, emitted, roots int, complete bool) (total completionsSweepTotals, done bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.sweepStartedAt.IsZero() {
 		l.sweepStartedAt = now
 		l.sweepReason = reason
+		l.sweepForceGeneration = l.forceGeneration
 	}
 	l.sweepEmitted += emitted
 	l.sweepRoots += roots
@@ -225,8 +399,9 @@ func (l *completionsLane) noteSweepChunk(now time.Time, reason string, emitted, 
 	l.lastSweepAt = now
 	l.lastSweepReason = l.sweepReason
 	l.sweepRan = true
-	l.forced = false
+	l.forced = l.forceGeneration != l.sweepForceGeneration
 	l.sweepStartedAt = time.Time{}
+	l.sweepForceGeneration = 0
 	l.sweepReason = ""
 	l.sweepEmitted = 0
 	l.sweepRoots = 0
