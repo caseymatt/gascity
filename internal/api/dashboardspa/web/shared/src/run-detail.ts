@@ -168,6 +168,52 @@ export type FormulaRunCompleteness =
   | { kind: 'complete' }
   | { kind: 'partial'; reasons: FormulaRunPartialReason[] };
 
+/** The workflow root's persisted owner authority, independent of orchestration progress. */
+export interface RunOwnerLifecycle {
+  status: 'open' | 'owner_held' | 'awaiting_owner_close' | 'closed';
+  rootStatus: string;
+  owned: boolean;
+  awaitingOwnerClose: boolean;
+}
+
+/** Controller-owned workflow progress, independent of owner and delivery state. */
+export interface RunWorkflowControl {
+  status: 'not_started' | 'active' | 'blocked' | 'failed' | 'complete';
+  total: number;
+  open: number;
+  closed: number;
+  blocked: number;
+  failed: number;
+}
+
+/** Implementation and final-report evidence recorded by the run. */
+export interface RunDelivery {
+  status: 'pending' | 'implementation_recorded' | 'delivered';
+  outcome?: string;
+  implementationSummaryPath?: string;
+  finalReportPath?: string;
+}
+
+/** Pack-authored publication result; publication does not imply merge. */
+export interface RunPublish {
+  status: string;
+  action?: string;
+  reason?: string;
+  artifactPath?: string;
+  remoteStatus?: string;
+  publishedCommit?: string;
+  pullRequestUrl?: string;
+  pullRequestNumber?: string;
+}
+
+/** Explicit merge or pull-request evidence; absence remains unreported. */
+export interface RunMerge {
+  status: string;
+  commit?: string;
+  target?: string;
+  pullRequestUrl?: string;
+}
+
 export interface FormulaRunDetail {
   runId: string;
   rootBeadId: string;
@@ -183,6 +229,11 @@ export interface FormulaRunDetail {
   snapshotEventSeq: RunSnapshotSequence;
   completeness: FormulaRunCompleteness;
   progress: FormulaRunProgress;
+  ownerLifecycle: RunOwnerLifecycle;
+  workflowControl: RunWorkflowControl;
+  delivery: RunDelivery;
+  publish: RunPublish;
+  merge: RunMerge;
   /**
    * gascity-dashboard-ud6j: the dashboard-derived phase ladder
    * (intake → implementation → review → approval → finalization) — the SAME

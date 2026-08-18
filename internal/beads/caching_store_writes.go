@@ -549,6 +549,16 @@ func newCachingStoreTx() *cachingStoreTx {
 	}
 }
 
+func (tx *cachingStoreTx) Get(id string) (Bead, error) {
+	readTx, ok := tx.backing.(interface {
+		Get(string) (Bead, error)
+	})
+	if !ok {
+		return Bead{}, errors.New("beads tx: backing transaction does not support reads")
+	}
+	return readTx.Get(id)
+}
+
 func (tx *cachingStoreTx) Create(b Bead) (Bead, error) {
 	created, err := tx.backing.Create(b)
 	if err != nil {

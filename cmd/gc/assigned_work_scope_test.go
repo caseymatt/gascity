@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/agentutil"
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
@@ -27,11 +28,24 @@ func sessionInfosFromBeads(bs []beads.Bead) []sessionpkg.Info {
 	return infos
 }
 
+// TestFilterAssignedWorkBeadsForSessionWakeKeepsOnlyReachableAssigneeSources
+// pins the store scoping of the wake filter for a rig-scoped session.
+//
+// Two arms are reachable and one is not. Its OWN rig store is reachable, as it
+// always was; the LEADING arm (ref "") is now reachable too, because that is
+// where claim-time class routing writes an assignee on a split city and where
+// the agent's own hook fan-out reads even on a single-store one
+// (appendCityHookStore) — dropping a claim the session holds there is what left
+// a live worker with no wake reason at all (ga-whzrt). Another rig's store stays
+// unreachable, which is what keeps this a scoping rule rather than
+// cross-store-for-everyone.
 func TestFilterAssignedWorkBeadsForSessionWakeKeepsOnlyReachableAssigneeSources(t *testing.T) {
 	cityPath := t.TempDir()
-	rigPath := filepath.Join(cityPath, "riga")
 	cfg := &config.City{
-		Rigs: []config.Rig{{Name: "riga", Path: rigPath}},
+		Rigs: []config.Rig{
+			{Name: "riga", Path: filepath.Join(cityPath, "riga")},
+			{Name: "rigb", Path: filepath.Join(cityPath, "rigb")},
+		},
 		Agents: []config.Agent{{
 			Name: "worker",
 			Dir:  "riga",
@@ -57,20 +71,34 @@ func TestFilterAssignedWorkBeadsForSessionWakeKeepsOnlyReachableAssigneeSources(
 		{ID: "rig-named", Status: "open", Assignee: "riga/worker"},
 		{ID: "city-session", Status: "in_progress", Assignee: "session-1"},
 		{ID: "rig-session", Status: "in_progress", Assignee: "session-1"},
+		{ID: "other-rig-session", Status: "in_progress", Assignee: "session-1"},
+		{ID: "other-rig-named", Status: "open", Assignee: "riga/worker"},
 	}
-	storeRefs := []string{"", "riga", "", "riga"}
+	storeRefs := []string{"", "riga", "", "riga", "rigb", "rigb"}
 
-	got, gotRefs := filterAssignedWorkBeadsForSessionWake(cfg, cityPath, sessionInfosFromBeads(sessions), work, storeRefs)
+	got, gotRefs := filterAssignedWorkBeadsForSessionWake(cfg, cityPath, nil, sessionInfosFromBeads(sessions), work, storeRefs)
 
-	if len(got) != 2 {
-		t.Fatalf("filtered work length = %d, want 2: %#v", len(got), got)
+	wantIDs := []string{"city-named", "rig-named", "city-session", "rig-session"}
+	wantRefs := []string{"", "riga", "", "riga"}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("filtered work length = %d, want %d: %#v", len(got), len(wantIDs), got)
 	}
-	if got[0].ID != "rig-named" || got[1].ID != "rig-session" {
-		t.Fatalf("filtered work IDs = [%s %s], want [rig-named rig-session]", got[0].ID, got[1].ID)
+	for i, want := range wantIDs {
+		if got[i].ID != want {
+			t.Fatalf("filtered work IDs = %v, want %v", assignedWorkIDs(got), wantIDs)
+		}
+		if gotRefs[i] != wantRefs[i] {
+			t.Fatalf("filtered store refs = %#v, want %#v aligned with beads", gotRefs, wantRefs)
+		}
 	}
-	if len(gotRefs) != len(got) || gotRefs[0] != "riga" || gotRefs[1] != "riga" {
-		t.Fatalf("filtered store refs = %#v, want [riga riga] aligned with beads", gotRefs)
+}
+
+func assignedWorkIDs(work []beads.Bead) []string {
+	ids := make([]string, 0, len(work))
+	for _, wb := range work {
+		ids = append(ids, wb.ID)
 	}
+	return ids
 }
 
 func TestFilterAssignedWorkBeadsForSessionWakeCityScopedAgentIsCrossStoreEligible(t *testing.T) {
@@ -99,7 +127,7 @@ func TestFilterAssignedWorkBeadsForSessionWakeCityScopedAgentIsCrossStoreEligibl
 	}
 	storeRefs := []string{"", "riga"} // city store + rig store
 
-	got, gotRefs := filterAssignedWorkBeadsForSessionWake(cfg, cityPath, nil, work, storeRefs)
+	got, gotRefs := filterAssignedWorkBeadsForSessionWake(cfg, cityPath, nil, nil, work, storeRefs)
 
 	if len(got) != 2 {
 		t.Fatalf("city-scoped %q must be reachable from BOTH stores; got %d: %#v", identity, len(got), got)
@@ -403,9 +431,9 @@ func TestSessionAssignedWorkGuardsFederateForCityScopedSession(t *testing.T) {
 		t.Fatalf("stranded-bead lookup must find rig-store work for a city-scoped session; found=%v bead=%q want=%q", found, bead.ID, rigWork.ID)
 	}
 
-	stranded, err := collectSessionAssignedWork(cityPath, cfg, cityStore, rigStores, session)
+	stranded, err := collectSessionAssignedWorkInfo(cityPath, cfg, cityStore, rigStores, sessiontest.SeedBead(t, session))
 	if err != nil {
-		t.Fatalf("collectSessionAssignedWork: %v", err)
+		t.Fatalf("collectSessionAssignedWorkInfo: %v", err)
 	}
 	if len(stranded) != 1 || stranded[0].bead.ID != rigWork.ID {
 		t.Fatalf("stranded-work collector must include rig-store work for a city-scoped session; got %#v", stranded)
@@ -684,5 +712,53 @@ func TestResolveTaskWorkDirIncludesAssignedWisp(t *testing.T) {
 
 	if got := resolveTaskWorkDir("", store, "worker-session"); got != workDir {
 		t.Fatalf("resolveTaskWorkDir = %q, want assigned wisp work_dir %q", got, workDir)
+	}
+}
+
+func TestResolveTaskWorkDirPrefersPreparedDrainSourceAnchor(t *testing.T) {
+	sourceWorkDir := t.TempDir()
+	launcherWorkDir := t.TempDir()
+	store := beads.NewMemStore()
+	source, err := store.Create(beads.Bead{
+		Title: "implementation source anchor",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.LegacyWorkDirMetadataKey: sourceWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create source anchor: %v", err)
+	}
+	root, err := store.Create(beads.Bead{
+		Title: "drain item workflow",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.DrainMemberIDMetadataKey: source.ID,
+			beadmeta.LegacyWorkDirMetadataKey: launcherWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create item root: %v", err)
+	}
+	step, err := store.Create(beads.Bead{
+		Title:    "implementation step",
+		Type:     "task",
+		Assignee: "worker-session",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey:    root.ID,
+			beadmeta.WorkDirMetadataKey:       launcherWorkDir,
+			beadmeta.LegacyWorkDirMetadataKey: launcherWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create implementation step: %v", err)
+	}
+	inProgress := "in_progress"
+	if err := store.Update(step.ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
+		t.Fatalf("mark implementation step in progress: %v", err)
+	}
+
+	if got := resolveTaskWorkDir("", store, "worker-session"); got != sourceWorkDir {
+		t.Fatalf("resolveTaskWorkDir = %q, want prepared source work dir %q", got, sourceWorkDir)
 	}
 }

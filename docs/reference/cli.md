@@ -71,6 +71,7 @@ gc [flags]
 | [gc restart](#gc-restart) | Restart all agent sessions in the city |
 | [gc resume](#gc-resume) | Resume a suspended city |
 | [gc rig](#gc-rig) | Manage rigs (projects) |
+| [gc run](#gc-run) | Inspect formula run state |
 | [gc runtime](#gc-runtime) | Process-intrinsic runtime operations |
 | [gc service](#gc-service) | Inspect workspace services |
 | [gc session](#gc-session) | Manage interactive chat sessions |
@@ -1670,10 +1671,39 @@ gc formula
 
 | Subcommand | Description |
 |------------|-------------|
+| [gc formula adopt](#gc-formula-adopt) | Adopt reviewed work into a stranded Ralph attempt |
 | [gc formula cook](#gc-formula-cook) | Instantiate a formula into the current bead store |
 | [gc formula list](#gc-formula-list) | List available formulas |
 | [gc formula show](#gc-formula-show) | Show a compiled formula recipe |
 | [gc formula version-check](#gc-formula-version-check) | Check if a bead's formula matches the current on-disk version |
+
+## gc formula adopt
+
+Adopt a reviewed, externally completed drain source into the unique
+open attempt owned by a Ralph control bead.
+
+The source must be a closed passing bead named by the workflow root's
+gc.drain_member_id. It must carry a full gc.implementation.commit, an absolute
+gc.implementation.summary_path to a non-empty regular file under the workflow
+or source worktree, and the same gc.work_dir as the open attempt.
+
+The operation records the source identity and revision time, actor, reason,
+adoption timestamp, commit, summary, and passing outcome on the attempt, then
+closes only that attempt. The normal dispatcher check, summary, review,
+finalize, and publish lifecycle remains responsible for every downstream
+transition. Repeating the same adoption is idempotent; conflicting, changing,
+or ambiguous attempts and sources fail closed.
+
+```
+gc formula adopt <ralph-control-id> [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--actor` | string |  | operator identity recorded in the adoption audit |
+| `--json` | bool |  | emit JSON result |
+| `--reason` | string |  | operator reason recorded in the adoption audit |
+| `--source` | string |  | closed passing source bead with reviewed implementation evidence |
 
 ## gc formula cook
 
@@ -1682,11 +1712,15 @@ Compile and instantiate a formula as real beads in the current store.
 This is a low-level workflow construction tool. It creates the formula root
 and all compiled step beads without routing any work.
 
-With --attach=&lt;bead-id&gt;, the sub-DAG is created as children of the given
-bead. The bead gains a blocking dependency on the sub-DAG root, so it won't
-close until the sub-DAG completes. This is the core primitive for late-bound
-DAG expansion — any agent, script, or workflow step can call it to expand a
-bead into a sub-workflow at runtime.
+With --attach=&lt;bead-id&gt;, the given bead gains a blocking dependency on the
+sub-DAG root, so it won't close until the sub-DAG completes. This is a
+"blocks" dependency only, not a parent-child relationship — the sub-DAG
+root does not become a child of the attached bead (gc bd list --parent
+will not find it), and convoy auto-close, which watches parent-child
+children and "tracks" members rather than blocks dependents, is not
+triggered by the sub-DAG completing. This is the core primitive for
+late-bound DAG expansion — any agent, script, or workflow step can call it
+to expand a bead into a sub-workflow at runtime.
 
 With --attach on a v2 formula — one declaring
 [requires] formula_compiler = "&gt;=2.0.0" — the invocation runs under a
@@ -3668,6 +3702,36 @@ gc rig suspend [name] [flags]
 |------|------|---------|-------------|
 | `--json` | bool |  | Output in JSONL format |
 
+## gc run
+
+Inspect formula run state
+
+```
+gc run
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| [gc run status](#gc-run-status) | Show owner, control, delivery, publish, and merge state |
+
+## gc run status
+
+Show one formula run without collapsing distinct lifecycle boundaries.
+
+Owner lifecycle reports whether an owned root remains open after its graph is
+complete. Workflow control reports the controller-executed control beads.
+Delivery reports implementation/final-report evidence. Publish and merge report
+only their explicit persisted results; neither is inferred from workflow
+closure or from the other surface.
+
+```
+gc run status <workflow-root-id> [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit JSON result |
+
 ## gc runtime
 
 Process-intrinsic runtime operations called by agent code from within sessions.
@@ -4474,6 +4538,12 @@ Sends interrupt signals to running agents, waits for the configured
 shutdown timeout, then force-kills any remaining sessions. Also stops
 the Dolt server and cleans up orphan sessions. If a controller is
 running, delegates shutdown to it.
+
+If the city is registered with the machine-wide supervisor, stop also
+unregisters it (equivalent to a following "gc unregister") — the city
+will not be found by name or auto-started again until it is re-registered
+with "gc register". Use "gc unregister" directly to remove a registration
+without stopping sessions.
 
 Use --timeout=DURATION to cap the wall-clock time gc stop will spend
 before giving up; the default budgets configured session interrupt and

@@ -152,6 +152,11 @@ function detailWithNodes(nodeIds: string[]): FormulaRunDetail {
     snapshotVersion: 1,
     snapshotEventSeq: { kind: 'known', seq: 1 },
     completeness: { kind: 'complete' },
+    ownerLifecycle: { status: 'open', rootStatus: 'open', owned: false, awaitingOwnerClose: false },
+    workflowControl: { status: 'not_started', total: 0, open: 0, closed: 0, blocked: 0, failed: 0 },
+    delivery: { status: 'pending' },
+    publish: { status: 'pending' },
+    merge: { status: 'unreported' },
     phase: 'active',
     stages: [],
     progress: {

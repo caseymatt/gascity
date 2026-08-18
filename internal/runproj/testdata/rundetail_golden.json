@@ -56,6 +56,29 @@
     },
     "terminal": false
   },
+  "ownerLifecycle": {
+    "status": "open",
+    "rootStatus": "open",
+    "owned": false,
+    "awaitingOwnerClose": false
+  },
+  "workflowControl": {
+    "status": "not_started",
+    "total": 0,
+    "open": 0,
+    "closed": 0,
+    "blocked": 0,
+    "failed": 0
+  },
+  "delivery": {
+    "status": "pending"
+  },
+  "publish": {
+    "status": "pending"
+  },
+  "merge": {
+    "status": "unreported"
+  },
   "phase": "review",
   "stages": [
     {

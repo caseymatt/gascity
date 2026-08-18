@@ -236,7 +236,7 @@ if [ -n "$WARNINGS" ]; then
         # backlog minted before the dedup existed) are stale the moment it
         # lands. If the send below then fails, the sig stays unrecorded and the
         # next tick retries both the sweep (a no-op) and the send.
-        advisory_archive_superseded "$ADVISORY_SUBJECT_PREFIX" "$ADVISORY_RECIPIENT"
+        advisory_archive_superseded "$ADVISORY_SUBJECT_PREFIX" "$ADVISORY_RECIPIENT" || true
         if send_escalation \
             "$ADVISORY_SUBJECT" \
             "Latency: ${LATENCY_MS}ms${LATENCY_WARN}
@@ -249,12 +249,13 @@ Orphan DBs: ${ORPHAN_COUNT}${ORPHAN_WARN}${BACKUP_STALE}"; then
 else
     # Healthy: the condition cleared, so no advisory should stay open. Sweep
     # only when a prior advisory was recorded (state file present), so steady
-    # healthy ticks cost no extra gc call; then forget the signature so a
-    # future condition re-alerts.
-    if [ -f "$ADVISORY_STATE_FILE" ]; then
-        advisory_archive_superseded "$ADVISORY_SUBJECT_PREFIX" "$ADVISORY_RECIPIENT"
+    # healthy ticks cost no extra gc call. Clear the signature only after the
+    # archive succeeds; a transient mail failure leaves it in place for retry
+    # on the next tick.
+    if [ -f "$ADVISORY_STATE_FILE" ] &&
+       advisory_archive_superseded "$ADVISORY_SUBJECT_PREFIX" "$ADVISORY_RECIPIENT"; then
+        advisory_clear "$ADVISORY_STATE_FILE"
     fi
-    advisory_clear "$ADVISORY_STATE_FILE"
 fi
 
 SUMMARY="doctor — server: ok, latency: ${LATENCY_MS}ms, conns: ${CONN_COUNT}/${CONN_MAX}, disk: ${DISK_USAGE}, orphans: ${ORPHAN_COUNT}"

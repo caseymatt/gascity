@@ -12,6 +12,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	convoycore "github.com/gastownhall/gascity/internal/convoy"
+	"github.com/gastownhall/gascity/internal/coordclass"
 	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/graphv2"
 	"github.com/gastownhall/gascity/internal/molecule"
@@ -287,42 +288,88 @@ func (e drainUnresolvedMemberError) Unwrap() error {
 	return errDrainUnresolvedMember
 }
 
-// drainMemberProbeSet returns the ordered store set used to resolve a drain
-// member bead: the primary graph store first, then the work-class member store
-// tail from opts.MemberStores. A drain control and its item-root molecules live
-// in the graph store, but the convoy members a drain reserves and reloads are
-// work beads that may live in a different per-class store. Resolving through this
-// set keeps member access consistent with the fresh convoycore.Members build
-// (which already threads opts.MemberStores). Empty MemberStores (single-store
-// callers) collapses the probe to the primary store, matching the pre-seam
-// store.Get behavior exactly.
+// drainMemberProbeSet returns every store that can contain a drain member.
+// MemberStores are the work-class candidates; store is the ambient graph
+// binding. Candidate order is only a fallback for legacy/unclassified rows:
+// resolveDrainMember selects a duplicate from its coordination-class owner.
 func drainMemberProbeSet(store beads.Store, opts ProcessOptions) []beads.Store {
 	probe := make([]beads.Store, 0, 1+len(opts.MemberStores))
-	probe = append(probe, store)
 	probe = append(probe, opts.MemberStores...)
+	probe = append(probe, store)
 	return probe
 }
 
-// drainMemberOwningStore returns the store that owns memberID, probing the
-// primary graph store then the work-class member tail and returning the first
-// store whose Get succeeds. Because ids are prefix-disjoint across stores the
-// member lives in exactly one, so the first hit is authoritative. A store's
-// not-found probe is skipped; any other error is returned. When no probed store
-// has the member (every probe a clean not-found), it falls back to the primary
-// store so reservation reads/writes preserve their pre-seam not-found handling
-// (reserveDrainMember/releaseDrainReservations treat ErrNotFound as a no-op).
+// drainMemberCandidateIsAuthoritative reports whether candidate lives in the
+// store owned by its coordination class. Drain member stores are work-class
+// stores and the ambient store is the graph binding. Other classes are not
+// valid drain-member owners, so retained legacy rows fall back to probe order.
+func drainMemberCandidateIsAuthoritative(candidate beads.Bead, ambientGraph bool) bool {
+	switch coordclass.Classify(candidate) {
+	case coordclass.ClassWork:
+		return !ambientGraph
+	case coordclass.ClassGraph:
+		return ambientGraph
+	default:
+		return false
+	}
+}
+
+type drainMemberResolution struct {
+	bead          beads.Bead
+	store         beads.Store
+	found         bool
+	authoritative bool
+}
+
+func (r *drainMemberResolution) consider(probe beads.Store, memberID string, ambientGraph bool) error {
+	if probe == nil {
+		return nil
+	}
+	candidate, err := probe.Get(memberID)
+	if err != nil {
+		if errors.Is(err, beads.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	authoritative := drainMemberCandidateIsAuthoritative(candidate, ambientGraph)
+	if !r.found || (!r.authoritative && authoritative) {
+		r.bead = candidate
+		r.store = probe
+		r.found = true
+		r.authoritative = authoritative
+	}
+	return nil
+}
+
+// resolveDrainMember resolves duplicate migration-era rows through the store
+// that owns the candidate's coordination class. This makes the common work
+// member prefer its prepared work-store anchor without stealing legacy
+// graph-owned children from the graph binding.
+func resolveDrainMember(store beads.Store, memberID string, opts ProcessOptions) (beads.Bead, beads.Store, bool, error) {
+	var resolved drainMemberResolution
+	for _, probe := range opts.MemberStores {
+		if err := resolved.consider(probe, memberID, false); err != nil {
+			return beads.Bead{}, nil, false, err
+		}
+	}
+	if err := resolved.consider(store, memberID, true); err != nil {
+		return beads.Bead{}, nil, false, err
+	}
+	return resolved.bead, resolved.store, resolved.found, nil
+}
+
+// drainMemberOwningStore returns the store that owns memberID. A store's
+// not-found probe is skipped; any other error is returned. When no candidate
+// has the member it falls back to the primary store so reservation reads and
+// writes preserve their pre-seam not-found handling.
 func drainMemberOwningStore(store beads.Store, memberID string, opts ProcessOptions) (beads.Store, error) {
-	for _, probe := range drainMemberProbeSet(store, opts) {
-		if probe == nil {
-			continue
-		}
-		if _, err := probe.Get(memberID); err != nil {
-			if errors.Is(err, beads.ErrNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		return probe, nil
+	_, owner, found, err := resolveDrainMember(store, memberID, opts)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return owner, nil
 	}
 	return store, nil
 }
@@ -390,10 +437,13 @@ func drainConvoyMembers(store beads.Store, convoyID string, opts ProcessOptions)
 	}
 	var merged []beads.Bead
 	at := make(map[string]int)
-	for _, probe := range drainMemberProbeSet(store, opts) {
+	ambientByID := make(map[string]bool)
+	probes := drainMemberProbeSet(store, opts)
+	for probeIndex, probe := range probes {
 		if probe == nil {
 			continue
 		}
+		ambientGraph := probeIndex == len(probes)-1
 		members, err := convoycore.Members(probe, convoyID, false, opts.MemberStores...)
 		if err != nil {
 			return nil, err
@@ -402,11 +452,21 @@ func drainConvoyMembers(store beads.Store, convoyID string, opts ProcessOptions)
 			i, seen := at[member.ID]
 			if !seen {
 				at[member.ID] = len(merged)
+				ambientByID[member.ID] = ambientGraph
 				merged = append(merged, member)
 				continue
 			}
-			if convoycore.IsUnresolvedTrackedItem(merged[i]) && !convoycore.IsUnresolvedTrackedItem(member) {
+			currentUnresolved := convoycore.IsUnresolvedTrackedItem(merged[i])
+			candidateUnresolved := convoycore.IsUnresolvedTrackedItem(member)
+			switch {
+			case currentUnresolved && !candidateUnresolved:
 				merged[i] = member
+				ambientByID[member.ID] = ambientGraph
+			case !currentUnresolved && !candidateUnresolved &&
+				!drainMemberCandidateIsAuthoritative(merged[i], ambientByID[member.ID]) &&
+				drainMemberCandidateIsAuthoritative(member, ambientGraph):
+				merged[i] = member
+				ambientByID[member.ID] = ambientGraph
 			}
 		}
 	}
@@ -422,16 +482,18 @@ func drainConvoyMembers(store beads.Store, convoyID string, opts ProcessOptions)
 }
 
 func loadDrainManifestMembers(store beads.Store, controlID string, manifest drainManifest, opts ProcessOptions) ([]beads.Bead, error) {
-	probe := drainMemberProbeSet(store, opts)
 	members := make([]beads.Bead, 0, len(manifest.Rows))
 	for _, row := range manifest.Rows {
-		member, err := storeref.Resolve(row.MemberID, probe)
+		member, _, found, err := resolveDrainMember(store, row.MemberID, opts)
 		if err != nil {
-			if errors.Is(err, beads.ErrNotFound) && strings.TrimSpace(row.MemberID) != "" {
+			return nil, fmt.Errorf("%s: loading persisted drain member %s: %w", controlID, row.MemberID, err)
+		}
+		if !found {
+			if strings.TrimSpace(row.MemberID) != "" {
 				members = append(members, beads.Bead{ID: row.MemberID, Title: row.MemberID, Type: "task", Status: "unknown"})
 				continue
 			}
-			return nil, fmt.Errorf("%s: loading persisted drain member %s: %w", controlID, row.MemberID, err)
+			return nil, fmt.Errorf("%s: loading persisted drain member: %w", controlID, beads.ErrNotFound)
 		}
 		members = append(members, member)
 	}
@@ -1162,18 +1224,18 @@ func orderDrainMembersByDependencies(store beads.Store, members []beads.Bead, op
 // unit convoys through: the work-class member stores first, then the ambient
 // store.
 //
-// It is the reverse of drainMemberProbeSet, and deliberately so. A unit convoy is
-// a SYNTHETIC convoy and a synthetic convoy is a WORK bead (coordclass.Classify),
-// so the work class is the authoritative answer and the ambient graph binding is
-// only a fallback for rows that predate that ruling. Asking the binding first
-// gets the wrong answer on a real converged city: cities migrated under the
-// previous classification carry an EDGELESS copy of every synthetic convoy in
-// their binding (`gc storage migrate` copied the row; importInfraSnapshot re-added
+// It deliberately matches drainMemberProbeSet. A unit convoy is a SYNTHETIC
+// convoy and a synthetic convoy is a WORK bead (coordclass.Classify), so the
+// work class is the authoritative answer and the ambient graph binding is only
+// a fallback for rows that predate that ruling. Asking the binding first gets
+// the wrong answer on a real converged city: cities migrated under the previous
+// classification carry an EDGELESS copy of every synthetic convoy in their
+// binding (`gc storage migrate` copied the row; importInfraSnapshot re-added
 // only the edges whose both endpoints were infra), so the binding can answer
 // gc.drain_unit_key with a convoy that has no tracks edge and cannot grow one.
 //
-// With no member stores configured — every single-store caller — this is the one
-// ambient store, so every read through it is the single read it is today.
+// With no member stores configured — every single-store caller — this is the
+// one ambient store, so every read through it is the single read it is today.
 func drainUnitConvoyProbeSet(store beads.Store, opts ProcessOptions) []beads.Store {
 	probe := make([]beads.Store, 0, 1+len(opts.MemberStores))
 	probe = append(probe, opts.MemberStores...)
@@ -1230,17 +1292,12 @@ func drainUnitConvoyStore(store beads.Store, member beads.Bead, opts ProcessOpti
 	if memberID == "" || convoycore.IsUnresolvedTrackedItem(member) {
 		return drainWorkClassStore(store, opts), nil
 	}
-	for _, probe := range drainUnitConvoyProbeSet(store, opts) {
-		if probe == nil {
-			continue
-		}
-		if _, err := probe.Get(memberID); err != nil {
-			if errors.Is(err, beads.ErrNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		return probe, nil
+	_, owner, found, err := resolveDrainMember(store, memberID, opts)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return owner, nil
 	}
 	return drainWorkClassStore(store, opts), nil
 }
@@ -1517,6 +1574,20 @@ func stampDrainItemRecipe(recipe *formula.Recipe, control, unit, member beads.Be
 	root.Metadata[beadmeta.Graphv2RootKeyMetadataKey] = graphv2.RootKey(unit.ID, itemFormula, vars, "drain", control.ID+":"+member.ID)
 	if metadata := graphv2.RuntimeVarsMetadata(vars); metadata != "" {
 		root.Metadata[graphv2.RuntimeVarsMetadataKey] = metadata
+	}
+	workDir := strings.TrimSpace(member.Metadata[beadmeta.WorkDirMetadataKey])
+	if workDir == "" {
+		workDir = strings.TrimSpace(member.Metadata[beadmeta.LegacyWorkDirMetadataKey])
+	}
+	if workDir != "" {
+		for i := range recipe.Steps {
+			step := &recipe.Steps[i]
+			if step.Metadata == nil {
+				step.Metadata = make(map[string]string)
+			}
+			step.Metadata[beadmeta.WorkDirMetadataKey] = workDir
+			step.Metadata[beadmeta.LegacyWorkDirMetadataKey] = workDir
+		}
 	}
 	if strings.TrimSpace(control.Metadata[beadmeta.DrainContextMetadataKey]) == beadmeta.DrainContextShared {
 		group := sharedDrainContinuationGroup(control)

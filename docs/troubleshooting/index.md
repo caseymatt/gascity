@@ -11,6 +11,7 @@ alive.
 ## Diagnose
 
 - [Diagnose a Failed gc start](/troubleshooting/gc-start-walkthrough) — match a `gc start` failure symptom to its cause and resolution.
+- [Recover a Stranded Formula Run](/troubleshooting/stranded-formula-run) — adopt reviewed implementation evidence into one open attempt and let the remaining lifecycle continue.
 - [Recover from Dolt Bloat](/troubleshooting/dolt-bloat-recovery) — recover a beads store whose Dolt noms directory has grown out of proportion.
 - [Clean Up bd Auto-Backups](/troubleshooting/bd-backup-cleanup) — reclaim space when bd's `.beads/backup/` directory grows large enough to threaten disk pressure.
 

@@ -64,6 +64,10 @@ func writeDogFakeGC(t *testing.T, binDir string) string {
 	logPath := filepath.Join(binDir, "gc.log")
 	writeExecutable(t, filepath.Join(binDir, "gc"), fmt.Sprintf(`#!/bin/sh
 printf 'gc %s\n' "$*" >> %s
+if [ "${GC_FAKE_MAIL_ARCHIVE_FAIL:-0}" = "1" ] &&
+   [ "${1:-}" = "mail" ] && [ "${2:-}" = "archive" ]; then
+  exit 1
+fi
 exit 0
 `, "%s", shellQuote(logPath)))
 	return logPath
@@ -4487,8 +4491,8 @@ func TestPhantomDBScriptEscalatesAndPreservesAllDatabases(t *testing.T) {
 	if !strings.Contains(gcLog, "Retired replacement directories: 1 orders.replaced-20260509T010203Z") {
 		t.Fatalf("escalation should report retired replacements separately:\n%s", gcLog)
 	}
-	if !strings.Contains(gcLog, "mail send human -s ESCALATION: Unservable Dolt databases detected [HIGH]") {
-		t.Fatalf("phantom-db escalation must use the generic default recipient:\n%s", gcLog)
+	if !strings.Contains(gcLog, "mail send --from controller human -s ESCALATION: Unservable Dolt databases detected [HIGH]") {
+		t.Fatalf("phantom-db escalation must use the controller sender and generic recipient:\n%s", gcLog)
 	}
 	if strings.Contains(gcLog, "phantom database(s)") {
 		t.Fatalf("escalation should not label all unservables as phantoms:\n%s", gcLog)
@@ -4588,8 +4592,8 @@ func TestBackupScriptSkipsOldDoltBeforeSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read gc log: %v", err)
 	}
-	if !strings.Contains(string(gcLog), "mail send human -s Dolt backup: dolt-too-old for backup sync [HIGH]") {
-		t.Fatalf("old-Dolt backup escalation must use the generic default recipient:\n%s", gcLog)
+	if !strings.Contains(string(gcLog), "mail send --from controller human -s Dolt backup: dolt-too-old for backup sync [HIGH]") {
+		t.Fatalf("old-Dolt backup escalation must use the controller sender and generic recipient:\n%s", gcLog)
 	}
 }
 
@@ -4815,8 +4819,8 @@ func TestBackupScriptCountsFailedDatabasesByDatabase(t *testing.T) {
 	if !strings.Contains(string(gcLog), "Dolt backup: 1/1 databases failed to sync") {
 		t.Fatalf("failure mail should count databases, log:\n%s", gcLog)
 	}
-	if !strings.Contains(string(gcLog), "mail send human -s Dolt backup: 1/1 databases failed to sync [MEDIUM]") {
-		t.Fatalf("backup failure escalation must use the generic default recipient:\n%s", gcLog)
+	if !strings.Contains(string(gcLog), "mail send --from controller human -s Dolt backup: 1/1 databases failed to sync [MEDIUM]") {
+		t.Fatalf("backup failure escalation must use the controller sender and generic recipient:\n%s", gcLog)
 	}
 }
 
@@ -5311,9 +5315,9 @@ exit 0
 	}
 }
 
-// TestDoctorScriptAdvisoryMailUsesGenericEscalation asserts the latency-WARN
-// advisory path goes through the generic escalation recipient.
-func TestDoctorScriptAdvisoryMailUsesGenericEscalation(t *testing.T) {
+// TestDoctorScriptAdvisoryMailUsesControllerEscalation asserts the latency-WARN
+// advisory path identifies deterministic infrastructure as its sender.
+func TestDoctorScriptAdvisoryMailUsesControllerEscalation(t *testing.T) {
 	cityPath := t.TempDir()
 	dataDir := filepath.Join(cityPath, "dolt-data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -5355,8 +5359,8 @@ exit 0
 	if !strings.Contains(string(gcLog), "Dolt health advisory") {
 		t.Fatalf("advisory mail did not fire; latency-WARN should have triggered, log:\n%s", gcLog)
 	}
-	if !strings.Contains(string(gcLog), "mail send human -s Dolt health advisory [MEDIUM]") {
-		t.Fatalf("advisory escalation must use the generic default recipient, log:\n%s", gcLog)
+	if !strings.Contains(string(gcLog), "mail send --from controller human -s Dolt health advisory [MEDIUM]") {
+		t.Fatalf("advisory escalation must use the controller sender and generic recipient, log:\n%s", gcLog)
 	}
 }
 
@@ -5399,7 +5403,7 @@ func readDogGCLog(t *testing.T, gcLogPath string) string {
 	return string(data)
 }
 
-const dogAdvisorySweepInvocation = "mail archive --to human --subject-prefix Dolt health advisory --limit 100"
+const dogAdvisorySweepInvocation = "mail archive --to human --subject-prefix Dolt health advisory --include-read --limit 100"
 
 // TestDoctorScriptAdvisorySweepPrecedesFreshSend asserts that a fresh advisory
 // send is preceded by a superseded-advisory sweep, so the mailbox converges to
@@ -5423,7 +5427,7 @@ func TestDoctorScriptAdvisorySweepPrecedesFreshSend(t *testing.T) {
 	}
 	gcLog := readDogGCLog(t, gcLogPath)
 	sweepAt := strings.Index(gcLog, dogAdvisorySweepInvocation)
-	sendAt := strings.Index(gcLog, "mail send human -s Dolt health advisory [MEDIUM]")
+	sendAt := strings.Index(gcLog, "mail send --from controller human -s Dolt health advisory [MEDIUM]")
 	if sweepAt < 0 {
 		t.Fatalf("advisory send did not sweep superseded advisories, log:\n%s", gcLog)
 	}
@@ -5468,6 +5472,38 @@ func TestDoctorScriptHealthySweepsRecordedAdvisory(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
 		t.Fatalf("healthy run must clear the advisory state file, stat err = %v", err)
+	}
+}
+
+// TestDoctorScriptHealthyRetriesFailedAdvisorySweep asserts a transient mail
+// failure cannot discard the recovery marker and leave a stale alert open.
+func TestDoctorScriptHealthyRetriesFailedAdvisorySweep(t *testing.T) {
+	cityPath := t.TempDir()
+	dataDir := filepath.Join(cityPath, "dolt-data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+
+	binDir := t.TempDir()
+	writeDogFakeGC(t, binDir)
+	writeDogHealthyFakeDolt(t, binDir)
+
+	statePath := filepath.Join(t.TempDir(), "doctor-advisory-state")
+	if err := os.WriteFile(statePath, []byte("latency \n"), 0o600); err != nil {
+		t.Fatalf("seed advisory state: %v", err)
+	}
+
+	runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir,
+		"GC_DOCTOR_ADVISORY_STATE_FILE="+statePath,
+		"GC_FAKE_MAIL_ARCHIVE_FAIL=1")
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("failed recovery sweep must retain advisory state for retry: %v", err)
+	}
+
+	runDogScript(t, "mol-dog-doctor.sh", binDir, cityPath, dataDir,
+		"GC_DOCTOR_ADVISORY_STATE_FILE="+statePath)
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("successful recovery retry must clear advisory state, stat err = %v", err)
 	}
 }
 
@@ -5528,9 +5564,9 @@ func TestDoctorScriptSuppressedTickSkipsSweepAndSend(t *testing.T) {
 	}
 }
 
-// TestDoctorScriptUnreachableEscalationUsesGenericEscalation asserts the
-// server-unreachable path goes through the generic escalation recipient.
-func TestDoctorScriptUnreachableEscalationUsesGenericEscalation(t *testing.T) {
+// TestDoctorScriptUnreachableEscalationUsesControllerSender asserts the
+// server-unreachable path identifies deterministic infrastructure as sender.
+func TestDoctorScriptUnreachableEscalationUsesControllerSender(t *testing.T) {
 	cityPath := t.TempDir()
 	dataDir := filepath.Join(cityPath, "dolt-data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -5556,8 +5592,8 @@ exit 1
 	if !strings.Contains(string(gcLog), "ESCALATION: Dolt server unreachable") {
 		t.Fatalf("unreachable escalation mail did not fire, log:\n%s", gcLog)
 	}
-	if !strings.Contains(string(gcLog), "mail send human -s ESCALATION: Dolt server unreachable") {
-		t.Fatalf("unreachable escalation must use the generic default recipient, log:\n%s", gcLog)
+	if !strings.Contains(string(gcLog), "mail send --from controller human -s ESCALATION: Dolt server unreachable") {
+		t.Fatalf("unreachable escalation must use the controller sender and generic recipient, log:\n%s", gcLog)
 	}
 }
 
