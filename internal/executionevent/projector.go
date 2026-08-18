@@ -490,11 +490,12 @@ const completedFactIndexGrowthCap = 50000
 //
 // # Ownership
 //
-// One index belongs to one lane, and the lock is what lets the journal feed write
-// to it from its own goroutine while the tick reads. It is held per key lookup,
-// never across a store read.
+// One index belongs to one completion lane. The fact lock lets the journal feed
+// and stable root shards share it; warmMu prevents concurrent cold loads from
+// overwriting facts another shard just emitted. Neither lock spans a store read.
 type CompletedFactIndex struct {
 	mu     sync.Mutex
+	warmMu sync.Mutex
 	facts  map[completedFactKey]struct{}
 	loaded bool
 	// baseline is len(facts) as the last journal load left it. Growth past it by
@@ -539,14 +540,29 @@ func (idx *CompletedFactIndex) Invalidate() {
 // exist with no event naming it — a controller can crash between the durable step
 // close and the best-effort append, and graph stores emit no bead.closed by
 // design — so the full pass remains the convergence backstop.
+// CompletionReconcileResult reports both emitted facts and whether every
+// requested graph-store read completed. Callers that own a durable root queue
+// use Err to retain work across transient store failures.
+type CompletionReconcileResult struct {
+	Emitted int
+	Err     error
+}
+
+// ReconcileRoots preserves the original count-only API for callers whose
+// convergence contract has an independent full-scan backstop.
 func (idx *CompletedFactIndex) ReconcileRoots(recorder events.Provider, graphStores []beads.GraphStore, rootIDs []string, actor string) int {
+	return idx.ReconcileRootsResult(recorder, graphStores, rootIDs, actor).Emitted
+}
+
+// ReconcileRootsResult repairs named roots and reports incomplete reads.
+func (idx *CompletedFactIndex) ReconcileRootsResult(recorder events.Provider, graphStores []beads.GraphStore, rootIDs []string, actor string) CompletionReconcileResult {
 	if recorder == nil || len(rootIDs) == 0 {
-		return 0
+		return CompletionReconcileResult{}
 	}
-	if !idx.warm(recorder) {
-		return 0
+	if err := idx.warm(recorder); err != nil {
+		return CompletionReconcileResult{Err: fmt.Errorf("warming completion fact index: %w", err)}
 	}
-	emitted := 0
+	var result CompletionReconcileResult
 	for _, graphStore := range graphStores {
 		if graphStore.Store == nil {
 			continue
@@ -559,22 +575,27 @@ func (idx *CompletedFactIndex) ReconcileRoots(recorder events.Provider, graphSto
 			TierMode:      beads.TierBoth,
 		})
 		if err != nil {
+			result.Err = errors.Join(result.Err, fmt.Errorf("listing completion roots: %w", err))
 			continue
 		}
 		sort.Slice(roots, func(i, j int) bool { return roots[i].ID < roots[j].ID })
-		emitted += reconcileRoots(recorder, graphStore, roots, idx, actor)
+		emitted, reconcileErr := reconcileRoots(recorder, graphStore, roots, idx, actor)
+		result.Emitted += emitted
+		result.Err = errors.Join(result.Err, reconcileErr)
 	}
-	return emitted
+	return result
 }
 
-// warm loads the set from the journal when it is cold and reports whether the
-// index can be used. A journal that cannot be read reports false: emitting
-// without the record would duplicate recovery facts, and a later pass retries.
-func (idx *CompletedFactIndex) warm(recorder events.Provider) bool {
+// warm loads the set from the journal when it is cold. A journal that cannot
+// be read returns an error: emitting without the idempotency record would
+// duplicate recovery facts, and a later pass must retry.
+func (idx *CompletedFactIndex) warm(recorder events.Provider) error {
+	idx.warmMu.Lock()
+	defer idx.warmMu.Unlock()
 	idx.mu.Lock()
 	if idx.loaded && len(idx.facts) <= idx.baseline+completedFactIndexGrowthCap {
 		idx.mu.Unlock()
-		return true
+		return nil
 	}
 	idx.mu.Unlock()
 
@@ -587,7 +608,7 @@ func (idx *CompletedFactIndex) warm(recorder events.Provider) bool {
 	// restatement of a real close rather than a wrong one.
 	existing, err := completedFacts(recorder, events.Filter{Type: events.ExecutionStepCompleted})
 	if err != nil {
-		return false
+		return err
 	}
 	facts := make(map[completedFactKey]struct{}, len(existing))
 	for _, event := range existing {
@@ -600,7 +621,7 @@ func (idx *CompletedFactIndex) warm(recorder events.Provider) bool {
 	idx.facts = facts
 	idx.baseline = len(facts)
 	idx.loaded = true
-	return true
+	return nil
 }
 
 // has reports whether the journal already carries this exact fact.
@@ -673,7 +694,8 @@ func (b *CompletionBackstop) Pass(recorder events.Provider, graphStores []beads.
 		// would re-emit everything the delta lane or the close path recorded.
 		b.index.Invalidate()
 	}
-	if !b.index.warm(recorder) {
+	if err := b.index.warm(recorder); err != nil {
+		result.ListErrors = append(result.ListErrors, fmt.Errorf("warming completion backstop: %w", err))
 		return result
 	}
 	for b.storeIndex < len(graphStores) {
@@ -716,7 +738,11 @@ func (b *CompletionBackstop) Pass(recorder events.Provider, graphStores []beads.
 			}
 		}
 		chunk := remaining[:budget]
-		result.Emitted += reconcileRoots(recorder, graphStore, chunk, &b.index, actor)
+		emitted, reconcileErr := reconcileRoots(recorder, graphStore, chunk, &b.index, actor)
+		result.Emitted += emitted
+		if reconcileErr != nil {
+			result.ListErrors = append(result.ListErrors, reconcileErr)
+		}
 		result.RootsVisited += len(chunk)
 		if len(chunk) > 0 {
 			b.afterRootID = chunk[len(chunk)-1].ID
@@ -735,8 +761,9 @@ func (b *CompletionBackstop) Pass(recorder events.Provider, graphStores []beads.
 // reconcileRoots projects the closed steps of the supplied roots and records the
 // completion facts the journal is missing. The index is updated as it goes so
 // one pass cannot emit the same fact twice across stores.
-func reconcileRoots(recorder events.Recorder, graphStore beads.GraphStore, roots []beads.Bead, completed *CompletedFactIndex, actor string) int {
+func reconcileRoots(recorder events.Recorder, graphStore beads.GraphStore, roots []beads.Bead, completed *CompletedFactIndex, actor string) (int, error) {
 	emitted := 0
+	var resultErr error
 	for _, root := range roots {
 		if root.Metadata[beadmeta.KindMetadataKey] != beadmeta.KindWorkflow ||
 			root.Metadata[beadmeta.FormulaContractMetadataKey] != beadmeta.FormulaContractGraphV2 {
@@ -744,6 +771,7 @@ func reconcileRoots(recorder events.Recorder, graphStore beads.GraphStore, roots
 		}
 		rows, err := currentStepRows(graphStore, root.ID)
 		if err != nil {
+			resultErr = errors.Join(resultErr, err)
 			continue
 		}
 		for _, row := range rows {
@@ -768,7 +796,7 @@ func reconcileRoots(recorder events.Recorder, graphStore beads.GraphStore, roots
 			emitted++
 		}
 	}
-	return emitted
+	return emitted, resultErr
 }
 
 // completedFacts returns the matching completion journal, including a

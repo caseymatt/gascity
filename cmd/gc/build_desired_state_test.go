@@ -4034,7 +4034,7 @@ func TestRealizePoolDesiredSessionsResumePreservesLegacyBoundSessionName(t *test
 }
 
 func TestRealizePoolDesiredSessionsLimitsFreshCreatesToWakeBudget(t *testing.T) {
-	maxWakes := 2
+	maxWakes := 3
 	store := beads.NewMemStore()
 	cfg := &config.City{
 		Workspace: config.Workspace{Name: "test-city"},
@@ -4043,13 +4043,13 @@ func TestRealizePoolDesiredSessionsLimitsFreshCreatesToWakeBudget(t *testing.T) 
 			Name:              "worker",
 			StartCommand:      "true",
 			MinActiveSessions: intPtr(0),
-			MaxActiveSessions: intPtr(10),
+			MaxActiveSessions: intPtr(3),
 		}},
 	}
 	var stderr bytes.Buffer
 	bp := newAgentBuildParams("test-city", t.TempDir(), cfg, runtime.NewFake(), time.Now().UTC(), store, &stderr)
 	bp.sessionBeads = &sessionBeadSnapshot{}
-	requests := make([]SessionRequest, 5)
+	requests := make([]SessionRequest, 10)
 	for i := range requests {
 		requests[i] = SessionRequest{Template: "worker", Tier: "new"}
 	}

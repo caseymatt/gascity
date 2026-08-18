@@ -124,12 +124,16 @@ type CityRuntime struct {
 	mat                     maxSessionAgeTracker
 	adt                     assignedWorkDeferTracker
 	wg                      wispGC
+	orderDispatcherMu       sync.Mutex
 	od                      orderDispatcher
 	retiredOrderDispatchers []orderDispatcher
+	orderDispatchersStopped bool
 	orderSet                []orders.Order
 	orderSetSignature       string
 	orderRescanEnabled      bool
 	orderRescanLast         time.Time
+	orderLane               *orderDispatchLane
+	orderLaneOnce           sync.Once
 	trace                   *sessionReconcilerTraceManager
 
 	// routeRecovery is the route-repair lane: an event-fed delta pass in the
@@ -473,6 +477,7 @@ func newCityRuntime(p CityRuntimeParams) (*CityRuntime, error) {
 		stdout:            p.Stdout,
 		stderr:            p.Stderr,
 	}
+	cr.orderLane = newOrderDispatchLane(cr)
 	cr.svc = workspacesvc.NewManager(&serviceRuntime{cr: cr})
 	if err := cr.svc.Reload(); err != nil {
 		fmt.Fprintf(cr.stderr, "%s: service init: %v\n", cr.logPrefix, err) //nolint:errcheck // best-effort stderr
@@ -1231,7 +1236,7 @@ func (cr *CityRuntime) tick(
 	// but after the pressure gate and managed-Dolt preflight so skipped or
 	// endpoint-repair ticks do not add tracking writes first.
 	phaseStart = time.Now()
-	cr.dispatchOrders(ctx, cityRoot)
+	cr.orderDispatchLaneOf().request(ctx, cityRoot)
 	recordPhase(TraceSiteOrderDispatch, "dispatch_orders", phaseStart, nil)
 	if ctx.Err() != nil {
 		return
@@ -1412,22 +1417,17 @@ func (cr *CityRuntime) tick(
 	}
 	// Graph stores intentionally do not emit bead.closed, so a step closed
 	// between the durable write and the best-effort journal append would be a
-	// permanent lifecycle gap. The tick repairs only the roots the journal named
-	// since the last pass; the whole-corpus convergence sweep runs off-tick in
-	// the background lane.
-	//
-	// The old gate here was `trigger == "patrol"`, which is not a cadence: under
-	// overload every surviving ticker fire IS a patrol trigger, so the full pass
-	// ran on every tick and cost 72.4s of it (ga-l7jdg).
+	// permanent lifecycle gap. The event-fed delta worker repairs named roots;
+	// the tick only nudges retained retry work and records queue state. The
+	// whole-corpus convergence sweep remains an independent off-tick backstop.
 	if cr.cs != nil {
 		phaseStart = time.Now()
 		completionsLane := cr.completionsLaneOf()
-		namedRoots := completionsLane.takePending()
-		emitted := cr.cs.reconcileExecutionCompletionsDelta(namedRoots)
+		completionsLane.signalPending()
 		completionFields := map[string]any{
-			"lane":        "delta",
-			"named_roots": len(namedRoots),
-			"emitted":     emitted,
+			"lane":          "delta",
+			"pending_roots": completionsLane.pendingCount(),
+			"queued":        true,
 		}
 		sweptAt, sweptReason, swept := completionsLane.lastSweep()
 		addBackstopAgeFields(completionFields, sweptAt, sweptReason, swept)
@@ -1493,12 +1493,24 @@ func (cr *CityRuntime) dispatchOrders(ctx context.Context, cityRoot string) {
 		cr.applyWispQueryIndexes(ctx)
 	}
 	cr.rescanOrderDispatcherIfDue(ctx, cityRoot, now)
+	if ctx.Err() != nil {
+		return
+	}
 	cr.runOrderTrackingSweepWatchdog(now)
 	cr.runOrderTrackingRetentionWatchdog(now)
 	cr.runNudgeMailSweepWatchdog(now)
-	if cr.od != nil {
-		cr.od.dispatch(ctx, cityRoot, now)
+	if od := cr.activeOrderDispatcher(); od != nil {
+		od.dispatch(ctx, cityRoot, now)
 	}
+}
+
+func (cr *CityRuntime) orderDispatchLaneOf() *orderDispatchLane {
+	cr.orderLaneOnce.Do(func() {
+		if cr.orderLane == nil {
+			cr.orderLane = newOrderDispatchLane(cr)
+		}
+	})
+	return cr.orderLane
 }
 
 func (cr *CityRuntime) rescanOrderDispatcherIfDue(ctx context.Context, cityRoot string, now time.Time) {
@@ -1514,11 +1526,21 @@ func (cr *CityRuntime) rescanOrderDispatcherIfDue(ctx context.Context, cityRoot 
 	}
 }
 
+// activeOrderDispatcher returns the dispatcher installed in the lifecycle
+// registry. Dispatch runs outside the registry lock; dispatcher drain and
+// cancel own their own synchronization.
+func (cr *CityRuntime) activeOrderDispatcher() orderDispatcher {
+	cr.orderDispatcherMu.Lock()
+	defer cr.orderDispatcherMu.Unlock()
+	return cr.od
+}
+
 // replaceOrderDispatcher installs next as the active order dispatcher, carrying
 // warm last-run data and active gate-backoff state from the outgoing dispatcher
 // so a rebuild (reload or rescan) reuses them instead of cold-starting (#3201).
 // Call after draining the outgoing dispatcher.
 func (cr *CityRuntime) replaceOrderDispatcher(next orderDispatcher) {
+	cr.orderDispatcherMu.Lock()
 	if prev, ok := cr.od.(*memoryOrderDispatcher); ok {
 		if nextMem, ok := next.(*memoryOrderDispatcher); ok {
 			nextMem.carryLastRunCacheFrom(prev)
@@ -1526,6 +1548,11 @@ func (cr *CityRuntime) replaceOrderDispatcher(next orderDispatcher) {
 		}
 	}
 	cr.od = next
+	stopped := cr.orderDispatchersStopped
+	cr.orderDispatcherMu.Unlock()
+	if stopped && next != nil {
+		next.cancel()
+	}
 }
 
 func (cr *CityRuntime) rescanOrderDispatcher(ctx context.Context, cityRoot string, cfg *config.City, cmdName string, now time.Time) (bool, string, error) {
@@ -1542,9 +1569,9 @@ func (cr *CityRuntime) rescanOrderDispatcher(ctx context.Context, cityRoot strin
 	}
 
 	summary := orderSetChangeSummary(cr.orderSet, snapshot.Orders)
-	if cr.od != nil {
+	if current := cr.activeOrderDispatcher(); current != nil {
 		drainCtx, drainCancel := context.WithTimeout(ctx, reloadOrderDrainTimeout)
-		cr.drainOutgoingOrderDispatcher(drainCtx, cr.od)
+		cr.drainOutgoingOrderDispatcher(drainCtx, current)
 		drainCancel()
 	}
 	cr.replaceOrderDispatcher(buildOrderDispatcherFromOrderSet(cr.storageRoutes, cityRoot, cfg, snapshot.Orders, cr.rec, cr.stderr))
@@ -1952,6 +1979,21 @@ func (cr *CityRuntime) reloadConfigTraced(
 		fmt.Fprintf(cr.stderr, "%s: warning: %s\n", cr.logPrefix, message) //nolint:errcheck // best-effort stderr
 	}
 
+	orderLane := cr.orderDispatchLaneOf()
+	orderLaneCtx, orderLaneCancel := context.WithTimeout(ctx, reloadOrderDrainTimeout)
+	orderLaneIdle := orderLane.pauseAndWait(orderLaneCtx)
+	orderLaneCancel()
+	defer orderLane.resume()
+	if !orderLaneIdle {
+		err := errors.New("order evaluation did not quiesce before reload")
+		fmt.Fprintf(cr.stderr, "%s: config reload: %v (keeping old config)\n", cr.logPrefix, err) //nolint:errcheck // best-effort stderr
+		telemetry.RecordConfigReload(ctx, "", string(source), string(reloadOutcomeFailed), 0, err)
+		if trace != nil {
+			trace.RecordConfigReload("", "", TraceOutcomeFailed, source, nil, nil, false, nil, err)
+		}
+		return reloadControlReply{Outcome: reloadOutcomeFailed, Error: err.Error()}
+	}
+
 	configName := cr.configName
 	if configName == "" {
 		configName = cr.cityName
@@ -2228,9 +2270,9 @@ func (cr *CityRuntime) reloadConfigTraced(
 	// and drained again during shutdown.
 	// Deriving from ctx (the tick ctx) lets a shutdown racing with reload
 	// short-circuit the drain instead of waiting the full 1s.
-	if cr.od != nil {
+	if current := cr.activeOrderDispatcher(); current != nil {
 		drainCtx, drainCancel := context.WithTimeout(ctx, reloadOrderDrainTimeout)
-		cr.drainOutgoingOrderDispatcher(drainCtx, cr.od)
+		cr.drainOutgoingOrderDispatcher(drainCtx, current)
 		drainCancel()
 	}
 	nextOD, orderSnapshot := buildOrderDispatcherWithSnapshot(cr.storageRoutes, cityRoot, nextCfg, cr.rec, cr.stderr, "gc reload: order scan")
@@ -3892,23 +3934,57 @@ func (cr *CityRuntime) drainOutgoingOrderDispatcher(ctx context.Context, od orde
 	if od.drain(ctx) {
 		return
 	}
+	cr.orderDispatcherMu.Lock()
 	cr.retiredOrderDispatchers = append(cr.retiredOrderDispatchers, od)
+	stopped := cr.orderDispatchersStopped
+	cr.orderDispatcherMu.Unlock()
+	if stopped {
+		od.cancel()
+	}
+}
+
+// stopOrderDispatchers atomically closes the dispatcher lifecycle registry.
+// Existing dispatchers are canceled immediately; a replacement finishing after
+// this snapshot observes the stopped latch in replaceOrderDispatcher and is
+// canceled before it can own a live action context.
+func (cr *CityRuntime) stopOrderDispatchers() {
+	cr.orderDispatcherMu.Lock()
+	cr.orderDispatchersStopped = true
+	dispatchers := make([]orderDispatcher, 0, 1+len(cr.retiredOrderDispatchers))
+	dispatchers = append(dispatchers, cr.od)
+	dispatchers = append(dispatchers, cr.retiredOrderDispatchers...)
+	cr.orderDispatcherMu.Unlock()
+	for _, od := range dispatchers {
+		if od != nil {
+			od.cancel()
+		}
+	}
+}
+
+func (cr *CityRuntime) hasOrderDispatchers() bool {
+	cr.orderDispatcherMu.Lock()
+	defer cr.orderDispatcherMu.Unlock()
+	return cr.od != nil || len(cr.retiredOrderDispatchers) > 0
 }
 
 func (cr *CityRuntime) drainOrderDispatchers(ctx context.Context) {
+	cr.orderDispatcherMu.Lock()
+	active := cr.od
+	retired := append([]orderDispatcher(nil), cr.retiredOrderDispatchers...)
+	cr.orderDispatcherMu.Unlock()
+
 	var retained []orderDispatcher
-	if cr.od != nil && !cr.od.drain(ctx) {
-		retained = append(retained, cr.od)
+	if active != nil && !active.drain(ctx) {
+		retained = append(retained, active)
 	}
-	for _, od := range cr.retiredOrderDispatchers {
-		if od == nil {
-			continue
-		}
-		if !od.drain(ctx) {
+	for _, od := range retired {
+		if od != nil && !od.drain(ctx) {
 			retained = append(retained, od)
 		}
 	}
+	cr.orderDispatcherMu.Lock()
 	cr.retiredOrderDispatchers = retained
+	cr.orderDispatcherMu.Unlock()
 }
 
 func orderShutdownDrainTimeout(total time.Duration) time.Duration {
@@ -3944,6 +4020,8 @@ func (cr *CityRuntime) recordPreservedShutdownTrace() {
 // normal shutdown) — only the first call takes effect.
 func (cr *CityRuntime) shutdown() {
 	cr.shutdownOnce.Do(func() {
+		orderLaneDrained := true
+		completionLaneDrained := true
 		// The storage binding's engine is opened once per process and closed
 		// once, at the very end of this one — deferred first so it runs last.
 		//
@@ -3964,10 +4042,24 @@ func (cr *CityRuntime) shutdown() {
 			// Passing our OWN routes is what keeps this from dropping a
 			// registration a live replacement already installed.
 			unregisterResidencyRoutes(cr.cityPath, cr.storageRoutes)
+			if !orderLaneDrained || !completionLaneDrained {
+				fmt.Fprintf(cr.stderr, "%s: background controller work still active; leaving storage binding open until process exit\n", cr.logPrefix) //nolint:errcheck // best-effort stderr
+				return
+			}
 			if err := cr.storageRoutes.close(); err != nil {
 				fmt.Fprintf(cr.stderr, "%s: closing the storage binding: %v\n", cr.logPrefix, err) //nolint:errcheck // best-effort stderr
 			}
 		}()
+		total := cr.cfg.Daemon.ShutdownTimeoutDuration()
+		laneDrainTimeout := orderShutdownDrainTimeout(total)
+		if cr.forceStopRequested() {
+			laneDrainTimeout = 0
+		}
+		laneDrainCtx, laneDrainCancel := context.WithTimeout(context.Background(), laneDrainTimeout)
+		orderLaneDrained = cr.orderDispatchLaneOf().stopAndWait(laneDrainCtx)
+		completionLaneDrained = cr.completionsLaneOf().waitWorkers(laneDrainCtx)
+		laneDrainCancel()
+		cr.stopOrderDispatchers()
 		asyncStartsDrained := cr.waitForAsyncStarts()
 		cr.waitForAsyncStops()
 		preserveSessions := cr.preserveSessionsShutdown.Load()
@@ -3995,12 +4087,11 @@ func (cr *CityRuntime) shutdown() {
 		// graceful session-stop budget; order drain does not silently halve it.
 		// Orphaned tracking beads (if drain times out) are closed by
 		// sweepOrphanedOrderTrackingRetry on next start.
-		total := cr.cfg.Daemon.ShutdownTimeoutDuration()
 		gracefulTimeout := total
 		if cr.forceStopRequested() {
 			gracefulTimeout = 0
 		}
-		if cr.od != nil || len(cr.retiredOrderDispatchers) > 0 {
+		if orderLaneDrained && cr.hasOrderDispatchers() {
 			drainTimeout := orderShutdownDrainTimeout(total)
 			if cr.forceStopRequested() {
 				drainTimeout = 0

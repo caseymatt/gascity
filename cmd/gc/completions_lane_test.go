@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,38 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/executionevent"
 )
+
+type failOnceCompletionStore struct {
+	beads.Store
+	failed bool
+}
+
+func (s *failOnceCompletionStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	if len(query.IDs) > 0 && !s.failed {
+		s.failed = true
+		return nil, errors.New("transient completion read")
+	}
+	return s.Store.List(query)
+}
+
+type blockingRootCompletionStore struct {
+	beads.Store
+	blockedID string
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+}
+
+func (s *blockingRootCompletionStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	for _, rootID := range query.IDs {
+		if rootID == s.blockedID {
+			s.startOnce.Do(func() { close(s.started) })
+			<-s.release
+			break
+		}
+	}
+	return s.Store.List(query)
+}
 
 func closedStepEvent(t *testing.T, stepID, rootID string) events.Event {
 	t.Helper()
@@ -285,6 +319,7 @@ func TestCompletionsSweepReportsWhyItWasDue(t *testing.T) {
 		t.Fatalf("after a feed gap due=%t reason=%q, want due with reason %q", due, gapReason, backstopReasonCursorGap)
 	}
 	lane.noteSweepChunk(now.Add(time.Second), gapReason, 0, 0, true)
+
 	if _, reason, _ = lane.lastSweep(); reason != backstopReasonCursorGap {
 		t.Fatalf("lastSweep reason after a gap-driven sweep = %q, want %q", reason, backstopReasonCursorGap)
 	}
@@ -303,5 +338,192 @@ func TestCompletionsSweepReportsWhyItWasDue(t *testing.T) {
 	addBackstopAgeFields(fresh, freshAt, freshReason, freshRan)
 	if _, present := fresh["backstop_last_reason"]; present {
 		t.Fatalf("a lane that never swept reported %v, want no reason at all", fresh)
+	}
+}
+
+func TestCompletionsLaneForceDuringSweepStartsFreshTraversal(t *testing.T) {
+	lane := newCompletionsLane()
+	now := time.Now()
+	if _, done := lane.noteSweepChunk(now, backstopReasonStartup, 0, 1, false); done {
+		t.Fatal("first chunk unexpectedly completed the traversal")
+	}
+	lane.force()
+	if _, done := lane.noteSweepChunk(now.Add(time.Second), backstopReasonStartup, 0, 1, true); !done {
+		t.Fatal("final chunk did not complete the traversal")
+	}
+	if reason, due := lane.sweepDue(now.Add(2 * time.Second)); !due || reason != backstopReasonCursorGap {
+		t.Fatalf("sweep after mid-traversal force = due %v reason %q, want cursor-gap follow-up", due, reason)
+	}
+
+	if _, done := lane.noteSweepChunk(now.Add(3*time.Second), backstopReasonCursorGap, 0, 2, true); !done {
+		t.Fatal("fresh forced traversal did not complete")
+	}
+	if reason, due := lane.sweepDue(now.Add(4 * time.Second)); due {
+		t.Fatalf("sweep after fresh traversal = due %v reason %q, want idle", due, reason)
+	}
+}
+
+func TestCompletionsDeltaWorkerRetainsRootsAfterTransientReadFailure(t *testing.T) {
+	backing := beads.NewMemStore()
+	root, err := backing.Create(beads.Bead{ID: "gcg-retry-root", Metadata: map[string]string{
+		beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+		beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := backing.Create(beads.Bead{ID: "gcg-retry-step", Metadata: map[string]string{
+		beadmeta.RootBeadIDMetadataKey: root.ID,
+		beadmeta.StepIDMetadataKey:     "build",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := "closed"
+	if err := backing.Update(step.ID, beads.UpdateOpts{
+		Status:   &closed,
+		Metadata: map[string]string{beadmeta.SessionIDMetadataKey: "gcs-retry"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &failOnceCompletionStore{Store: backing}
+	journal := events.NewFake()
+	cs := &controllerState{
+		cfg:           &config.City{Workspace: config.Workspace{Name: "test-city"}},
+		cityBeadStore: store,
+		eventProv:     journal,
+	}
+	var stderr bytes.Buffer
+	cr := &CityRuntime{cs: cs, logPrefix: "gc", stderr: &stderr}
+	lane := cr.completionsLaneOf()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cr.startCompletionsDeltaLoop(ctx, lane)
+
+	lane.observe(events.Event{Type: events.ExecutionStepCompleted, RunID: root.ID})
+	select {
+	case <-lane.processed:
+	case <-time.After(time.Second):
+		t.Fatal("first completion pass did not finish")
+	}
+	if got := lane.pendingCount(); got != 1 {
+		t.Fatalf("pending roots after transient failure = %d, want 1", got)
+	}
+	if !strings.Contains(stderr.String(), "retaining 1 root(s) after read failure") {
+		t.Fatalf("stderr = %q, want retained-root diagnostic", stderr.String())
+	}
+
+	lane.signalPending()
+	select {
+	case <-lane.processed:
+	case <-time.After(time.Second):
+		t.Fatal("retry completion pass did not finish")
+	}
+	if got := lane.pendingCount(); got != 0 {
+		t.Fatalf("pending roots after successful retry = %d, want 0", got)
+	}
+	completed, err := journal.List(events.Filter{Type: events.ExecutionStepCompleted, Subject: step.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(completed) != 1 {
+		t.Fatalf("completion facts after retry = %#v, want exactly one", completed)
+	}
+}
+
+func TestCompletionsDeltaWorkersDoNotSerializeUnrelatedRoots(t *testing.T) {
+	rootA := "gcg-blocked-root"
+	rootB := "gcg-independent-root"
+	for completionDeltaShardFor(rootB) == completionDeltaShardFor(rootA) {
+		rootB += "-next"
+	}
+
+	backing := beads.NewMemStoreFrom(0, []beads.Bead{
+		{
+			ID: rootA,
+			Metadata: map[string]string{
+				beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+				beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+			},
+		},
+		{
+			ID:     "gcg-blocked-step",
+			Status: "closed",
+			Metadata: map[string]string{
+				beadmeta.RootBeadIDMetadataKey: rootA,
+				beadmeta.StepIDMetadataKey:     "build",
+				beadmeta.SessionIDMetadataKey:  "gcs-blocked",
+			},
+		},
+		{
+			ID: rootB,
+			Metadata: map[string]string{
+				beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+				beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+			},
+		},
+		{
+			ID:     "gcg-independent-step",
+			Status: "closed",
+			Metadata: map[string]string{
+				beadmeta.RootBeadIDMetadataKey: rootB,
+				beadmeta.StepIDMetadataKey:     "build",
+				beadmeta.SessionIDMetadataKey:  "gcs-independent",
+			},
+		},
+	}, nil)
+
+	store := &blockingRootCompletionStore{
+		Store:     backing,
+		blockedID: rootA,
+		started:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	journal := events.NewFake()
+	cs := &controllerState{
+		cfg:           &config.City{Workspace: config.Workspace{Name: "test-city"}},
+		cityBeadStore: store,
+		eventProv:     journal,
+	}
+	cr := &CityRuntime{cs: cs, logPrefix: "gc", stderr: &bytes.Buffer{}}
+	lane := cr.completionsLaneOf()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cr.startCompletionsDeltaLoop(ctx, lane)
+
+	lane.observe(events.Event{Type: events.ExecutionStepCompleted, RunID: rootA})
+	lane.observe(events.Event{Type: events.ExecutionStepCompleted, RunID: rootB})
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("blocked root did not enter its graph-store read")
+	}
+	select {
+	case <-lane.processed:
+	case <-time.After(time.Second):
+		close(store.release)
+		t.Fatal("unrelated root did not complete while the first root was blocked")
+	}
+	independent, err := journal.List(events.Filter{Type: events.ExecutionStepCompleted, Subject: "gcg-independent-step"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(independent) != 1 {
+		t.Fatalf("independent completion facts = %#v, all events = %#v, stderr = %q; want one", independent, journal.Events, cr.stderr.(*bytes.Buffer).String())
+	}
+
+	close(store.release)
+	select {
+	case <-lane.processed:
+	case <-time.After(time.Second):
+		t.Fatal("blocked root did not complete after release")
+	}
+	blocked, err := journal.List(events.Filter{Type: events.ExecutionStepCompleted, Subject: "gcg-blocked-step"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked) != 1 {
+		t.Fatalf("blocked completion facts = %#v, want one", blocked)
 	}
 }
