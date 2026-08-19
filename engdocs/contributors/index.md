@@ -12,6 +12,8 @@ description: The shortest path for new contributors to get productive in Gas Cit
 - [Primitive Test](primitive-test.md)
 - [PR Review Handoff Notes](pr-review-handoff.md)
 - [Reconciler Debugging](reconciler-debugging.md)
+- [External Dolt Evaluation](external-dolt-evaluation.md) when deciding whether
+  to move a managed-local bead store to a dedicated SQL endpoint
 - [Huma Usage Notes](huma-usage.md) when touching `internal/api/`,
   OpenAPI generation, or SSE registration
 - [Excalidraw Setup](excalidraw-setup.md) when authoring diagrams for the docs
