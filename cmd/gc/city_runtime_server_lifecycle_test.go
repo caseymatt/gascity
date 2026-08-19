@@ -294,6 +294,7 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 	}
 	forceStop := &atomic.Bool{}
 	forceStop.Store(true)
+	var shutdownLog bytes.Buffer
 	cr := &CityRuntime{
 		cfg:                 cfg,
 		sp:                  sp,
@@ -303,7 +304,7 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 		forceStopShutdown:   forceStop,
 		logPrefix:           "gc test",
 		stdout:              ioDiscard{},
-		stderr:              ioDiscard{},
+		stderr:              &shutdownLog,
 	}
 	markOwnedForTest(cr)
 
@@ -351,6 +352,6 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 		t.Fatalf("TeardownServer landed before the last (late-async) ListRunning (events: %v); a session created between the sweeps would be killed ungracefully", ev)
 	}
 	if sp.IsRunning("worker") {
-		t.Fatal("force shutdown missed the late async-started runtime")
+		t.Fatalf("force shutdown missed the late async-started runtime (events: %v, log: %s)", ev, shutdownLog.String())
 	}
 }

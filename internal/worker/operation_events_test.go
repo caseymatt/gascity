@@ -28,6 +28,7 @@ func TestSessionHandleStartRecordsWorkerOperationEvent(t *testing.T) {
 		Command:  "claude",
 		WorkDir:  t.TempDir(),
 		Provider: "claude",
+		Metadata: map[string]string{"gc.root_bead_id": "workflow-root"},
 	}, recorder)
 
 	if err := handle.Start(context.Background()); err != nil {
@@ -61,6 +62,14 @@ func TestSessionHandleStartRecordsWorkerOperationEvent(t *testing.T) {
 	}
 	if payload.OpID == "" {
 		t.Fatal("payload.OpID is empty")
+	}
+	if payload.RunID != "workflow-root" {
+		t.Fatalf("payload.RunID = %q, want workflow-root", payload.RunID)
+	}
+	for _, contentField := range [][]byte{[]byte(`"prompt"`), []byte(`"transcript"`)} {
+		if bytes.Contains(event.Payload, contentField) {
+			t.Fatalf("worker operation payload includes content field %s: %s", contentField, event.Payload)
+		}
 	}
 }
 

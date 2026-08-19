@@ -178,6 +178,12 @@ func rawPoolTriggerBindingPatchRef(sb beads.Bead, request SessionRequest, workDi
 	workBeadID := strings.TrimSpace(request.WorkBeadID)
 	metadata := session.MetadataPatch{}
 	if workBeadID == "" {
+		if strings.TrimSpace(sb.Metadata[beadmeta.RootBeadIDMetadataKey]) != "" {
+			metadata[beadmeta.RootBeadIDMetadataKey] = ""
+		}
+		if strings.TrimSpace(sb.Metadata[beadmeta.AttemptMetadataKey]) != "" {
+			metadata[beadmeta.AttemptMetadataKey] = ""
+		}
 		if strings.TrimSpace(sb.Metadata[beadmeta.TriggerBeadIDMetadataKey]) != "" {
 			metadata[beadmeta.TriggerBeadIDMetadataKey] = ""
 		}
@@ -190,6 +196,12 @@ func rawPoolTriggerBindingPatchRef(sb beads.Bead, request SessionRequest, workDi
 		return metadata
 	}
 	oldWorkBeadID := strings.TrimSpace(sb.Metadata[beadmeta.TriggerBeadIDMetadataKey])
+	if rootID := strings.TrimSpace(request.WorkflowRootID); strings.TrimSpace(sb.Metadata[beadmeta.RootBeadIDMetadataKey]) != rootID {
+		metadata[beadmeta.RootBeadIDMetadataKey] = rootID
+	}
+	if attempt := strings.TrimSpace(request.Attempt); strings.TrimSpace(sb.Metadata[beadmeta.AttemptMetadataKey]) != attempt {
+		metadata[beadmeta.AttemptMetadataKey] = attempt
+	}
 	if oldWorkBeadID != workBeadID {
 		metadata[beadmeta.TriggerBeadIDMetadataKey] = workBeadID
 		newParentSID := strings.TrimSpace(request.BrainParentSID)

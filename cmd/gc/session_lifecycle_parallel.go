@@ -231,13 +231,15 @@ type preparedStart struct {
 }
 
 type startResult struct {
-	prepared        preparedStart
-	err             error
-	outcome         TraceOutcomeCode
-	started         time.Time
-	finished        time.Time
-	rollbackPending bool
-	rateLimitScreen bool
+	prepared                 preparedStart
+	err                      error
+	outcome                  TraceOutcomeCode
+	started                  time.Time
+	finished                 time.Time
+	providerStartRequestedAt time.Time
+	providerStartCompletedAt time.Time
+	rollbackPending          bool
+	rateLimitScreen          bool
 	// phases captures sub-phase wall-clock so the lifecycle log can pinpoint
 	// where a slow start spent its time. See gc-67o for context.
 	phases startPhaseTimings
@@ -1431,6 +1433,12 @@ func runPreparedStartCandidate(
 	var phases startPhaseTimings
 	startCallBegin := time.Now()
 	startedFresh, err := startPreparedStartCandidate(startCtx, item, cityPath, store, sp, cfg, &phases, sessionStaleKeyDetectionWaiter)
+	providerStartRequestedAt := time.Time{}
+	providerStartCompletedAt := time.Time{}
+	if startedFresh {
+		providerStartRequestedAt = startCallBegin
+		providerStartCompletedAt = time.Now()
+	}
 	startCtxErr := startCtx.Err()
 	// Split start_call into provider.Start and the ErrStateSync recovery
 	// branch (gc-9ha). The recovery branch hits the worker observation
@@ -1475,13 +1483,15 @@ func runPreparedStartCandidate(
 	rateLimitScreen := err != nil && startupRateLimitScreenDetected(item, cityPath, sp, store, cfg)
 	if err != nil && rollbackPending && !rateLimitScreen && runningSessionMatchesPendingCreateInfo(item.candidate.info, item.candidate.name(), sp) {
 		return startResult{
-			prepared:        item,
-			err:             nil,
-			outcome:         TraceOutcomeStartErrorConverged,
-			started:         started,
-			finished:        finished,
-			rollbackPending: false,
-			phases:          phases,
+			prepared:                 item,
+			err:                      nil,
+			outcome:                  TraceOutcomeStartErrorConverged,
+			started:                  started,
+			finished:                 finished,
+			providerStartRequestedAt: providerStartRequestedAt,
+			providerStartCompletedAt: providerStartCompletedAt,
+			rollbackPending:          false,
+			phases:                   phases,
 		}
 	}
 	var outcome TraceOutcomeCode
@@ -1523,15 +1533,66 @@ func runPreparedStartCandidate(
 		rateLimitScreen = false
 	}
 	return startResult{
-		prepared:        item,
-		err:             err,
-		outcome:         outcome,
-		started:         started,
-		finished:        finished,
-		rollbackPending: rollbackPending,
-		rateLimitScreen: rateLimitScreen,
-		phases:          phases,
+		prepared:                 item,
+		err:                      err,
+		outcome:                  outcome,
+		started:                  started,
+		finished:                 finished,
+		providerStartRequestedAt: providerStartRequestedAt,
+		providerStartCompletedAt: providerStartCompletedAt,
+		rollbackPending:          rollbackPending,
+		rateLimitScreen:          rateLimitScreen,
+		phases:                   phases,
 	}
+}
+
+// providerStartTracePayload correlates the reconciler's existing provider-start
+// call boundary without copying the resolved command or any prompt/transcript
+// content into the canonical trace. The worker owns the narrower command
+// start/completion and claim boundaries; surfacing those here would require a
+// new cross-layer callback/event path, so this trace intentionally stops at the
+// enclosing provider operation boundary.
+func providerStartTracePayload(result startResult) traceRecordPayload {
+	info := result.prepared.candidate.info
+	payload := traceRecordPayload{
+		"rollback_pending": result.rollbackPending,
+		"duration_ms":      result.finished.Sub(result.started).Milliseconds(),
+	}
+	if value := strings.TrimSpace(info.ID); value != "" {
+		payload["session_bead_id"] = value
+	}
+	if value := strings.TrimSpace(info.WorkflowRootID); value != "" {
+		payload["workflow_root_id"] = value
+	}
+	if value := strings.TrimSpace(info.TriggerBeadID); value != "" {
+		payload["step_bead_id"] = value
+	}
+	if value := strings.TrimSpace(info.WorkflowAttempt); value != "" {
+		payload["attempt"] = value
+	}
+	if !result.providerStartRequestedAt.IsZero() {
+		payload["provider_start_requested_at"] = result.providerStartRequestedAt.UTC()
+	}
+	if !result.providerStartCompletedAt.IsZero() {
+		payload["provider_start_completed_at"] = result.providerStartCompletedAt.UTC()
+	}
+	return payload
+}
+
+func recordProviderStartOperation(trace *sessionReconcilerTraceCycle, result startResult) {
+	if trace == nil {
+		return
+	}
+	trace.RecordOperation(
+		TraceSiteLifecycleStartRun,
+		TraceReasonStart,
+		result.outcome,
+		"provider_start",
+		result.prepared.candidate.tp.TemplateName,
+		result.prepared.candidate.name(),
+		result.finished.Sub(result.started),
+		providerStartTracePayload(result),
+	)
 }
 
 func appendInitialMessageToStartupNudge(nudge, msg string) string {
@@ -1646,6 +1707,7 @@ func commitAsyncStartResultWithContext(
 	stdout, stderr io.Writer,
 	trace *sessionReconcilerTraceCycle,
 ) (committed bool) {
+	recordProviderStartOperation(trace, result)
 	name := result.prepared.candidate.name()
 	template := result.prepared.candidate.tp.TemplateName
 	// Session front door constructed once from the same store; nil when store
@@ -2872,12 +2934,7 @@ func executePlannedStartsTraced(
 				)
 			}
 			for _, result := range results {
-				if trace != nil {
-					trace.RecordOperation(TraceSiteLifecycleStartRun, TraceReasonStart, result.outcome, "", result.prepared.candidate.tp.TemplateName, result.prepared.candidate.name(), result.finished.Sub(result.started), traceRecordPayload{
-						"rollback_pending": result.rollbackPending,
-						"duration_ms":      result.finished.Sub(result.started).Milliseconds(),
-					})
-				}
+				recordProviderStartOperation(trace, result)
 				if result.outcome == TraceOutcomeStartEnqueued {
 					logLifecycleOutcome(stderr, "start", wave, result.prepared.candidate.name(), result.prepared.candidate.logicalTemplate(cfg), string(result.outcome), result.started, result.finished, nil)
 					wakeCount++
@@ -3323,6 +3380,18 @@ func stopTargetThroughWorkerBoundary(target stopTarget, store beads.Store, sp ru
 	return workerStopSessionTargetWithConfig("", store, sp, cfg, targetID)
 }
 
+func killTargetThroughWorkerBoundary(target stopTarget, store beads.Store, sp runtime.Provider, cfg *config.City) error {
+	targetID := strings.TrimSpace(target.sessionID)
+	if targetID == "" {
+		targetID = strings.TrimSpace(target.name)
+	}
+	if err := workerKillSessionTargetWithConfig("", store, sp, cfg, targetID); err != nil {
+		return err
+	}
+	markCityStopSessionAsAsleep(sessionFrontDoor(store), target.sessionID, nil)
+	return nil
+}
+
 func cityStopSessionMarked(store beads.Store, sessionID string) bool {
 	if store == nil || strings.TrimSpace(sessionID) == "" {
 		return false
@@ -3428,6 +3497,31 @@ func stopTargetsBounded(
 	actor string,
 	stdout, stderr io.Writer,
 ) int {
+	return stopTargetsBoundedMode(targets, cfg, store, sp, rec, actor, stdout, stderr, false)
+}
+
+func killTargetsBounded(
+	targets []stopTarget,
+	cfg *config.City,
+	store beads.Store,
+	sp runtime.Provider,
+	rec events.Recorder,
+	actor string,
+	stdout, stderr io.Writer,
+) {
+	stopTargetsBoundedMode(targets, cfg, store, sp, rec, actor, stdout, stderr, true)
+}
+
+func stopTargetsBoundedMode(
+	targets []stopTarget,
+	cfg *config.City,
+	store beads.Store,
+	sp runtime.Provider,
+	rec events.Recorder,
+	actor string,
+	stdout, stderr io.Writer,
+	forceKill bool,
+) int {
 	targets = hydrateStopTargets(targets, cfg, store, stderr)
 	for _, target := range targets {
 		if !target.resolved {
@@ -3438,6 +3532,9 @@ func stopTargetsBounded(
 			for wave, target := range targets {
 				waveStarted := time.Now()
 				results := executeTargetWave([]stopTarget{target}, 1, stopPerTargetTimeoutDefault, func(target stopTarget) error {
+					if forceKill {
+						return killTargetThroughWorkerBoundary(target, store, sp, cfg)
+					}
 					return stopTargetThroughWorkerBoundary(target, store, sp, cfg)
 				})
 				for _, result := range results {
@@ -3483,6 +3580,9 @@ func stopTargetsBounded(
 			}
 		}
 		results := executeTargetWave(waveTargets, defaultMaxParallelStopsPerWave, stopPerTargetTimeoutDefault, func(target stopTarget) error {
+			if forceKill {
+				return killTargetThroughWorkerBoundary(target, store, sp, cfg)
+			}
 			return stopTargetThroughWorkerBoundary(target, store, sp, cfg)
 		})
 		for _, result := range results {

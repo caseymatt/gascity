@@ -388,10 +388,21 @@ func TestBuildPreparedStart_ForkValidationNotBypassedByStaleKeyRecovery(t *testi
 // a request carrying a brain parent sid yields session-bead metadata with the
 // gc.brain_parent_sid key, the value the launch path forks off of.
 func TestPoolTriggerMetadata_StampsParentSID(t *testing.T) {
-	req := SessionRequest{WorkBeadID: "wb-1", BrainParentSID: "brain-abc"}
+	req := SessionRequest{
+		WorkBeadID:     "wb-1",
+		BrainParentSID: "brain-abc",
+		WorkflowRootID: "workflow-root",
+		Attempt:        "3",
+	}
 	md := poolTriggerMetadata(nil, nil, "city/claude", req)
 	if got := md[beadmeta.BrainParentSIDMetadataKey]; got != "brain-abc" {
 		t.Errorf("%s = %q, want brain-abc", beadmeta.BrainParentSIDMetadataKey, got)
+	}
+	if got := md[beadmeta.RootBeadIDMetadataKey]; got != "workflow-root" {
+		t.Errorf("%s = %q, want workflow-root", beadmeta.RootBeadIDMetadataKey, got)
+	}
+	if got := md[beadmeta.AttemptMetadataKey]; got != "3" {
+		t.Errorf("%s = %q, want 3", beadmeta.AttemptMetadataKey, got)
 	}
 
 	// No parent sid means no key — the fresh path is byte-for-byte unchanged.

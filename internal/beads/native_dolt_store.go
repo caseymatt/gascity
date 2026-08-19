@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -436,7 +437,7 @@ const (
 // withReadRetry runs a read against the native storage handle, transparently
 // reconnecting and retrying when the handle fails with a transient connection
 // error — the :3307 hard-kill/rebind class ("invalid connection", "i/o timeout",
-// "broken pipe", "dial tcp", "unexpected EOF", "use of closed network
+// "broken pipe", "dial tcp", plain or unexpected EOF, "use of closed network
 // connection"). Retrying the same handle is pointless: its *sql.DB pool points
 // at the killed server's port, so each retry first reconnects via the injected
 // reopen hook, which re-resolves the CURRENT managed Dolt port (restarting the
@@ -572,12 +573,21 @@ var nativeDoltTransientReadErrorSignatures = []string{
 }
 
 // isNativeDoltTransientReadError reports whether err is a transient managed-Dolt
-// connection error worth reconnecting-and-retrying for.
+// connection error worth reconnecting-and-retrying for. Native drivers may
+// surface a loopback disconnect as a bare io.EOF rather than unexpected EOF;
+// recognize both the sentinel (including wrapped errors) and the exact text
+// without treating arbitrary messages containing "eof" as connection failures.
 func isNativeDoltTransientReadError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	msg := strings.TrimSpace(strings.ToLower(err.Error()))
+	if msg == "eof" {
+		return true
+	}
 	for _, sig := range nativeDoltTransientReadErrorSignatures {
 		if strings.Contains(msg, sig) {
 			return true

@@ -1752,3 +1752,77 @@ func TestCanonicalSingletonAliasHeldTemplates_ExcludesFailedCreateHolder(t *test
 		t.Fatalf("drained holder released its alias and must NOT mark mayor held; got held")
 	}
 }
+
+func TestPoolCapacityTraceCorrelatesAcceptedSlotAndExactBlocker(t *testing.T) {
+	const template = "rig/worker"
+	queueReadyAt := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	trace := newPoolDesiredStateTestTrace(template)
+	limits := newNestedCapLimits(&config.City{
+		Rigs:   []config.Rig{{Name: "rig", MaxActiveSessions: intPtr(1)}},
+		Agents: []config.Agent{poolAgent("worker", "rig", intPtr(3), 0)},
+	})
+	usage := newNestedCapUsage()
+	occupant := SessionRequest{
+		Template:       template,
+		Tier:           "resume",
+		SessionBeadID:  "sess-occupied",
+		WorkBeadID:     "step-occupied",
+		WorkflowRootID: "workflow-root",
+		Attempt:        "2",
+		PoolSlot:       3,
+	}
+	usage.accept(occupant, limits)
+
+	site, reason, payload, rejected := usage.rejection(SessionRequest{
+		Template:       template,
+		Tier:           "new",
+		WorkBeadID:     "step-waiting",
+		WorkflowRootID: "workflow-root",
+		Attempt:        "3",
+		QueueReadyAt:   queueReadyAt,
+	}, limits)
+	if !rejected {
+		t.Fatal("capacity request accepted, want exact rig-cap rejection")
+	}
+	trace.RecordDecision(site, reason, TraceOutcomeRejected, template, "", payload)
+	blocked := poolTraceDecision(t, trace, TraceSitePoolRigCap)
+	if got := blocked.BlockingPoolSlots; len(got) != 1 || got[0] != 3 {
+		t.Fatalf("blocking pool slots = %v, want [3]", got)
+	}
+	if got := blocked.BlockingSessionIDs; len(got) != 1 || got[0] != "sess-occupied" {
+		t.Fatalf("blocking session ids = %v, want [sess-occupied]", got)
+	}
+
+	acceptedRequest := SessionRequest{
+		Template:       template,
+		Tier:           "new",
+		WorkBeadID:     "step-accepted",
+		WorkflowRootID: "workflow-root",
+		Attempt:        "3",
+		QueueReadyAt:   queueReadyAt,
+	}
+	recordAcceptedPoolSlot(trace, template, acceptedRequest, "sess-accepted", "worker-2", 2)
+	accepted := poolTraceDecision(t, trace, TraceSitePoolSlotAccept)
+	if accepted.WorkflowRootID != "workflow-root" ||
+		accepted.StepBeadID != "step-accepted" ||
+		accepted.Attempt != "3" ||
+		accepted.SessionBeadID != "sess-accepted" ||
+		accepted.Template != template ||
+		accepted.SessionName != "worker-2" {
+		t.Fatalf("accepted correlation chain = %+v", accepted)
+	}
+	if accepted.PoolSlot == nil || *accepted.PoolSlot != 2 {
+		t.Fatalf("accepted pool slot = %v, want 2", accepted.PoolSlot)
+	}
+	if accepted.CapacityDecidedAt == nil || accepted.CapacityDecidedAt.IsZero() {
+		t.Fatalf("capacity_decided_at = %v, want timestamp", accepted.CapacityDecidedAt)
+	}
+	if accepted.QueueReadyAt == nil || !accepted.QueueReadyAt.Equal(queueReadyAt) {
+		t.Fatalf("queue_ready_at = %v, want %s", accepted.QueueReadyAt, queueReadyAt)
+	}
+	for _, forbidden := range []string{"prompt", "transcript", "description", "work_bead_title"} {
+		if _, exists := accepted.Fields[forbidden]; exists {
+			t.Fatalf("accepted trace includes content-heavy field %q", forbidden)
+		}
+	}
+}

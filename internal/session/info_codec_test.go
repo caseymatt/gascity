@@ -91,6 +91,8 @@ func infoFromPersistedBeadFrozen(b beads.Bead) Info {
 		TriggerBeadID:       b.Metadata[beadmeta.TriggerBeadIDMetadataKey],
 		TriggerBeadStoreRef: b.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey],
 		BrainParentSID:      b.Metadata[beadmeta.BrainParentSIDMetadataKey],
+		WorkflowRootID:      b.Metadata[beadmeta.RootBeadIDMetadataKey],
+		WorkflowAttempt:     b.Metadata[beadmeta.AttemptMetadataKey],
 		Pack:                b.Metadata[beadmeta.PackMetadataKey],
 		PackWorkspace:       b.Metadata[beadmeta.PackWorkspaceMetadataKey],
 		WorkDirCanonical:    b.Metadata[beadmeta.WorkDirMetadataKey],
@@ -388,5 +390,29 @@ func TestInfoCodecProviderTransportOrderConverges(t *testing.T) {
 		if rev.Transport != want.Transport {
 			t.Errorf("provider=%q transport=%q: rev Transport=%q, want %q", q.provider, q.transport, rev.Transport, want.Transport)
 		}
+	}
+}
+
+func TestInfoCodecProjectsWorkflowCorrelation(t *testing.T) {
+	bead := beads.Bead{
+		ID:     "sess-1",
+		Type:   BeadType,
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.TriggerBeadIDMetadataKey: "step-7",
+			beadmeta.RootBeadIDMetadataKey:    "workflow-root",
+			beadmeta.AttemptMetadataKey:       "3",
+		},
+	}
+	info := infoFromPersistedBead(bead)
+	if info.TriggerBeadID != "step-7" || info.WorkflowRootID != "workflow-root" || info.WorkflowAttempt != "3" {
+		t.Fatalf("workflow correlation projection = %+v", info)
+	}
+	folded := info.ApplyPatch(MetadataPatch{
+		beadmeta.RootBeadIDMetadataKey: "workflow-next",
+		beadmeta.AttemptMetadataKey:    "4",
+	})
+	if folded.WorkflowRootID != "workflow-next" || folded.WorkflowAttempt != "4" {
+		t.Fatalf("workflow correlation fold = %+v", folded)
 	}
 }
