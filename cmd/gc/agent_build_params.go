@@ -38,6 +38,7 @@ type agentBuildParams struct {
 	globalFragments []string
 	appendFragments []string // V2: city-level [agents].append_fragments / [agent_defaults].append_fragments
 	stderr          io.Writer
+	trace           *sessionReconcilerTraceCycle
 
 	// beadStore is the city-level bead store for session bead lookups.
 	// When non-nil, session names are derived from bead IDs ("s-{beadID}")

@@ -563,7 +563,7 @@ func (cs *controllerState) startBeadEventWatcher(ctx context.Context) {
 //
 // It is deliberately not on the tick. Walking every workflow root ever created,
 // closed ones included, was 72.4s of a ~360s tick (ga-l7jdg); the tick runs
-// reconcileExecutionCompletionsDelta instead.
+// reconcileExecutionCompletionsDeltaResult instead.
 //
 // It is deliberately not on the BOOT path either, for the same reason at a
 // larger scale: paying the whole corpus once per city, serially, dominated fleet
@@ -580,12 +580,6 @@ func (cs *controllerState) reconcileExecutionCompletions() {
 		return
 	}
 	executionevent.ReconcileCompletedStores(ep, graphStores, "execution-reconcile")
-}
-
-// reconcileExecutionCompletionsDelta repairs completion facts for the roots the
-// journal named since the last pass.
-func (cs *controllerState) reconcileExecutionCompletionsDelta(rootIDs []string) int {
-	return cs.reconcileExecutionCompletionsDeltaResult(rootIDs).Emitted
 }
 
 // reconcileExecutionCompletionsDeltaResult also reports transient store

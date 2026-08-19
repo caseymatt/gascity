@@ -20,6 +20,10 @@ import (
 // SafePATH is the fallback PATH for gate script execution.
 const SafePATH = "/usr/local/bin:/usr/bin:/bin"
 
+// EXTempFail is the EX_TEMPFAIL process exit code for temporary infrastructure
+// or store unavailability.
+const EXTempFail = 75
+
 const (
 	textFileBusyRetryAttempts = 5
 	textFileBusyRetryDelay    = 25 * time.Millisecond
@@ -402,8 +406,12 @@ func runOnceNoPreExecRetry(ctx context.Context, scriptPath string, env Condition
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			code := exitErr.ExitCode()
+			outcome := GateFail
+			if code == EXTempFail {
+				outcome = GateError
+			}
 			return GateResult{
-				Outcome:   GateFail,
+				Outcome:   outcome,
 				ExitCode:  &code,
 				Stdout:    outStr,
 				Stderr:    errStr,

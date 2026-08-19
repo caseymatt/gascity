@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,10 @@ type SessionRequest struct {
 	// BrainParentSID is gc.brain_parent_sid from the driving work bead, when
 	// set: the parent session to fork this launch off of (warm-arm fork-launch).
 	BrainParentSID string
+	WorkflowRootID string    // resolved workflow/run root carried by the driving work bead
+	Attempt        string    // gc.attempt from the driving work bead, when present
+	QueueReadyAt   time.Time // when this controller observed the work bead in Ready()
+	PoolSlot       int       // concrete occupied slot for retained/in-flight capacity
 	// FloorGuarantee marks a "new" request created to satisfy an agent's
 	// min_active_sessions floor (as opposed to elastic scale-check demand).
 	// The per-tick create-budget allocator reserves a token for each
@@ -254,6 +259,7 @@ func computePoolDesiredStatesAt(
 	assigneeToSessionBeadID := make(map[string]string)
 	sessionBeadTemplate := make(map[string]string)
 	namedSessionBeadIDs := make(map[string]bool)
+	sessionPoolSlots := make(map[string]int)
 	for _, sb := range sessionInfos {
 		if sb.Closed {
 			continue
@@ -264,6 +270,9 @@ func computePoolDesiredStatesAt(
 		template := strings.TrimSpace(normalizedSessionTemplateInfo(sb, cfg))
 		if template != "" {
 			sessionBeadTemplate[sb.ID] = template
+		}
+		if slot, err := strconv.Atoi(strings.TrimSpace(sb.PoolSlot)); err == nil && slot > 0 {
+			sessionPoolSlots[sb.ID] = slot
 		}
 		for _, id := range sessionBeadAssigneeIdentitiesInfo(sb) {
 			assigneeToSessionBeadID[id] = sb.ID
@@ -336,6 +345,9 @@ func computePoolDesiredStatesAt(
 					WorkPack:       strings.TrimSpace(wb.Metadata[beadmeta.PackMetadataKey]),
 					WorkWorkspace:  strings.TrimSpace(wb.Metadata[beadmeta.PackWorkspaceMetadataKey]),
 					BrainParentSID: strings.TrimSpace(wb.Metadata[beadmeta.BrainParentSIDMetadataKey]),
+					WorkflowRootID: beadmeta.ResolveRunID(wb.Metadata, wb.ID, wb.ID),
+					Attempt:        strings.TrimSpace(wb.Metadata[beadmeta.AttemptMetadataKey]),
+					PoolSlot:       sessionPoolSlots[sessionBeadID],
 				})
 				continue
 			}
@@ -370,6 +382,8 @@ func computePoolDesiredStatesAt(
 				WorkPack:       strings.TrimSpace(wb.Metadata[beadmeta.PackMetadataKey]),
 				WorkWorkspace:  strings.TrimSpace(wb.Metadata[beadmeta.PackWorkspaceMetadataKey]),
 				BrainParentSID: strings.TrimSpace(wb.Metadata[beadmeta.BrainParentSIDMetadataKey]),
+				WorkflowRootID: beadmeta.ResolveRunID(wb.Metadata, wb.ID, wb.ID),
+				Attempt:        strings.TrimSpace(wb.Metadata[beadmeta.AttemptMetadataKey]),
 			})
 			if trace != nil {
 				trace.RecordDecision(TraceSitePoolWakeKnownIdentity, TraceReasonAssignedWork, TraceOutcomeScheduled, template, "", traceRecordPayload{
@@ -462,6 +476,9 @@ func computePoolDesiredStatesAt(
 			workWorkspace := ""
 			workStoreRef := ""
 			workParentSID := ""
+			workRootID := ""
+			workAttempt := ""
+			var queueReadyAt time.Time
 			var worktreeSpec *worktree.Spec
 			worktreeError := ""
 			if len(residualWorkBeadIDs) > j {
@@ -481,6 +498,15 @@ func computePoolDesiredStatesAt(
 				if demand.ParentSIDs != nil {
 					workParentSID = strings.TrimSpace(demand.ParentSIDs[workBeadID])
 				}
+				if demand.WorkflowRoots != nil {
+					workRootID = strings.TrimSpace(demand.WorkflowRoots[workBeadID])
+				}
+				if demand.Attempts != nil {
+					workAttempt = strings.TrimSpace(demand.Attempts[workBeadID])
+				}
+				if demand.QueueReadyAt != nil {
+					queueReadyAt = demand.QueueReadyAt[workBeadID]
+				}
 				if demand.WorktreeSpecs != nil {
 					worktreeSpec = demand.WorktreeSpecs[workBeadID]
 				}
@@ -497,6 +523,9 @@ func computePoolDesiredStatesAt(
 				WorkWorkspace:  workWorkspace,
 				WorkStoreRef:   workStoreRef,
 				BrainParentSID: workParentSID,
+				WorkflowRootID: workRootID,
+				Attempt:        workAttempt,
+				QueueReadyAt:   queueReadyAt,
 				WorktreeSpec:   worktreeSpec,
 				WorktreeError:  worktreeError,
 			}
@@ -567,6 +596,9 @@ func requestWithScaleDemandProvenance(request SessionRequest, demand scaleCheckD
 	request.WorkWorkspace = strings.TrimSpace(demand.Workspaces[workBeadID])
 	request.WorkStoreRef = strings.TrimSpace(demand.StoreRefs[workBeadID])
 	request.BrainParentSID = strings.TrimSpace(demand.ParentSIDs[workBeadID])
+	request.WorkflowRootID = strings.TrimSpace(demand.WorkflowRoots[workBeadID])
+	request.Attempt = strings.TrimSpace(demand.Attempts[workBeadID])
+	request.QueueReadyAt = demand.QueueReadyAt[workBeadID]
 	// Worktree evidence is per-bead like every field above it. Carrying the
 	// previous bead's spec into a rebound request would hand the session a
 	// workspace verified for other work.
@@ -669,6 +701,9 @@ func poolNewDemandRequests(
 				WorkWorkspace:  strings.TrimSpace(sb.PackWorkspace),
 				WorkStoreRef:   strings.TrimSpace(sb.TriggerBeadStoreRef),
 				BrainParentSID: strings.TrimSpace(sb.BrainParentSID),
+				WorkflowRootID: strings.TrimSpace(sb.WorkflowRootID),
+				Attempt:        strings.TrimSpace(sb.WorkflowAttempt),
+				PoolSlot:       positivePoolSlot(sb.PoolSlot),
 			}
 			if poolSessionEligibleForProtectedDemand(sb, decisionTime) {
 				protected[template] = append(protected[template], req)
@@ -774,9 +809,9 @@ func applyNestedCaps(cfg *config.City, requests []SessionRequest, aliasHeldTempl
 		// Accept.
 		accepted[template] = append(accepted[template], req)
 		if trace != nil {
-			trace.RecordDecision(TraceSitePoolAccept, TraceReasonCap, TraceOutcomeAccepted, template, "", traceRecordPayload{
-				"tier": req.Tier,
-			})
+			payload := poolRequestTracePayload(req)
+			payload["capacity_decided_at"] = time.Now().UTC()
+			trace.RecordDecision(TraceSitePoolAccept, TraceReasonCap, TraceOutcomeAccepted, template, "", payload)
 		}
 		usage.accept(req, limits)
 	}
@@ -944,11 +979,14 @@ func (u nestedCapUsage) isDuplicateSessionRequest(req SessionRequest) bool {
 func (u nestedCapUsage) rejection(req SessionRequest, limits nestedCapLimits) (TraceSiteCode, TraceReasonCode, traceRecordPayload, bool) {
 	template := req.Template
 	if agentMax := limits.agentMax[template]; agentMax >= 0 && u.agentCount[template] >= agentMax {
-		return TraceSitePoolAgentCap, TraceReasonAgentCap, traceRecordPayload{
-			"agent_max": agentMax,
-			"current":   u.agentCount[template],
-			"tier":      req.Tier,
-		}, true
+		payload := poolRequestTracePayload(req)
+		payload["agent_max"] = agentMax
+		payload["current"] = u.agentCount[template]
+		payload["capacity_decided_at"] = time.Now().UTC()
+		addCapacityBlockers(payload, filterCapBlockers(u.requests, func(occupant SessionRequest) bool {
+			return occupant.Template == template
+		}))
+		return TraceSitePoolAgentCap, TraceReasonAgentCap, payload, true
 	}
 	rig := limits.agentRig[template]
 	if rig != "" {
@@ -957,20 +995,24 @@ func (u nestedCapUsage) rejection(req SessionRequest, limits nestedCapLimits) (T
 			rigMax = -1
 		}
 		if rigMax >= 0 && u.rigCount[rig] >= rigMax {
-			return TraceSitePoolRigCap, TraceReasonRigCap, traceRecordPayload{
-				"rig":     rig,
-				"rig_max": rigMax,
-				"current": u.rigCount[rig],
-				"tier":    req.Tier,
-			}, true
+			payload := poolRequestTracePayload(req)
+			payload["rig"] = rig
+			payload["rig_max"] = rigMax
+			payload["current"] = u.rigCount[rig]
+			payload["capacity_decided_at"] = time.Now().UTC()
+			addCapacityBlockers(payload, filterCapBlockers(u.requests, func(occupant SessionRequest) bool {
+				return limits.agentRig[occupant.Template] == rig
+			}))
+			return TraceSitePoolRigCap, TraceReasonRigCap, payload, true
 		}
 	}
 	if limits.workspaceMax >= 0 && u.workspaceCount >= limits.workspaceMax {
-		return TraceSitePoolWorkspaceCap, TraceReasonWorkspaceCap, traceRecordPayload{
-			"workspace_max": limits.workspaceMax,
-			"current":       u.workspaceCount,
-			"tier":          req.Tier,
-		}, true
+		payload := poolRequestTracePayload(req)
+		payload["workspace_max"] = limits.workspaceMax
+		payload["current"] = u.workspaceCount
+		payload["capacity_decided_at"] = time.Now().UTC()
+		addCapacityBlockers(payload, u.requests)
+		return TraceSitePoolWorkspaceCap, TraceReasonWorkspaceCap, payload, true
 	}
 	return "", "", nil, false
 }
@@ -1003,26 +1045,17 @@ func recordNewDemandCapTrace(
 	if site == "" {
 		return
 	}
-	blockingSessions := make([]string, 0, len(blockers))
-	blockingWork := make([]string, 0, len(blockers))
-	for _, req := range blockers {
-		if req.SessionBeadID != "" {
-			blockingSessions = append(blockingSessions, req.SessionBeadID)
-		}
-		if req.WorkBeadID != "" {
-			blockingWork = append(blockingWork, req.WorkBeadID)
-		}
-	}
-	trace.RecordDecision(site, reason, TraceOutcomeRejected, template, "", traceRecordPayload{
+	payload := traceRecordPayload{
 		"scale_check":          scaleCount,
 		"accepted_new":         newCount,
 		"blocked_new":          scaleCount - newCount,
 		"current":              current,
 		"max":                  capMax,
-		"blocking_sessions":    blockingSessions,
-		"blocking_work_beads":  blockingWork,
 		"active_capacity_kind": string(reason),
-	})
+		"capacity_decided_at":  time.Now().UTC(),
+	}
+	addCapacityBlockers(payload, blockers)
+	trace.RecordDecision(site, reason, TraceOutcomeRejected, template, "", payload)
 }
 
 func newDemandBlockingScope(
@@ -1064,6 +1097,78 @@ func filterCapBlockers(requests []SessionRequest, keep func(SessionRequest) bool
 		}
 	}
 	return out
+}
+
+func recordAcceptedPoolSlot(trace *sessionReconcilerTraceCycle, template string, request SessionRequest, sessionID, sessionName string, slot int) {
+	if trace == nil {
+		return
+	}
+	payload := poolRequestTracePayload(request)
+	payload["session_bead_id"] = strings.TrimSpace(sessionID)
+	payload["pool_slot"] = slot
+	payload["capacity_decided_at"] = time.Now().UTC()
+	trace.RecordDecision(TraceSitePoolSlotAccept, TraceReasonCap, TraceOutcomeAccepted, template, sessionName, payload)
+}
+
+func poolRequestTracePayload(request SessionRequest) traceRecordPayload {
+	payload := traceRecordPayload{"tier": request.Tier}
+	if value := strings.TrimSpace(request.WorkflowRootID); value != "" {
+		payload["workflow_root_id"] = value
+	}
+	if value := strings.TrimSpace(request.WorkBeadID); value != "" {
+		payload["step_bead_id"] = value
+	}
+	if value := strings.TrimSpace(request.Attempt); value != "" {
+		payload["attempt"] = value
+	}
+	if value := strings.TrimSpace(request.SessionBeadID); value != "" {
+		payload["session_bead_id"] = value
+	}
+	if request.PoolSlot > 0 {
+		payload["pool_slot"] = request.PoolSlot
+	}
+	if !request.QueueReadyAt.IsZero() {
+		payload["queue_ready_at"] = request.QueueReadyAt.UTC()
+	}
+	return payload
+}
+
+func addCapacityBlockers(payload traceRecordPayload, blockers []SessionRequest) {
+	if payload == nil || len(blockers) == 0 {
+		return
+	}
+	slots := make([]int, 0, len(blockers))
+	sessions := make([]string, 0, len(blockers))
+	work := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		if blocker.PoolSlot > 0 {
+			slots = append(slots, blocker.PoolSlot)
+		}
+		if value := strings.TrimSpace(blocker.SessionBeadID); value != "" {
+			sessions = append(sessions, value)
+		}
+		if value := strings.TrimSpace(blocker.WorkBeadID); value != "" {
+			work = append(work, value)
+		}
+	}
+	if len(slots) > 0 {
+		payload["blocking_pool_slots"] = slots
+	}
+	if len(sessions) > 0 {
+		payload["blocking_session_ids"] = sessions
+		payload["blocking_sessions"] = sessions
+	}
+	if len(work) > 0 {
+		payload["blocking_work_beads"] = work
+	}
+}
+
+func positivePoolSlot(raw string) int {
+	slot, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || slot <= 0 {
+		return 0
+	}
+	return slot
 }
 
 func minInt(a, b int) int {

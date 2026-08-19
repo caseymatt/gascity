@@ -2810,10 +2810,7 @@ func (cr *CityRuntime) recordReconcileTraceInputs(
 		}
 		templateNames[template] = struct{}{}
 		openCounts[template]++
-		trace.RecordSessionBaseline(template, info.SessionNameMetadata, map[string]any{
-			"state":        info.MetadataState,
-			"sleep_reason": info.SleepReason,
-		})
+		trace.RecordSessionBaseline(template, info.SessionNameMetadata, sessionLifecycleTracePayload(info))
 	}
 	for _, tp := range desiredState {
 		if tp.TemplateName == "" {
@@ -2915,14 +2912,32 @@ func (cr *CityRuntime) recordReconcileTraceResults(
 		if template == "" {
 			continue
 		}
-		trace.RecordSessionResult(template, info.SessionNameMetadata, TraceOutcomeComplete, TraceCompletenessComplete, map[string]any{
-			"state":        info.MetadataState,
-			"sleep_reason": info.SleepReason,
-		})
+		trace.RecordSessionResult(template, info.SessionNameMetadata, TraceOutcomeComplete, TraceCompletenessComplete, sessionLifecycleTracePayload(info))
 	}
 	recordPhase(TraceSiteControllerTickPhase, "bead_reconcile.record_trace_session_results", phaseStart, map[string]any{
 		"open_count": len(postTickInfos),
 	})
+}
+
+func sessionLifecycleTracePayload(info sessionpkg.Info) map[string]any {
+	payload := map[string]any{
+		"state":           info.MetadataState,
+		"sleep_reason":    info.SleepReason,
+		"session_bead_id": info.ID,
+	}
+	if value := strings.TrimSpace(info.WorkflowRootID); value != "" {
+		payload["workflow_root_id"] = value
+	}
+	if value := strings.TrimSpace(info.TriggerBeadID); value != "" {
+		payload["step_bead_id"] = value
+	}
+	if value := strings.TrimSpace(info.WorkflowAttempt); value != "" {
+		payload["attempt"] = value
+	}
+	if slot := positivePoolSlot(info.PoolSlot); slot > 0 {
+		payload["pool_slot"] = slot
+	}
+	return payload
 }
 
 func filterReleasedAssignedWorkBeads(assignedWorkBeads []beads.Bead, released []releasedPoolAssignment) []beads.Bead {

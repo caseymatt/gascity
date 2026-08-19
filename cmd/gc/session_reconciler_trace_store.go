@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/gastownhall/gascity/internal/fsys"
 )
@@ -31,6 +33,45 @@ const (
 	sessionReconcilerTraceMaxAge           = 7 * 24 * time.Hour
 	sessionReconcilerTracePruneInterval    = 5 * time.Minute
 )
+
+type traceReadGapError struct {
+	Segments     int
+	FirstSegment string
+	Err          error
+}
+
+func (e *traceReadGapError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("skipped %d malformed trace segment(s), first=%s: %v", e.Segments, e.FirstSegment, e.Err)
+}
+
+func (e *traceReadGapError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type traceSegmentReadError struct {
+	TrustedBytes int64
+	Err          error
+}
+
+func (e *traceSegmentReadError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *traceSegmentReadError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 type SessionReconcilerTraceStore struct {
 	mu             sync.Mutex
@@ -122,7 +163,8 @@ func (s *SessionReconcilerTraceStore) recoverExisting() error {
 func scanTraceSegment(path string) (maxSeq uint64, ok bool, err error) {
 	_, maxSeq, err = readTraceRecordsFile(path, TraceFilter{}, true)
 	if err != nil {
-		return 0, false, err
+		var segmentErr *traceSegmentReadError
+		return maxSeq, errors.As(err, &segmentErr), err
 	}
 	return maxSeq, true, nil
 }
@@ -600,6 +642,24 @@ func sortTraceArms(arms []TraceArm) {
 	})
 }
 
+func activeTraceSegmentPath(rootDir string) (string, error) {
+	head, err := (&SessionReconcilerTraceStore{rootDir: rootDir}).loadHead()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("load trace head: %w", err)
+	}
+	if head.CurrentPath == "" {
+		return "", nil
+	}
+	relative := filepath.Clean(filepath.FromSlash(head.CurrentPath))
+	if filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("trace head current_path %q escapes trace root", head.CurrentPath)
+	}
+	return filepath.Clean(filepath.Join(rootDir, relative)), nil
+}
+
 func ReadTraceRecords(rootDir string, filter TraceFilter) ([]SessionReconcilerTraceRecord, error) {
 	segmentRoot := filepath.Join(rootDir, sessionReconcilerTraceSegments)
 	paths, err := filepath.Glob(filepath.Join(segmentRoot, "*", "*", "*", "*.jsonl"))
@@ -612,7 +672,12 @@ func ReadTraceRecords(rootDir string, filter TraceFilter) ([]SessionReconcilerTr
 		for i := len(paths) - 1; i >= 0; i-- {
 			maxSeq, ok, scanErr := scanTraceSegment(paths[i])
 			if scanErr != nil {
-				return nil, fmt.Errorf("reading trace file %s: %w", paths[i], scanErr)
+				var segmentErr *traceSegmentReadError
+				if !errors.As(scanErr, &segmentErr) {
+					return nil, fmt.Errorf("reading trace file %s: %w", paths[i], scanErr)
+				}
+				filtered = append(filtered, paths[i])
+				continue
 			}
 			if !ok {
 				continue
@@ -628,14 +693,39 @@ func ReadTraceRecords(rootDir string, filter TraceFilter) ([]SessionReconcilerTr
 		paths = filtered
 	}
 	records := make([]SessionReconcilerTraceRecord, 0)
+	var gapErr *traceReadGapError
+	activePath, activePathErr := activeTraceSegmentPath(rootDir)
 	for _, path := range paths {
-		fileRecords, _, err := readTraceRecordsFile(path, filter, true)
-		if err != nil {
-			return nil, fmt.Errorf("reading trace file %s: %w", path, err)
-		}
+		fileRecords, _, readErr := readTraceRecordsFile(path, filter, true)
 		records = append(records, fileRecords...)
+		if readErr == nil {
+			continue
+		}
+		var segmentErr *traceSegmentReadError
+		if !errors.As(readErr, &segmentErr) {
+			return nil, fmt.Errorf("reading trace file %s: %w", path, readErr)
+		}
+		var recoveryErr error
+		switch {
+		case activePathErr != nil:
+			recoveryErr = fmt.Errorf("trace repair skipped because the active segment is unknown: %w", activePathErr)
+		case activePath != "" && filepath.Clean(path) == activePath:
+			recoveryErr = errors.New("active trace segment left unchanged")
+		default:
+			recoveryErr = recoverMalformedTraceSuffix(rootDir, path, segmentErr.TrustedBytes)
+		}
+		if gapErr == nil {
+			gapErr = &traceReadGapError{
+				FirstSegment: filepath.Base(path),
+				Err:          errors.Join(readErr, recoveryErr),
+			}
+		}
+		gapErr.Segments++
 	}
 	sortTraceRecords(records)
+	if gapErr != nil {
+		return records, &beads.PartialResultError{Op: "read trace records", Err: gapErr}
+	}
 	return records, nil
 }
 
@@ -650,13 +740,16 @@ func readTraceRecordsFile(path string, filter TraceFilter, tolerateTail bool) ([
 	var maxSeq uint64
 	var batchRecords []SessionReconcilerTraceRecord
 	var batchCRC uint32
+	var offset int64
+	var trustedBytes int64
 	reader := bufio.NewReader(f)
 	for {
-		line, readErr := reader.ReadBytes('\n')
-		if len(line) == 0 && readErr == io.EOF {
+		rawLine, readErr := reader.ReadBytes('\n')
+		offset += int64(len(rawLine))
+		if len(rawLine) == 0 && readErr == io.EOF {
 			break
 		}
-		line = bytes.TrimSpace(line)
+		line := bytes.TrimSpace(rawLine)
 		if len(line) == 0 {
 			if readErr == io.EOF {
 				break
@@ -671,14 +764,23 @@ func readTraceRecordsFile(path string, filter TraceFilter, tolerateTail bool) ([
 			if tolerateTail && readErr == io.EOF {
 				break
 			}
-			return nil, 0, fmt.Errorf("unmarshal trace record %s: %w", path, parseErr)
+			return out, maxSeq, &traceSegmentReadError{
+				TrustedBytes: trustedBytes,
+				Err:          fmt.Errorf("unmarshal trace record %s: %w", path, parseErr),
+			}
 		}
 		if rec.RecordType == TraceRecordBatchCommit {
 			if rec.RecordCount != len(batchRecords) {
-				return nil, 0, fmt.Errorf("trace batch %s: commit record_count=%d does not match buffered records=%d", path, rec.RecordCount, len(batchRecords))
+				return out, maxSeq, &traceSegmentReadError{
+					TrustedBytes: trustedBytes,
+					Err:          fmt.Errorf("trace batch %s: commit record_count=%d does not match buffered records=%d", path, rec.RecordCount, len(batchRecords)),
+				}
 			}
 			if rec.BatchCRC32 != batchCRC {
-				return nil, 0, fmt.Errorf("trace batch %s: crc32 mismatch", path)
+				return out, maxSeq, &traceSegmentReadError{
+					TrustedBytes: trustedBytes,
+					Err:          fmt.Errorf("trace batch %s: crc32 mismatch", path),
+				}
 			}
 			for _, buffered := range batchRecords {
 				if matchesTraceFilter(buffered, filter) {
@@ -693,6 +795,7 @@ func readTraceRecordsFile(path string, filter TraceFilter, tolerateTail bool) ([
 			}
 			batchRecords = batchRecords[:0]
 			batchCRC = 0
+			trustedBytes = offset
 			if readErr == io.EOF {
 				break
 			}
@@ -705,4 +808,41 @@ func readTraceRecordsFile(path string, filter TraceFilter, tolerateTail bool) ([
 		}
 	}
 	return out, maxSeq, nil
+}
+
+func recoverMalformedTraceSuffix(rootDir, path string, trustedBytes int64) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if trustedBytes < 0 || trustedBytes > int64(len(data)) {
+		return fmt.Errorf("trusted trace prefix %d exceeds segment size %d", trustedBytes, len(data))
+	}
+	quarantineDir := filepath.Join(rootDir, sessionReconcilerTraceQuarantine)
+	if err := os.MkdirAll(quarantineDir, sessionReconcilerTraceOwnerDirPerm); err != nil {
+		return err
+	}
+	dest := filepath.Join(quarantineDir, fmt.Sprintf("%s.%d", filepath.Base(path), time.Now().UTC().UnixNano()))
+	if trustedBytes == 0 {
+		return os.Rename(path, dest)
+	}
+	if err := fsys.WriteFileAtomic(fsys.OSFS{}, dest, data[trustedBytes:], sessionReconcilerTraceOwnerFilePerm); err != nil {
+		return err
+	}
+	if err := os.Chmod(dest, sessionReconcilerTraceOwnerFilePerm); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, sessionReconcilerTraceOwnerFilePerm)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(trustedBytes); err != nil {
+		f.Close() //nolint:errcheck
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close() //nolint:errcheck
+		return err
+	}
+	return f.Close()
 }

@@ -1045,7 +1045,7 @@ func gracefulStopAllWithForceSignal(
 ) {
 	if timeout <= 0 || len(names) == 0 || stopForceRequested(forceStopRequested) {
 		// Immediate kill (no grace period).
-		stopTargetsBounded(stopTargetsForNames(names, cfg, store.Store, stderr), cfg, store.Store, sp, rec, "gc", stdout, stderr)
+		killTargetsBounded(stopTargetsForNames(names, cfg, store.Store, stderr), cfg, store.Store, sp, rec, "gc", stdout, stderr)
 		return
 	}
 	targets := stopTargetsForNames(names, cfg, store.Store, stderr)
@@ -1145,7 +1145,7 @@ func gracefulStopAllWithForceSignal(
 		}
 		survivors = append(survivors, name)
 	}
-	stopTargetsBounded(filterStopTargets(targets, survivors), cfg, store.Store, sp, rec, "gc", stdout, stderr)
+	killTargetsBounded(filterStopTargets(targets, survivors), cfg, store.Store, sp, rec, "gc", stdout, stderr)
 }
 
 func stopForceRequested(forceStopRequested func() bool) bool {

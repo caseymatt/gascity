@@ -334,6 +334,7 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 	}
 	forceStop := &atomic.Bool{}
 	forceStop.Store(true)
+	var shutdownLog bytes.Buffer
 	cr := &CityRuntime{
 		cfg:                 cfg,
 		sp:                  sp,
@@ -343,7 +344,7 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 		forceStopShutdown:   forceStop,
 		logPrefix:           "gc test",
 		stdout:              ioDiscard{},
-		stderr:              ioDiscard{},
+		stderr:              &shutdownLog,
 	}
 	markOwnedForTest(cr)
 	// hangBudget rather than an unbounded wait: a regression that never
@@ -399,8 +400,6 @@ func TestCityRuntimeForceShutdownTearsDownAfterLateAsyncSweep(t *testing.T) {
 		t.Fatalf("TeardownServer landed before the last (late-async) ListRunning (events: %v); a session created between the sweeps would be killed ungracefully", ev)
 	}
 	if sp.IsRunning("worker") {
-		// The four assertions above all print ev; this one did not, so the only
-		// assertion that ever fires was the only undiagnosable one (ga-0q686).
-		t.Fatalf("force shutdown missed the late async-started runtime (events: %v)", ev)
+		t.Fatalf("force shutdown missed the late async-started runtime (events: %v, log: %s)", ev, shutdownLog.String())
 	}
 }

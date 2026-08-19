@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -452,7 +453,51 @@ func (c *SessionReconcilerTraceCycle) record(kind TraceRecordType, site TraceSit
 			rec.Fields[k] = v
 		}
 	}
+	applyTraceCorrelationFields(&rec, fields)
 	c.addRecord(rec)
+}
+
+func applyTraceCorrelationFields(rec *SessionReconcilerTraceRecord, fields map[string]any) {
+	if rec == nil || len(fields) == 0 {
+		return
+	}
+	if value, ok := fields["session_bead_id"].(string); ok {
+		rec.SessionBeadID = strings.TrimSpace(value)
+	}
+	if value, ok := fields["workflow_root_id"].(string); ok {
+		rec.WorkflowRootID = strings.TrimSpace(value)
+	}
+	if value, ok := fields["step_bead_id"].(string); ok {
+		rec.StepBeadID = strings.TrimSpace(value)
+	}
+	if value, ok := fields["attempt"].(string); ok {
+		rec.Attempt = strings.TrimSpace(value)
+	}
+	if value, ok := fields["pool_slot"].(int); ok && value > 0 {
+		rec.PoolSlot = &value
+	}
+	if value, ok := fields["queue_ready_at"].(time.Time); ok && !value.IsZero() {
+		value = value.UTC()
+		rec.QueueReadyAt = &value
+	}
+	if value, ok := fields["capacity_decided_at"].(time.Time); ok && !value.IsZero() {
+		value = value.UTC()
+		rec.CapacityDecidedAt = &value
+	}
+	if value, ok := fields["provider_start_requested_at"].(time.Time); ok && !value.IsZero() {
+		value = value.UTC()
+		rec.ProviderStartRequestedAt = &value
+	}
+	if value, ok := fields["provider_start_completed_at"].(time.Time); ok && !value.IsZero() {
+		value = value.UTC()
+		rec.ProviderStartCompletedAt = &value
+	}
+	if values, ok := fields["blocking_pool_slots"].([]int); ok {
+		rec.BlockingPoolSlots = slices.Clone(values)
+	}
+	if values, ok := fields["blocking_session_ids"].([]string); ok {
+		rec.BlockingSessionIDs = slices.Clone(values)
+	}
 }
 
 func (c *SessionReconcilerTraceCycle) syncArms(now time.Time, cfg *config.City) {
@@ -613,6 +658,7 @@ func (c *SessionReconcilerTraceCycle) RecordTemplateSummary(template string, ses
 			rec.Fields[k] = v
 		}
 	}
+	applyTraceCorrelationFields(&rec, fields)
 	c.addRecord(rec)
 }
 
@@ -630,6 +676,7 @@ func (c *SessionReconcilerTraceCycle) RecordTemplateConfigSnapshot(template stri
 			rec.Fields[k] = v
 		}
 	}
+	applyTraceCorrelationFields(&rec, fields)
 	if _, ok := c.detailSource(template); !ok {
 		c.stashPendingDetail(template, rec)
 		return
@@ -652,6 +699,7 @@ func (c *SessionReconcilerTraceCycle) RecordSessionBaseline(template, sessionNam
 			rec.Fields[k] = v
 		}
 	}
+	applyTraceCorrelationFields(&rec, fields)
 	c.addRecord(rec)
 }
 
@@ -672,6 +720,7 @@ func (c *SessionReconcilerTraceCycle) RecordSessionResult(template, sessionName 
 			rec.Fields[k] = v
 		}
 	}
+	applyTraceCorrelationFields(&rec, fields)
 	c.addRecord(rec)
 }
 
@@ -693,6 +742,7 @@ func (c *SessionReconcilerTraceCycle) RecordDecision(site TraceSiteCode, reason 
 			rec.Fields[k] = v
 		}
 	}
+	applyTraceCorrelationFields(&rec, fields)
 	if _, ok := c.detailSource(template); !ok {
 		if c.ensureAutoArm(template, reason, outcome) {
 			rec.TraceSource = TraceSource(c.sourceFor(template))
@@ -724,6 +774,7 @@ func (c *SessionReconcilerTraceCycle) RecordOperation(site TraceSiteCode, reason
 			rec.Fields[k] = v
 		}
 	}
+	applyTraceCorrelationFields(&rec, fields)
 	if _, ok := c.detailSource(template); !ok {
 		if c.ensureAutoArm(template, reason, outcome) {
 			rec.TraceSource = TraceSource(c.sourceFor(template))

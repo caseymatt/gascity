@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/clock"
 	"github.com/gastownhall/gascity/internal/config"
@@ -262,14 +263,17 @@ func TestSessionReconcilerTraceStartAndDrainSubOps(t *testing.T) {
 		Type:   sessionBeadType,
 		Labels: []string{sessionBeadLabel},
 		Metadata: map[string]string{
-			"session_name":       "worker-1",
-			"template":           "repo/worker",
-			"agent_name":         "worker",
-			"provider":           "claude",
-			"work_dir":           filepath.Join(cityDir, "repos", "worker"),
-			"state":              "asleep",
-			"generation":         "1",
-			"continuation_epoch": "1",
+			"session_name":                    "worker-1",
+			"template":                        "repo/worker",
+			"agent_name":                      "worker",
+			"provider":                        "claude",
+			"work_dir":                        filepath.Join(cityDir, "repos", "worker"),
+			"state":                           "asleep",
+			"generation":                      "1",
+			"continuation_epoch":              "1",
+			beadmeta.TriggerBeadIDMetadataKey: "step-17",
+			beadmeta.RootBeadIDMetadataKey:    "workflow-root",
+			beadmeta.AttemptMetadataKey:       "4",
 		},
 	})
 	if err != nil {
@@ -423,6 +427,33 @@ func TestSessionReconcilerTraceStartAndDrainSubOps(t *testing.T) {
 				}
 				if rec.OutcomeCode != TraceOutcomeSuccess {
 					t.Fatalf("start operation outcome = %q, want success", rec.OutcomeCode)
+				}
+				if rec.WorkflowRootID != "workflow-root" ||
+					rec.StepBeadID != "step-17" ||
+					rec.Attempt != "4" ||
+					rec.SessionBeadID != startBead.ID {
+					t.Fatalf("start operation correlation chain = %+v", rec)
+				}
+				if rec.ProviderStartRequestedAt == nil || rec.ProviderStartCompletedAt == nil {
+					t.Fatalf("provider start timestamps = requested %v completed %v", rec.ProviderStartRequestedAt, rec.ProviderStartCompletedAt)
+				}
+				if rec.ProviderStartCompletedAt.Before(*rec.ProviderStartRequestedAt) {
+					t.Fatalf("provider start completed before request: %s < %s", rec.ProviderStartCompletedAt, rec.ProviderStartRequestedAt)
+				}
+				if rec.OperationID == "" {
+					t.Fatal("start operation id is empty")
+				}
+				// Claim and command timestamps remain omitted: those narrower
+				// boundaries live inside internal/worker and would require a
+				// new cross-layer trace callback. Prompt/transcript content is
+				// forbidden regardless of future boundary instrumentation.
+				for _, forbidden := range []string{
+					"prompt", "transcript", "command",
+					"claim_at", "command_started_at", "command_completed_at",
+				} {
+					if _, exists := rec.Fields[forbidden]; exists {
+						t.Fatalf("start operation unexpectedly includes omitted/content field %q", forbidden)
+					}
 				}
 			}
 		case TraceRecordMutation:

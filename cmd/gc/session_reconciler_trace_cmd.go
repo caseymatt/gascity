@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/spf13/cobra"
 )
@@ -58,11 +60,20 @@ type traceStatusResultJSON struct {
 	ActiveArms        []TraceArm `json:"active_arms"`
 }
 
+const traceGapCodeSegmentSkipped = "trace_segment_skipped"
+
+type traceGapNoticeJSON struct {
+	Code         string `json:"code"`
+	Segments     int    `json:"segments"`
+	FirstSegment string `json:"first_segment,omitempty"`
+}
+
 type traceShowResultJSON struct {
 	SchemaVersion string                         `json:"schema_version"`
 	CityPath      string                         `json:"city_path"`
 	Count         int                            `json:"count"`
 	Records       []SessionReconcilerTraceRecord `json:"records"`
+	Gaps          []traceGapNoticeJSON           `json:"gaps,omitempty"`
 }
 
 func newTraceCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -403,13 +414,17 @@ func cmdTraceShow(template, since, traceID, tickID, recordType, reason string, j
 		}
 		filter.Since = time.Now().Add(-d)
 	}
-	recs, err := ReadTraceRecords(traceCityRuntimeDir(cityPath), filter)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc trace show: %v\n", err) //nolint:errcheck
+	recs, readErr := ReadTraceRecords(traceCityRuntimeDir(cityPath), filter)
+	gap, partial := traceGapNoticeFromError(readErr)
+	if readErr != nil && !partial {
+		fmt.Fprintf(stderr, "gc trace show: %v\n", readErr) //nolint:errcheck
 		return 1
 	}
 	if recs == nil {
 		recs = []SessionReconcilerTraceRecord{}
+	}
+	if partial && !jsonOut {
+		writeTraceGapNotice(stderr, "show", gap)
 	}
 	if !jsonOut {
 		if len(recs) == 0 {
@@ -426,6 +441,7 @@ func cmdTraceShow(template, since, traceID, tickID, recordType, reason string, j
 		CityPath:      cityPath,
 		Count:         len(recs),
 		Records:       recs,
+		Gaps:          traceGapNotices(gap, partial),
 	}); err != nil {
 		fmt.Fprintf(stderr, "gc trace show: %v\n", err) //nolint:errcheck
 		return 1
@@ -439,9 +455,11 @@ func cmdTraceCycle(tickID string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gc trace cycle: %v\n", err) //nolint:errcheck
 		return 1
 	}
-	recs, err := ReadTraceRecords(traceCityRuntimeDir(cityPath), TraceFilter{TickID: tickID})
-	if err != nil {
-		fmt.Fprintf(stderr, "gc trace cycle: %v\n", err) //nolint:errcheck
+	recs, readErr := ReadTraceRecords(traceCityRuntimeDir(cityPath), TraceFilter{TickID: tickID})
+	if gap, partial := traceGapNoticeFromError(readErr); partial {
+		writeTraceGapNotice(stderr, "cycle", gap)
+	} else if readErr != nil {
+		fmt.Fprintf(stderr, "gc trace cycle: %v\n", readErr) //nolint:errcheck
 		return 1
 	}
 	data, err := json.MarshalIndent(recs, "", "  ")
@@ -468,9 +486,11 @@ func cmdTraceReasons(template, since string, stdout, stderr io.Writer) int {
 		}
 		filter.Since = time.Now().Add(-d)
 	}
-	recs, err := ReadTraceRecords(traceCityRuntimeDir(cityPath), filter)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc trace reasons: %v\n", err) //nolint:errcheck
+	recs, readErr := ReadTraceRecords(traceCityRuntimeDir(cityPath), filter)
+	if gap, partial := traceGapNoticeFromError(readErr); partial {
+		writeTraceGapNotice(stderr, "reasons", gap)
+	} else if readErr != nil {
+		fmt.Fprintf(stderr, "gc trace reasons: %v\n", readErr) //nolint:errcheck
 		return 1
 	}
 	reasons := make(map[string]int)
@@ -503,9 +523,11 @@ func cmdTraceTail(template, since string, stdout, stderr io.Writer) int {
 		}
 		filter.Since = time.Now().Add(-d)
 	}
-	records, err := ReadTraceRecords(traceCityRuntimeDir(cityPath), filter)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc trace tail: %v\n", err) //nolint:errcheck
+	records, readErr := ReadTraceRecords(traceCityRuntimeDir(cityPath), filter)
+	if gap, partial := traceGapNoticeFromError(readErr); partial {
+		writeTraceGapNotice(stderr, "tail", gap)
+	} else if readErr != nil {
+		fmt.Fprintf(stderr, "gc trace tail: %v\n", readErr) //nolint:errcheck
 		return 1
 	}
 	records = traceRecentRecords(records, 20)
@@ -528,9 +550,11 @@ func cmdTraceTail(template, since string, stdout, stderr io.Writer) int {
 	defer ticker.Stop()
 	for range ticker.C {
 		filter.SeqAfter = lastSeq
-		next, err := ReadTraceRecords(traceCityRuntimeDir(cityPath), filter)
-		if err != nil {
-			fmt.Fprintf(stderr, "gc trace tail: %v\n", err) //nolint:errcheck
+		next, readErr := ReadTraceRecords(traceCityRuntimeDir(cityPath), filter)
+		if gap, partial := traceGapNoticeFromError(readErr); partial {
+			writeTraceGapNotice(stderr, "tail", gap)
+		} else if readErr != nil {
+			fmt.Fprintf(stderr, "gc trace tail: %v\n", readErr) //nolint:errcheck
 			return 1
 		}
 		for _, rec := range next {
@@ -544,6 +568,32 @@ func cmdTraceTail(template, since string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+func traceGapNoticeFromError(err error) (traceGapNoticeJSON, bool) {
+	if err == nil || !beads.IsPartialResult(err) {
+		return traceGapNoticeJSON{}, false
+	}
+	var gapErr *traceReadGapError
+	if !errors.As(err, &gapErr) || gapErr.Segments < 1 {
+		return traceGapNoticeJSON{}, false
+	}
+	return traceGapNoticeJSON{
+		Code:         traceGapCodeSegmentSkipped,
+		Segments:     gapErr.Segments,
+		FirstSegment: gapErr.FirstSegment,
+	}, true
+}
+
+func traceGapNotices(gap traceGapNoticeJSON, present bool) []traceGapNoticeJSON {
+	if !present {
+		return nil
+	}
+	return []traceGapNoticeJSON{gap}
+}
+
+func writeTraceGapNotice(stderr io.Writer, command string, gap traceGapNoticeJSON) {
+	fmt.Fprintf(stderr, "gc trace %s: %s; skipped_segments=%d first_segment=%s; showing partial results\n", command, gap.Code, gap.Segments, gap.FirstSegment) //nolint:errcheck
 }
 
 func writeTraceTailRecord(stdout io.Writer, rec SessionReconcilerTraceRecord) error {
@@ -564,7 +614,7 @@ func traceHeadSeq(rootDir string) (uint64, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			records, readErr := ReadTraceRecords(rootDir, TraceFilter{})
-			if readErr != nil {
+			if _, partial := traceGapNoticeFromError(readErr); readErr != nil && !partial {
 				return 0, readErr
 			}
 			var maxSeq uint64
