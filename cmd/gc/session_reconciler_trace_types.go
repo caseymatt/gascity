@@ -84,6 +84,7 @@ const (
 	TraceSitePoolRigCap                     TraceSiteCode = "reconciler.pool.rig_cap"
 	TraceSitePoolWorkspaceCap               TraceSiteCode = "reconciler.pool.workspace_cap"
 	TraceSitePoolAccept                     TraceSiteCode = "reconciler.pool.accept"
+	TraceSitePoolSlotAccept                 TraceSiteCode = "reconciler.pool.slot_accept"
 	TraceSitePoolMinFill                    TraceSiteCode = "reconciler.pool.min_fill"
 	TraceSitePoolInFlightReuse              TraceSiteCode = "reconciler.pool.inflight_reuse"
 	TraceSitePoolWakeKnownIdentity          TraceSiteCode = "reconciler.pool.wake_known_identity"
@@ -345,69 +346,79 @@ const (
 )
 
 type SessionReconcilerTraceRecord struct {
-	TraceSchemaVersion    int                     `json:"trace_schema_version"`
-	Seq                   uint64                  `json:"seq"`
-	TraceID               string                  `json:"trace_id"`
-	TickID                string                  `json:"tick_id"`
-	RecordID              string                  `json:"record_id"`
-	ParentRecordID        string                  `json:"parent_record_id,omitempty"`
-	CausedByRecordIDs     []string                `json:"caused_by_record_ids,omitempty"`
-	RecordType            TraceRecordType         `json:"record_type"`
-	TraceMode             TraceMode               `json:"trace_mode,omitempty"`
-	TraceSource           TraceSource             `json:"trace_source,omitempty"`
-	SiteCode              TraceSiteCode           `json:"site_code,omitempty"`
-	Ts                    time.Time               `json:"ts"`
-	CycleOffsetMS         int64                   `json:"cycle_offset_ms,omitempty"`
-	CityPath              string                  `json:"city_path,omitempty"`
-	ConfigRevision        string                  `json:"config_revision,omitempty"`
-	Template              string                  `json:"template,omitempty"`
-	SessionBeadID         string                  `json:"session_bead_id,omitempty"`
-	SessionName           string                  `json:"session_name,omitempty"`
-	Alias                 string                  `json:"alias,omitempty"`
-	Provider              string                  `json:"provider,omitempty"`
-	WorkDir               string                  `json:"work_dir,omitempty"`
-	SessionKey            string                  `json:"session_key,omitempty"`
-	OperationID           string                  `json:"operation_id,omitempty"`
-	ControllerInstanceID  string                  `json:"controller_instance_id,omitempty"`
-	ControllerPID         int                     `json:"controller_pid,omitempty"`
-	ControllerStartedAt   *time.Time              `json:"controller_started_at,omitempty"`
-	Host                  string                  `json:"host,omitempty"`
-	TickTrigger           TraceTickTrigger        `json:"tick_trigger,omitempty"`
-	TriggerDetail         string                  `json:"trigger_detail,omitempty"`
-	GCVersion             string                  `json:"gc_version,omitempty"`
-	GCCommit              string                  `json:"gc_commit,omitempty"`
-	BuildDate             string                  `json:"build_date,omitempty"`
-	VcsDirty              bool                    `json:"vcs_dirty,omitempty"`
-	CodeFingerprint       string                  `json:"code_fingerprint,omitempty"`
-	ReasonCode            TraceReasonCode         `json:"reason_code,omitempty"`
-	OutcomeCode           TraceOutcomeCode        `json:"outcome_code,omitempty"`
-	CompletionStatus      TraceCompletionStatus   `json:"completion_status,omitempty"`
-	CompletenessStatus    TraceCompletenessStatus `json:"completeness_status,omitempty"`
-	EvaluationStatus      TraceEvaluationStatus   `json:"evaluation_status,omitempty"`
-	DurabilityTier        TraceDurabilityTier     `json:"durability_tier,omitempty"`
-	DurationMS            int64                   `json:"duration_ms,omitempty"`
-	RecordCount           int                     `json:"record_count,omitempty"`
-	SeqStart              uint64                  `json:"seq_start,omitempty"`
-	SeqEnd                uint64                  `json:"seq_end,omitempty"`
-	FirstSeq              uint64                  `json:"first_seq,omitempty"`
-	LastSeq               uint64                  `json:"last_seq,omitempty"`
-	BatchCRC32            uint32                  `json:"batch_crc32,omitempty"`
-	DroppedRecordCount    int                     `json:"dropped_record_count,omitempty"`
-	DroppedBatchCount     int                     `json:"dropped_batch_count,omitempty"`
-	DropReasonCounts      map[string]int          `json:"drop_reason_counts,omitempty"`
-	ActiveTemplateCount   int                     `json:"active_template_count,omitempty"`
-	DetailedTemplateCount int                     `json:"detailed_template_count,omitempty"`
-	TemplatesTouched      []string                `json:"templates_touched,omitempty"`
-	DecisionCounts        map[string]int          `json:"decision_counts,omitempty"`
-	OperationCounts       map[string]int          `json:"operation_counts,omitempty"`
-	MutationCounts        map[string]int          `json:"mutation_counts,omitempty"`
-	ReasonCounts          map[string]int          `json:"reason_counts,omitempty"`
-	OutcomeCounts         map[string]int          `json:"outcome_counts,omitempty"`
-	AutoArmsTriggered     []string                `json:"auto_arms_triggered,omitempty"`
-	DemandSummary         map[string]any          `json:"demand_summary,omitempty"`
-	DependencyBlocked     bool                    `json:"dependency_blocked,omitempty"`
-	MissingTemplate       bool                    `json:"missing_template,omitempty"`
-	Fields                map[string]any          `json:"fields,omitempty"`
+	TraceSchemaVersion       int                     `json:"trace_schema_version"`
+	Seq                      uint64                  `json:"seq"`
+	TraceID                  string                  `json:"trace_id"`
+	TickID                   string                  `json:"tick_id"`
+	RecordID                 string                  `json:"record_id"`
+	ParentRecordID           string                  `json:"parent_record_id,omitempty"`
+	CausedByRecordIDs        []string                `json:"caused_by_record_ids,omitempty"`
+	RecordType               TraceRecordType         `json:"record_type"`
+	TraceMode                TraceMode               `json:"trace_mode,omitempty"`
+	TraceSource              TraceSource             `json:"trace_source,omitempty"`
+	SiteCode                 TraceSiteCode           `json:"site_code,omitempty"`
+	Ts                       time.Time               `json:"ts"`
+	CycleOffsetMS            int64                   `json:"cycle_offset_ms,omitempty"`
+	CityPath                 string                  `json:"city_path,omitempty"`
+	ConfigRevision           string                  `json:"config_revision,omitempty"`
+	Template                 string                  `json:"template,omitempty"`
+	SessionBeadID            string                  `json:"session_bead_id,omitempty"`
+	SessionName              string                  `json:"session_name,omitempty"`
+	Alias                    string                  `json:"alias,omitempty"`
+	Provider                 string                  `json:"provider,omitempty"`
+	WorkDir                  string                  `json:"work_dir,omitempty"`
+	SessionKey               string                  `json:"session_key,omitempty"`
+	OperationID              string                  `json:"operation_id,omitempty"`
+	WorkflowRootID           string                  `json:"workflow_root_id,omitempty"`
+	StepBeadID               string                  `json:"step_bead_id,omitempty"`
+	Attempt                  string                  `json:"attempt,omitempty"`
+	PoolSlot                 *int                    `json:"pool_slot,omitempty"`
+	QueueReadyAt             *time.Time              `json:"queue_ready_at,omitempty"`
+	CapacityDecidedAt        *time.Time              `json:"capacity_decided_at,omitempty"`
+	ProviderStartRequestedAt *time.Time              `json:"provider_start_requested_at,omitempty"`
+	ProviderStartCompletedAt *time.Time              `json:"provider_start_completed_at,omitempty"`
+	BlockingPoolSlots        []int                   `json:"blocking_pool_slots,omitempty"`
+	BlockingSessionIDs       []string                `json:"blocking_session_ids,omitempty"`
+	ControllerInstanceID     string                  `json:"controller_instance_id,omitempty"`
+	ControllerPID            int                     `json:"controller_pid,omitempty"`
+	ControllerStartedAt      *time.Time              `json:"controller_started_at,omitempty"`
+	Host                     string                  `json:"host,omitempty"`
+	TickTrigger              TraceTickTrigger        `json:"tick_trigger,omitempty"`
+	TriggerDetail            string                  `json:"trigger_detail,omitempty"`
+	GCVersion                string                  `json:"gc_version,omitempty"`
+	GCCommit                 string                  `json:"gc_commit,omitempty"`
+	BuildDate                string                  `json:"build_date,omitempty"`
+	VcsDirty                 bool                    `json:"vcs_dirty,omitempty"`
+	CodeFingerprint          string                  `json:"code_fingerprint,omitempty"`
+	ReasonCode               TraceReasonCode         `json:"reason_code,omitempty"`
+	OutcomeCode              TraceOutcomeCode        `json:"outcome_code,omitempty"`
+	CompletionStatus         TraceCompletionStatus   `json:"completion_status,omitempty"`
+	CompletenessStatus       TraceCompletenessStatus `json:"completeness_status,omitempty"`
+	EvaluationStatus         TraceEvaluationStatus   `json:"evaluation_status,omitempty"`
+	DurabilityTier           TraceDurabilityTier     `json:"durability_tier,omitempty"`
+	DurationMS               int64                   `json:"duration_ms,omitempty"`
+	RecordCount              int                     `json:"record_count,omitempty"`
+	SeqStart                 uint64                  `json:"seq_start,omitempty"`
+	SeqEnd                   uint64                  `json:"seq_end,omitempty"`
+	FirstSeq                 uint64                  `json:"first_seq,omitempty"`
+	LastSeq                  uint64                  `json:"last_seq,omitempty"`
+	BatchCRC32               uint32                  `json:"batch_crc32,omitempty"`
+	DroppedRecordCount       int                     `json:"dropped_record_count,omitempty"`
+	DroppedBatchCount        int                     `json:"dropped_batch_count,omitempty"`
+	DropReasonCounts         map[string]int          `json:"drop_reason_counts,omitempty"`
+	ActiveTemplateCount      int                     `json:"active_template_count,omitempty"`
+	DetailedTemplateCount    int                     `json:"detailed_template_count,omitempty"`
+	TemplatesTouched         []string                `json:"templates_touched,omitempty"`
+	DecisionCounts           map[string]int          `json:"decision_counts,omitempty"`
+	OperationCounts          map[string]int          `json:"operation_counts,omitempty"`
+	MutationCounts           map[string]int          `json:"mutation_counts,omitempty"`
+	ReasonCounts             map[string]int          `json:"reason_counts,omitempty"`
+	OutcomeCounts            map[string]int          `json:"outcome_counts,omitempty"`
+	AutoArmsTriggered        []string                `json:"auto_arms_triggered,omitempty"`
+	DemandSummary            map[string]any          `json:"demand_summary,omitempty"`
+	DependencyBlocked        bool                    `json:"dependency_blocked,omitempty"`
+	MissingTemplate          bool                    `json:"missing_template,omitempty"`
+	Fields                   map[string]any          `json:"fields,omitempty"`
 }
 
 func newTraceRecord(kind TraceRecordType) SessionReconcilerTraceRecord {
@@ -427,6 +438,32 @@ func (r *SessionReconcilerTraceRecord) ensureFields() {
 func (r SessionReconcilerTraceRecord) clone() SessionReconcilerTraceRecord {
 	if len(r.CausedByRecordIDs) > 0 {
 		r.CausedByRecordIDs = slices.Clone(r.CausedByRecordIDs)
+	}
+	if len(r.BlockingPoolSlots) > 0 {
+		r.BlockingPoolSlots = slices.Clone(r.BlockingPoolSlots)
+	}
+	if len(r.BlockingSessionIDs) > 0 {
+		r.BlockingSessionIDs = slices.Clone(r.BlockingSessionIDs)
+	}
+	if r.PoolSlot != nil {
+		slot := *r.PoolSlot
+		r.PoolSlot = &slot
+	}
+	if r.QueueReadyAt != nil {
+		value := *r.QueueReadyAt
+		r.QueueReadyAt = &value
+	}
+	if r.CapacityDecidedAt != nil {
+		value := *r.CapacityDecidedAt
+		r.CapacityDecidedAt = &value
+	}
+	if r.ProviderStartRequestedAt != nil {
+		value := *r.ProviderStartRequestedAt
+		r.ProviderStartRequestedAt = &value
+	}
+	if r.ProviderStartCompletedAt != nil {
+		value := *r.ProviderStartCompletedAt
+		r.ProviderStartCompletedAt = &value
 	}
 	if len(r.TemplatesTouched) > 0 {
 		r.TemplatesTouched = slices.Clone(r.TemplatesTouched)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/beads"
 )
 
 func TestTraceStartStopStatusOfflineFallback(t *testing.T) {
@@ -317,6 +320,187 @@ func TestTraceShowAndReasonsWithoutTemplateFilter(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, string(TraceReasonIdle)) {
 		t.Fatalf("trace reasons output = %q, want idle reason", got)
+	}
+}
+
+func TestTraceShowRecoversCommittedRecordsAcrossMalformedSegment(t *testing.T) {
+	cityDir := t.TempDir()
+	writeCityTOML(t, cityDir, "trace-town", "mayor")
+	t.Setenv("GC_CITY", cityDir)
+
+	now := time.Now().UTC()
+	store, err := newSessionReconcilerTraceStore(cityDir, io.Discard)
+	if err != nil {
+		t.Fatalf("newSessionReconcilerTraceStore: %v", err)
+	}
+	old := newTraceRecord(TraceRecordDecision)
+	old.TraceID = "cycle-before-gap"
+	old.TickID = "tick-before-gap"
+	old.RecordID = "record-before-gap"
+	old.Template = "repo/polecat"
+	old.Ts = now.Add(-2 * time.Hour)
+	if err := store.AppendBatch([]SessionReconcilerTraceRecord{old}, TraceDurabilityMetadata); err != nil {
+		t.Fatalf("append committed prefix: %v", err)
+	}
+	if err := store.rotateSegment(now); err != nil {
+		t.Fatalf("rotate trace segment: %v", err)
+	}
+	later := old
+	later.TraceID = "cycle-after-gap"
+	later.TickID = "tick-after-gap"
+	later.RecordID = "record-after-gap"
+	later.Ts = now
+	if err := store.AppendBatch([]SessionReconcilerTraceRecord{later}, TraceDurabilityMetadata); err != nil {
+		t.Fatalf("append later segment: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close trace store: %v", err)
+	}
+
+	root := traceCityRuntimeDir(cityDir)
+	segments, err := filepath.Glob(filepath.Join(root, sessionReconcilerTraceSegments, "*", "*", "*", "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob trace segments: %v", err)
+	}
+	if len(segments) != 2 {
+		t.Fatalf("trace segments = %d, want 2", len(segments))
+	}
+	if err := appendMalformedTraceLine(segments[0]); err != nil {
+		t.Fatalf("append malformed trace line: %v", err)
+	}
+
+	records, err := ReadTraceRecords(root, TraceFilter{})
+	if !beads.IsPartialResult(err) {
+		t.Fatalf("ReadTraceRecords error = %v, want PartialResultError", err)
+	}
+	var gapErr *traceReadGapError
+	if !errors.As(err, &gapErr) {
+		t.Fatalf("ReadTraceRecords error = %v, want traceReadGapError", err)
+	}
+	if gapErr.Segments != 1 {
+		t.Fatalf("gap segments = %d, want 1", gapErr.Segments)
+	}
+	if len(records) != 4 {
+		t.Fatalf("ReadTraceRecords returned %d records, want two records and two commits", len(records))
+	}
+	traceIDs := make(map[string]bool)
+	for _, record := range records {
+		traceIDs[record.TraceID] = true
+	}
+	if !traceIDs[old.TraceID] || !traceIDs[later.TraceID] {
+		t.Fatalf("ReadTraceRecords trace IDs = %v, want records on both sides of gap", traceIDs)
+	}
+
+	quarantined, err := filepath.Glob(filepath.Join(root, sessionReconcilerTraceQuarantine, "*"))
+	if err != nil {
+		t.Fatalf("glob quarantined trace suffixes: %v", err)
+	}
+	if len(quarantined) != 1 {
+		t.Fatalf("quarantined trace suffixes = %d, want 1", len(quarantined))
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := appendMalformedTraceLine(segments[0]); err != nil {
+		t.Fatalf("append malformed trace line for trace show: %v", err)
+	}
+
+	if code := cmdTraceShow("repo/polecat", "1h", "", "", "", "", true, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdTraceShow = %d; stderr=%s", code, stderr.String())
+	}
+	var showJSON traceShowResultJSON
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &showJSON); err != nil {
+		t.Fatalf("unmarshal trace show JSON: %v; output=%s", err, stdout.String())
+	}
+	if len(showJSON.Gaps) != 1 {
+		t.Fatalf("trace show gaps = %+v, want exactly one", showJSON.Gaps)
+	}
+	if showJSON.Gaps[0].Code != traceGapCodeSegmentSkipped || showJSON.Gaps[0].Segments != 1 {
+		t.Fatalf("trace show gap = %+v, want one skipped segment", showJSON.Gaps[0])
+	}
+	if len(showJSON.Records) != 1 {
+		t.Fatalf("trace show records = %+v, want later record after --since filter", showJSON.Records)
+	}
+	if showJSON.Records[0].TraceID != later.TraceID {
+		t.Fatalf("trace show record trace_id = %q, want %q", showJSON.Records[0].TraceID, later.TraceID)
+	}
+
+	records, err = ReadTraceRecords(root, TraceFilter{})
+	if err != nil {
+		t.Fatalf("second ReadTraceRecords: %v", err)
+	}
+	validateJSONResultSchema(t, []string{"trace", "show"}, stdout.Bytes())
+	if len(records) != 4 {
+		t.Fatalf("second ReadTraceRecords returned %d records, want recovered prefix and later segment", len(records))
+	}
+}
+
+func appendMalformedTraceLine(path string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, sessionReconcilerTraceOwnerFilePerm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(f, "{malformed-json}\n"); err != nil {
+		f.Close() //nolint:errcheck
+		return err
+	}
+	return f.Close()
+}
+
+func TestReadTraceRecordsNeverRepairsActiveSegment(t *testing.T) {
+	cityDir := t.TempDir()
+	store, err := newSessionReconcilerTraceStore(cityDir, io.Discard)
+	if err != nil {
+		t.Fatalf("newSessionReconcilerTraceStore: %v", err)
+	}
+	defer store.Close() //nolint:errcheck
+
+	record := newTraceRecord(TraceRecordDecision)
+	record.TraceID = "active-cycle"
+	record.TickID = "active-tick"
+	record.RecordID = "active-record"
+	record.Ts = time.Now().UTC()
+	if err := store.AppendBatch([]SessionReconcilerTraceRecord{record}, TraceDurabilityMetadata); err != nil {
+		t.Fatalf("append active batch: %v", err)
+	}
+	activePath := store.currentPath
+	if err := appendMalformedTraceLine(activePath); err != nil {
+		t.Fatalf("append malformed active line: %v", err)
+	}
+	before, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat active segment before read: %v", err)
+	}
+
+	_, err = ReadTraceRecords(traceCityRuntimeDir(cityDir), TraceFilter{})
+	if !beads.IsPartialResult(err) {
+		t.Fatalf("ReadTraceRecords error = %v, want PartialResultError", err)
+	}
+	after, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("active segment was moved during live read: %v", err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("active segment size = %d after read, want unchanged %d", after.Size(), before.Size())
+	}
+	quarantined, err := filepath.Glob(filepath.Join(traceCityRuntimeDir(cityDir), sessionReconcilerTraceQuarantine, "*"))
+	if err != nil {
+		t.Fatalf("glob trace quarantine: %v", err)
+	}
+	if len(quarantined) != 0 {
+		t.Fatalf("active segment produced %d quarantine files, want none", len(quarantined))
+	}
+
+	next := record
+	next.RecordID = "active-record-after-read"
+	if err := store.AppendBatch([]SessionReconcilerTraceRecord{next}, TraceDurabilityMetadata); err != nil {
+		t.Fatalf("append after live read: %v", err)
+	}
+	appended, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat active segment after append: %v", err)
+	}
+	if appended.Size() <= after.Size() {
+		t.Fatalf("active segment did not grow after append: before=%d after=%d", after.Size(), appended.Size())
 	}
 }
 

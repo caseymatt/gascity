@@ -3,6 +3,7 @@ package beads
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -99,6 +100,68 @@ func TestNativeDoltStoreListReconnectsAfterTransientConnError(t *testing.T) {
 	}
 }
 
+func TestNativeDoltStoreGetReconnectsAndRetriesPlainEOF(t *testing.T) {
+	var deadReads atomic.Int32
+	dead := &nativeDoltStorageSpy{
+		searchIssues: func(context.Context, string, beadslib.IssueFilter) ([]*beadslib.Issue, error) {
+			deadReads.Add(1)
+			return nil, io.EOF
+		},
+	}
+	var freshReads atomic.Int32
+	fresh := &nativeDoltStorageSpy{
+		searchIssues: func(context.Context, string, beadslib.IssueFilter) ([]*beadslib.Issue, error) {
+			freshReads.Add(1)
+			return []*beadslib.Issue{{
+				ID: "gc-eof", Title: "recovered from EOF", Status: beadslib.StatusOpen, IssueType: beadslib.TypeTask, Priority: 2,
+			}}, nil
+		},
+	}
+	var reopens int32
+	store := storeWithReopen(dead, fresh, &reopens)
+
+	got, err := store.Get("gc-eof")
+	if err != nil {
+		t.Fatalf("Get after EOF: %v", err)
+	}
+	if got.ID != "gc-eof" {
+		t.Fatalf("Get.ID = %q, want gc-eof", got.ID)
+	}
+	if got := deadReads.Load(); got != 1 {
+		t.Fatalf("dead storage reads = %d, want 1", got)
+	}
+	if got := freshReads.Load(); got != 1 {
+		t.Fatalf("fresh storage reads = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&reopens); got != 1 {
+		t.Fatalf("reopen calls = %d, want 1", got)
+	}
+}
+
+func TestNativeDoltStorePersistentEOFExhaustsReadRetryBudget(t *testing.T) {
+	store := newNativeDoltStoreForTest(deadSearchStorage(io.EOF))
+	store.readRetryBudgetOverride = 30 * time.Millisecond
+	var reopens atomic.Int32
+	store.reopen = func(context.Context) (beadslib.Storage, error) {
+		reopens.Add(1)
+		return deadSearchStorage(io.EOF), nil
+	}
+
+	_, err := store.Get("gc-eof")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Get persistent EOF error = %v, want context deadline exceeded", err)
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("Get persistent EOF error = %v, want EOF cause preserved", err)
+	}
+	if !errContains(err, "native Dolt read retry budget exhausted") {
+		t.Fatalf("Get persistent EOF error = %v, want retry-budget context", err)
+	}
+	if got := reopens.Load(); got != 1 {
+		t.Fatalf("reopen calls = %d, want 1 before budget exhaustion", got)
+	}
+}
+
 func TestNativeDoltStoreReadDoesNotRetryNonTransientError(t *testing.T) {
 	var reopens int32
 	store := storeWithReopen(deadSearchStorage(errors.New("syntax error near 'FROM'")), healthySearchStorage(), &reopens)
@@ -141,6 +204,7 @@ func TestIsNativeDoltTransientReadError(t *testing.T) {
 		"dial tcp 127.0.0.1:3307: connect: connection refused",
 		"write: broken pipe",
 		"unexpected EOF",
+		io.EOF.Error(),
 		"use of closed network connection",
 		"bad connection",
 		"read: connection reset by peer",

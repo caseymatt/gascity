@@ -65,6 +65,30 @@
         },
         "additionalProperties": true
       }
+    },
+    "gaps": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "segments"
+        ],
+        "properties": {
+          "code": {
+            "const": "trace_segment_skipped"
+          },
+          "segments": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "first_segment": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false

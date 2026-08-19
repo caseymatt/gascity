@@ -671,6 +671,38 @@ func TestRunConditionFail(t *testing.T) {
 	}
 }
 
+func TestRunConditionTempFailIsInfrastructureError(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tempfail.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho partial-output\necho store-unavailable >&2\nexit 75\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := ConditionEnv{
+		BeadID:      "b-tempfail",
+		CityPath:    dir,
+		WispID:      "w-tempfail",
+		ArtifactDir: dir,
+	}
+
+	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	if result.Outcome != GateError {
+		t.Errorf("Outcome = %q, want %q", result.Outcome, GateError)
+	}
+	if result.ExitCode == nil || *result.ExitCode != EXTempFail {
+		t.Errorf("ExitCode = %v, want %d", result.ExitCode, EXTempFail)
+	}
+	if !strings.Contains(result.Stdout, "partial-output") {
+		t.Errorf("Stdout = %q, want to contain partial-output", result.Stdout)
+	}
+	if !strings.Contains(result.Stderr, "store-unavailable") {
+		t.Errorf("Stderr = %q, want to contain store-unavailable", result.Stderr)
+	}
+	if result.Duration <= 0 {
+		t.Errorf("Duration = %v, want positive duration", result.Duration)
+	}
+}
+
 func TestRunConditionRetriesTextFileBusy(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not return text-file-busy for executing an open script")

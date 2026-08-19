@@ -165,12 +165,15 @@ type defaultScaleCheckTarget struct {
 }
 
 type scaleCheckDemand struct {
-	Count       int
-	WorkBeadIDs []string
-	Titles      map[string]string
-	Packs       map[string]string
-	Workspaces  map[string]string
-	StoreRefs   map[string]string
+	Count         int
+	WorkBeadIDs   []string
+	Titles        map[string]string
+	Packs         map[string]string
+	Workspaces    map[string]string
+	StoreRefs     map[string]string
+	WorkflowRoots map[string]string
+	Attempts      map[string]string
+	QueueReadyAt  map[string]time.Time
 	// ParentSIDs maps work-bead id → gc.brain_parent_sid, carrying the fork
 	// parent through to the new pool session bead so the launch path can fork
 	// the warm arm off its pre-built brain.
@@ -394,6 +397,7 @@ func buildDesiredStateWithSessionBeads(
 	}
 
 	bp := newAgentBuildParams(cityName, cityPath, cfg, sp, beaconTime, store, stderr)
+	bp.trace = trace
 	bp.sessionBeads = sessionBeads
 
 	// Pre-compute suspended rig paths (config + runtime state).
@@ -1671,6 +1675,7 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 				ready = nil
 			}
 		}
+		readyObservedAt := time.Now().UTC()
 		for _, b := range ready {
 			// AGREEMENT: count only rows a T-worker's own query would serve it.
 			// A routed epic, a bead on a dispatch hold, or a slot-suffixed route
@@ -1693,6 +1698,20 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 			entry := demand[template]
 			entry.Count++
 			entry.WorkBeadIDs = append(entry.WorkBeadIDs, b.ID)
+			if entry.WorkflowRoots == nil {
+				entry.WorkflowRoots = make(map[string]string)
+			}
+			entry.WorkflowRoots[b.ID] = beadmeta.ResolveRunID(b.Metadata, b.ID, b.ID)
+			if attempt := strings.TrimSpace(b.Metadata[beadmeta.AttemptMetadataKey]); attempt != "" {
+				if entry.Attempts == nil {
+					entry.Attempts = make(map[string]string)
+				}
+				entry.Attempts[b.ID] = attempt
+			}
+			if entry.QueueReadyAt == nil {
+				entry.QueueReadyAt = make(map[string]time.Time)
+			}
+			entry.QueueReadyAt[b.ID] = readyObservedAt
 			if entry.Titles == nil {
 				entry.Titles = make(map[string]string)
 			}
@@ -1748,6 +1767,15 @@ func mergeScaleCheckDemand(existing, incoming scaleCheckDemand, count int) scale
 	if existing.ParentSIDs == nil && len(incoming.ParentSIDs) > 0 {
 		existing.ParentSIDs = make(map[string]string, len(incoming.ParentSIDs))
 	}
+	if existing.WorkflowRoots == nil && len(incoming.WorkflowRoots) > 0 {
+		existing.WorkflowRoots = make(map[string]string, len(incoming.WorkflowRoots))
+	}
+	if existing.Attempts == nil && len(incoming.Attempts) > 0 {
+		existing.Attempts = make(map[string]string, len(incoming.Attempts))
+	}
+	if existing.QueueReadyAt == nil && len(incoming.QueueReadyAt) > 0 {
+		existing.QueueReadyAt = make(map[string]time.Time, len(incoming.QueueReadyAt))
+	}
 	for _, id := range incoming.WorkBeadIDs[:limit] {
 		if strings.TrimSpace(id) == "" {
 			continue
@@ -1769,6 +1797,15 @@ func mergeScaleCheckDemand(existing, incoming scaleCheckDemand, count int) scale
 			if sid := incoming.ParentSIDs[id]; sid != "" {
 				existing.ParentSIDs[id] = sid
 			}
+		}
+		if incoming.WorkflowRoots != nil {
+			existing.WorkflowRoots[id] = incoming.WorkflowRoots[id]
+		}
+		if incoming.Attempts != nil {
+			existing.Attempts[id] = incoming.Attempts[id]
+		}
+		if incoming.QueueReadyAt != nil {
+			existing.QueueReadyAt[id] = incoming.QueueReadyAt[id]
 		}
 	}
 	existing.Count = len(existing.WorkBeadIDs)
@@ -3050,6 +3087,7 @@ func realizePoolDesiredSessions(
 				setPoolTemplateRuntimeIdentityInfo(&tp, qualifiedInstance, sbInfo)
 			}
 		}
+		recordAcceptedPoolSlot(bp.trace, qualifiedName, item.request, sbInfo.ID, tp.SessionName, poolSlot)
 		installAgentSideEffects(bp, resolveAgent, tp, stderr)
 		desired[tp.SessionName] = tp
 	}
@@ -3070,6 +3108,12 @@ func computePoolTriggerBindingPatch(info session.Info, request SessionRequest, w
 	if workBeadID == "" {
 		// Clear: a re-pointed session drops its prior trigger/store-ref and, so it
 		// does not inherit the prior fork's "warm" provenance, its parent sid.
+		if strings.TrimSpace(info.WorkflowRootID) != "" {
+			metadata[beadmeta.RootBeadIDMetadataKey] = ""
+		}
+		if strings.TrimSpace(info.WorkflowAttempt) != "" {
+			metadata[beadmeta.AttemptMetadataKey] = ""
+		}
 		if strings.TrimSpace(info.TriggerBeadID) != "" {
 			metadata[beadmeta.TriggerBeadIDMetadataKey] = ""
 		}
@@ -3082,6 +3126,12 @@ func computePoolTriggerBindingPatch(info session.Info, request SessionRequest, w
 		return metadata
 	}
 	oldWorkBeadID := strings.TrimSpace(info.TriggerBeadID)
+	if rootID := strings.TrimSpace(request.WorkflowRootID); strings.TrimSpace(info.WorkflowRootID) != rootID {
+		metadata[beadmeta.RootBeadIDMetadataKey] = rootID
+	}
+	if attempt := strings.TrimSpace(request.Attempt); strings.TrimSpace(info.WorkflowAttempt) != attempt {
+		metadata[beadmeta.AttemptMetadataKey] = attempt
+	}
 	if oldWorkBeadID != workBeadID {
 		metadata[beadmeta.TriggerBeadIDMetadataKey] = workBeadID
 		// On a genuine reassign to a different work bead, reconcile the fork parent
@@ -3972,6 +4022,12 @@ func poolTriggerMetadata(bp *agentBuildParams, cfgAgent *config.Agent, qualified
 	}
 	if parentSID := strings.TrimSpace(request.BrainParentSID); parentSID != "" {
 		metadata[beadmeta.BrainParentSIDMetadataKey] = parentSID
+	}
+	if rootID := strings.TrimSpace(request.WorkflowRootID); rootID != "" {
+		metadata[beadmeta.RootBeadIDMetadataKey] = rootID
+	}
+	if attempt := strings.TrimSpace(request.Attempt); attempt != "" {
+		metadata[beadmeta.AttemptMetadataKey] = attempt
 	}
 	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
 		metadata[beadmeta.PackMetadataKey] = pack
