@@ -15,6 +15,8 @@ description: The shortest path for new contributors to get productive in Gas Cit
 - [Infra-Class Store Routing Audit](infra-class-store-routing-audit.md) when
   opening a store on a bead id — which class a bead belongs to decides which
   store answers, and the audit inventories the sites that got it wrong
+- [External Dolt Evaluation](external-dolt-evaluation.md) when deciding whether
+  to move a managed-local bead store to a dedicated SQL endpoint
 - [Huma Usage Notes](huma-usage.md) when touching `internal/api/`,
   OpenAPI generation, or SSE registration
 - [Excalidraw Setup](excalidraw-setup.md) when authoring diagrams for the docs
