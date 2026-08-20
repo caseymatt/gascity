@@ -38,6 +38,217 @@ if any(classify(path) for path in ("README.md", "pkg/input.go.bak", "pkg/header.
 		}
 	})
 
+	t.Run("generator ownership follows transitive package dependencies", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"cmd/genspec/main.go": `package main
+
+import "example.com/static-scope/middle"
+
+func main() { middle.Value() }
+`,
+			"cmd/genschema/main.go": `package main
+
+import "example.com/static-scope/schema"
+
+func main() { schema.Value() }
+`,
+			"alpha/alpha.go": "package alpha\n\nfunc Value() {}\n",
+			"middle/middle.go": `package middle
+
+import "example.com/static-scope/alpha"
+
+func Value() { alpha.Value() }
+`,
+			"schema/schema.go":       "package schema\n\nfunc Value() {}\n",
+			"unrelated/unrelated.go": "package unrelated\n\nfunc Value() {}\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "alpha", "alpha.go"), "package alpha\n\nfunc Value() { println(1) }\n")
+
+		output, err := fixture.runMakeTarget("generator-affected")
+		if err != nil {
+			t.Fatalf("generator-affected failed for a transitive genspec dependency: %v\n%s", err, output)
+		}
+		if got := strings.TrimSpace(output); got != "./cmd/genspec" {
+			t.Fatalf("generator-affected output = %q, want only ./cmd/genspec", got)
+		}
+	})
+
+	t.Run("genschema ownership follows docgen dependencies", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"cmd/genspec/main.go": "package main\n\nfunc main() {}\n",
+			"cmd/genschema/main.go": `package main
+
+import "example.com/static-scope/docgen"
+
+func main() { docgen.Value() }
+`,
+			"docgen/docgen.go": "package docgen\n\nfunc Value() {}\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "docgen", "docgen.go"), "package docgen\n\nfunc Value() { println(1) }\n")
+
+		output, err := fixture.runMakeTarget("generator-affected")
+		if err != nil {
+			t.Fatalf("generator-affected failed for a genschema dependency: %v\n%s", err, output)
+		}
+		if got := strings.TrimSpace(output); got != "./cmd/genschema" {
+			t.Fatalf("generator-affected output = %q, want only ./cmd/genschema", got)
+		}
+	})
+
+	t.Run("non-Go generator source owns its generator", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"cmd/genspec/main.go":     "package main\n\nfunc main() {}\n",
+			"cmd/genspec/schema.tmpl": "before\n",
+			"cmd/genschema/main.go":   "package main\n\nfunc main() {}\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "cmd", "genspec", "schema.tmpl"), "after\n")
+
+		output, err := fixture.runMakeTarget("generator-affected")
+		if err != nil {
+			t.Fatalf("generator-affected failed for a generator source: %v\n%s", err, output)
+		}
+		if got := strings.TrimSpace(output); got != "./cmd/genspec" {
+			t.Fatalf("generator-affected output = %q, want only ./cmd/genspec", got)
+		}
+	})
+
+	t.Run("genschema owns runtime CLI command inputs", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"cmd/genspec/main.go":   "package main\n\nfunc main() {}\n",
+			"cmd/genschema/main.go": "package main\n\nfunc main() {}\n",
+			"cmd/gc/main.go":        "package main\n\nfunc main() {}\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "cmd", "gc", "main.go"), "package main\n\nfunc main() { println(1) }\n")
+
+		output, err := fixture.runMakeTarget("generator-affected")
+		if err != nil {
+			t.Fatalf("generator-affected failed for a genschema runtime input: %v\n%s", err, output)
+		}
+		if got := strings.TrimSpace(output); got != "./cmd/genschema" {
+			t.Fatalf("generator-affected output = %q, want only ./cmd/genschema", got)
+		}
+	})
+
+	t.Run("committed generator outputs select their owner", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"cmd/genspec/main.go":                    "package main\n\nfunc main() {}\n",
+			"cmd/genschema/main.go":                  "package main\n\nfunc main() {}\n",
+			"docs/reference/schema/openapi.json":     "{}\n",
+			"docs/reference/schema/city-schema.json": "{}\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "docs", "reference", "schema", "openapi.json"), "{\"changed\":true}\n")
+
+		output, err := fixture.runMakeTarget("generator-affected")
+		if err != nil {
+			t.Fatalf("generator-affected failed for a committed output: %v\n%s", err, output)
+		}
+		if got := strings.TrimSpace(output); got != "./cmd/genspec" {
+			t.Fatalf("generator-affected output = %q, want only ./cmd/genspec", got)
+		}
+	})
+
+	t.Run("static scope wrapper dispatches one complete branch", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"alpha/alpha.go": "package alpha\n\nfunc Value() int { return 1 }\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "alpha", "alpha.go"), "package alpha\n\nfunc Value() int { return 2 }\n")
+
+		fixture.resetCalls(t)
+		if output, err := fixture.runStaticScope("changed"); err != nil {
+			t.Fatalf("changed static scope failed: %v\n%s", err, output)
+		}
+		fixture.requireCalls(t,
+			[]string{"run", "./alpha"},
+			[]string{"fmt", "--diff", "--", "alpha/alpha.go"},
+		)
+		fixture.requireGoCalls(t, []string{"vet", "./alpha"})
+
+		fixture.resetCalls(t)
+		fullOutput, err := fixture.runStaticScope("full")
+		if err != nil {
+			t.Fatalf("full static scope failed: %v\n%s", err, fullOutput)
+		}
+		fixture.requireCalls(t,
+			[]string{"run", "./..."},
+			[]string{"fmt", "--diff", "./..."},
+		)
+		fixture.requireGoCalls(t)
+		if !strings.Contains(fullOutput, "go vet ./...") {
+			t.Fatalf("full static scope did not execute repository vet:\n%s", fullOutput)
+		}
+
+		if output, err := fixture.runStaticScope("unknown"); err == nil || !strings.Contains(output, "expected changed or full") {
+			t.Fatalf("invalid static scope did not fail closed: err=%v output=%s", err, output)
+		}
+	})
+	t.Run("unrelated package does not own a generator", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"cmd/genspec/main.go": `package main
+
+import "example.com/static-scope/alpha"
+
+func main() { alpha.Value() }
+`,
+			"cmd/genschema/main.go": `package main
+
+import "example.com/static-scope/schema"
+
+func main() { schema.Value() }
+`,
+			"alpha/alpha.go":         "package alpha\n\nfunc Value() {}\n",
+			"schema/schema.go":       "package schema\n\nfunc Value() {}\n",
+			"unrelated/unrelated.go": "package unrelated\n\nfunc Value() {}\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "unrelated", "unrelated.go"), "package unrelated\n\nfunc Value() { println(1) }\n")
+
+		output, err := fixture.runMakeTarget("generator-affected")
+		if err != nil {
+			t.Fatalf("generator-affected failed for an unrelated package: %v\n%s", err, output)
+		}
+		if got := strings.TrimSpace(output); got != "" {
+			t.Fatalf("generator-affected output = %q, want no generator", got)
+		}
+	})
+
+	t.Run("module inputs and ambiguous deletions select every generator", func(t *testing.T) {
+		t.Run("go.mod", func(t *testing.T) {
+			fixture := newPRStaticScopeFixture(t, map[string]string{
+				"cmd/genspec/main.go":   "package main\n\nfunc main() {}\n",
+				"cmd/genschema/main.go": "package main\n\nfunc main() {}\n",
+			})
+			writeTestFile(t, filepath.Join(fixture.repoRoot, "go.mod"), "module example.com/static-scope\n\ngo 1.23\n\n// changed\n")
+
+			output, err := fixture.runMakeTarget("generator-affected")
+			if err != nil {
+				t.Fatalf("generator-affected failed for go.mod: %v\n%s", err, output)
+			}
+			if got := strings.Fields(output); !slices.Equal(got, []string{"./cmd/genspec", "./cmd/genschema"}) {
+				t.Fatalf("generator-affected output = %q, want both generators", output)
+			}
+		})
+
+		t.Run("deleted last package file", func(t *testing.T) {
+			fixture := newPRStaticScopeFixture(t, map[string]string{
+				"cmd/genspec/main.go":   "package main\n\nfunc main() {}\n",
+				"cmd/genschema/main.go": "package main\n\nfunc main() {}\n",
+				"orphan/orphan.go":      "package orphan\n",
+			})
+			if err := os.Remove(filepath.Join(fixture.repoRoot, "orphan", "orphan.go")); err != nil {
+				t.Fatalf("delete orphan package: %v", err)
+			}
+
+			output, err := fixture.runMakeTarget("generator-affected")
+			if err != nil {
+				t.Fatalf("generator-affected failed closed for an ambiguous deletion: %v\n%s", err, output)
+			}
+			for _, want := range []string{"generator-affected: selecting all generators", "./cmd/genspec", "./cmd/genschema"} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("generator-affected output missing %q:\n%s", want, output)
+				}
+			}
+		})
+	})
+
 	t.Run("changed Go file", func(t *testing.T) {
 		fixture := newPRStaticScopeFixture(t, map[string]string{
 			"alpha/alpha.go":     "package alpha\n\nfunc Value() int { return 1 }\n",
@@ -67,6 +278,12 @@ func Value() int { return alpha.Value() }
 		fixture.requireSingleRunCallWithUnorderedTail(t, "./alpha", "./consumer")
 		fixture.requireGoCalls(t, []string{"vet", "./alpha", "./consumer"})
 
+		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTarget("vet-affected"); err != nil {
+			t.Errorf("vet-affected failed for one changed Go file: %v\n%s", err, output)
+		}
+		fixture.requireCalls(t)
+		fixture.requireGoCalls(t, []string{"vet", "./alpha", "./consumer"})
 		fixture.resetCalls(t)
 		if output, err := fixture.runMakeTarget("test-affected"); err != nil {
 			t.Errorf("test-affected failed for one changed Go file: %v\n%s", err, output)
@@ -196,6 +413,13 @@ import _ "example.com/static-scope/missing"
 		}
 		fixture.requireCalls(t, []string{"run", "./..."})
 		fixture.requireGoCalls(t, []string{"vet", "./..."})
+
+		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTarget("vet-affected"); err != nil {
+			t.Errorf("vet-affected did not fail closed for a broken package graph: %v\n%s", err, output)
+		}
+		fixture.requireCalls(t)
+		fixture.requireGoCalls(t, []string{"vet", "./..."})
 	})
 
 	t.Run("deleted Go file", func(t *testing.T) {
@@ -310,20 +534,26 @@ func Moved() int {
 		writeTestFile(t, filepath.Join(fixture.repoRoot, "alpha", "alpha.go"), "package alpha\n\nfunc Value() int { return 2 }\n")
 
 		fixture.resetCalls(t)
-		if output, err := fixture.runMakeTargetWithRef("lint-affected", "refs/heads/missing-static-base"); err != nil {
+		if output, err := fixture.runMakeTargetWithInvalidRef("lint-affected"); err != nil {
 			t.Errorf("lint-affected did not fail closed for an invalid ref: %v\n%s", err, output)
 		}
 		fixture.requireCalls(t, []string{"run", "./..."})
 		fixture.requireGoCalls(t, []string{"vet", "./..."})
 
 		fixture.resetCalls(t)
-		if output, err := fixture.runMakeTargetWithRef("fmt-check-changed", "refs/heads/missing-static-base"); err != nil {
+		if output, err := fixture.runMakeTargetWithInvalidRef("vet-affected"); err != nil {
+			t.Errorf("vet-affected did not fail closed for an invalid ref: %v\n%s", err, output)
+		}
+		fixture.requireCalls(t)
+		fixture.requireGoCalls(t, []string{"vet", "./..."})
+		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTargetWithInvalidRef("fmt-check-changed"); err != nil {
 			t.Errorf("fmt-check-changed did not fail closed for an invalid ref: %v\n%s", err, output)
 		}
 		fixture.requireCalls(t, []string{"fmt", "--diff", "./..."})
 		fixture.requireGoCalls(t)
 		fixture.resetCalls(t)
-		output, err := fixture.runMakeTargetWithRef("test-affected", "refs/heads/missing-static-base")
+		output, err := fixture.runMakeTargetWithInvalidRef("test-affected")
 		if err == nil {
 			t.Fatalf("test-affected did not fail closed for an invalid ref:\n%s", output)
 		}
@@ -356,16 +586,16 @@ func Printf(format string, args ...any) { fmt.Printf(format, args...) }
 `)
 
 		fixture.resetCalls(t)
-		output, err := fixture.runMakeTargetWithGo("lint-affected", fixture.realGo)
+		output, err := fixture.runMakeTargetWithGo("vet-affected", fixture.realGo)
 		if err == nil {
-			t.Fatalf("lint-affected passed despite a new vet diagnostic in an unchanged generated reverse dependent:\n%s", output)
+			t.Fatalf("vet-affected passed despite a new vet diagnostic in an unchanged generated reverse dependent:\n%s", output)
 		}
 		for _, marker := range []string{"consumer/generated.go", "format %d"} {
 			if !strings.Contains(output, marker) {
 				t.Errorf("affected vet output missing %q:\n%s", marker, output)
 			}
 		}
-		fixture.requireSingleRunCallWithUnorderedTail(t, "./alpha", "./consumer")
+		fixture.requireCalls(t)
 		fixture.requireGoCalls(t)
 	})
 
@@ -595,6 +825,13 @@ var Data string
 		}
 		fixture.requireCalls(t, []string{"run", "./..."})
 		fixture.requireGoCalls(t, []string{"vet", "./..."})
+
+		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTarget("vet-affected"); err != nil {
+			t.Errorf("vet-affected did not fail closed for a missing embedded file: %v\n%s", err, output)
+		}
+		fixture.requireCalls(t)
+		fixture.requireGoCalls(t, []string{"vet", "./..."})
 	})
 
 	t.Run("deleted embedded glob member falls back to full", func(t *testing.T) {
@@ -684,6 +921,12 @@ var Data = alpha.Data
 		fixture.resetCalls(t)
 		if output, err := fixture.runMakeTarget("lint-affected"); err != nil {
 			t.Errorf("lint-affected failed for a non-Go diff: %v\n%s", err, output)
+		}
+		fixture.requireNoCalls(t)
+
+		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTarget("vet-affected"); err != nil {
+			t.Errorf("vet-affected failed for a non-Go diff: %v\n%s", err, output)
 		}
 		fixture.requireNoCalls(t)
 
@@ -977,8 +1220,8 @@ func (f prStaticScopeFixture) runMakeTarget(target string) (string, error) {
 	return f.runMakeTargetWithOptions(target, "HEAD", "", f.fakeGo)
 }
 
-func (f prStaticScopeFixture) runMakeTargetWithRef(target, ref string) (string, error) {
-	return f.runMakeTargetWithOptions(target, ref, "", f.fakeGo)
+func (f prStaticScopeFixture) runMakeTargetWithInvalidRef(target string) (string, error) {
+	return f.runMakeTargetWithOptions(target, "refs/heads/missing-static-base", "", f.fakeGo)
 }
 
 func (f prStaticScopeFixture) runMakeTargetWithRange(target, ref, head string) (string, error) {
@@ -987,6 +1230,26 @@ func (f prStaticScopeFixture) runMakeTargetWithRange(target, ref, head string) (
 
 func (f prStaticScopeFixture) runMakeTargetWithGo(target, goTool string) (string, error) {
 	return f.runMakeTargetWithOptions(target, "HEAD", "", goTool)
+}
+
+func (f prStaticScopeFixture) runStaticScope(scope string) (string, error) {
+	cmd := makeCommand(
+		"--no-print-directory",
+		"-f", f.productionMakefile,
+		"GOLANGCI_LINT="+f.fakeLint,
+		"CI_STATIC_GO="+f.fakeGo,
+		"CI_STATIC_SCOPE="+scope,
+		"LINT_CHANGED_SCOPE=tracked",
+		"LINT_CHANGED_REF=HEAD",
+		"LINT_FLAGS=",
+		"SYS_USR_CGO_FALLBACK=0",
+		"EXTRA_TEST_ENV=STATIC_SCOPE_GO_LOG="+f.goLog+" STATIC_SCOPE_REAL_GO="+f.realGo,
+		"check-static-scope",
+	)
+	cmd.Dir = f.repoRoot
+	cmd.Env = f.commandEnv()
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }
 
 func (f prStaticScopeFixture) runMakeTargetWithOptions(target, ref, head, goTool string) (string, error) {
@@ -1018,6 +1281,9 @@ func (f prStaticScopeFixture) commandEnv() []string {
 			name == "STATIC_SCOPE_GO_LOG" ||
 			name == "STATIC_SCOPE_REAL_GO" ||
 			name == "SYS_USR_CGO_FALLBACK" ||
+			name == "LINT_CHANGED_SCOPE" ||
+			name == "LINT_CHANGED_REF" ||
+			name == "LINT_CHANGED_HEAD" ||
 			name == "EVENT_NAME" ||
 			name == "PR_BASE_SHA" ||
 			name == "GOFLAGS" ||

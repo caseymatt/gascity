@@ -23,7 +23,7 @@ not describe a target as an existing gate.
 | Runtime constructor and `runtime.Fake` conformance binding | Checked by the runtime provider ledger below; several explicit waivers remain |
 | Other provider conformance | Shared suites exist, but exact production-constructor coverage is still a manual audit with known gaps |
 | Sub-five-minute PR feedback and timing ratchets | Target; current Go timing artifacts measure test execution, not workflow queue/bootstrap/graph time (`ga-80po0c.4`) |
-| Large/E2E ownership and cadence | Target; the executable manifest is owned by `ga-80po0c.6` |
+| Large/E2E ownership and cadence | Checked by `.github/test-cadence.json`, `scripts/test-cadence`, and workflow-policy tests; `ga-80po0c.6` owns the manifest |
 | First-attempt flake and quarantine policy | Target; required Playwright retry and legacy unledgered skips remain noncompliant debt under `ga-80po0c` |
 
 ## The outcome: protected PR feedback in under five minutes
@@ -55,6 +55,66 @@ A slow PR test may move to a later lane only after lower layers own its branch
 and error-detail matrix. The later lane must retain any unique real-composition
 risk. Moving a test without that ownership map is deleting quality, not
 improving feedback.
+
+## Executable cadence and routing
+
+`.github/test-cadence.json` is the schema-1 authority for executable test
+ownership and cadence. Every row records one Small, Medium, Journey, or
+Provider command; its owner, budget, repository-relative path triggers,
+cadences, required cadences, and workflow job bindings; and, where the command
+has an exact top-level Go test manifest, those test names. The resolver command
+`scripts/test-cadence check` fails on schema drift, duplicate ownership IDs,
+invalid budgets or events, missing jobs, commands that no longer occur in their
+mapped job, and test commands in `ci.yml`, `nightly.yml`, or `rc-gate.yml` that
+have no row. This is enforced by `make test-cadence-policy`, which is also part
+of `make test-ci-policy`.
+
+The resolver is deliberately conservative:
+
+- A pull request always selects every `small` row that declares
+  `pull_request`. Other pull-request rows are selected when a changed file
+  matches one of their `paths`. A match in top-level `shared_paths` selects the
+  complete pull-request union, because shared build, dependency, event,
+  persistence, configuration, action, and workflow changes can invalidate any
+  path-local assumption.
+- A `push` to `main` selects the complete union of rows declaring `push`.
+  The reusable CI workflow's `force_full_suite` input gives RC and scheduled
+  callers the same fail-closed union instead of replaying pull-request path
+  filters without a trustworthy diff.
+- `nightly` selects every nightly row. The scheduled graph includes the forced
+  deterministic CI union, the race sweep, managed-Dolt chaos, formula crash
+  recovery, Tier B, the focused Ollama Tier C subset, SQLite coordination-store
+  coverage, and the bundled-pack registry check.
+- The manually dispatched `rc` graph selects every RC row and forces its
+  reusable CI parity call to the full suite, then retains RC acceptance,
+  integration, tutorial, snapshot, and Mac regression jobs.
+- `release` selects every declared publication-evidence row. Both stable and
+  RC publication workflows must find a successful `workflow_dispatch` run of
+  `rc-gate.yml` whose `head_sha` is exactly the commit being published. A green
+  run for a branch tip, tag name, older SHA, other event, or merely completed
+  run is not release evidence.
+
+Inspect and dry-run the checked policy locally with deterministic JSON output:
+
+```bash
+make test-cadence-policy
+scripts/test-cadence check
+scripts/test-cadence plan --event pull_request --changed-file internal/worker/run.go
+scripts/test-cadence plan --event push
+scripts/test-cadence plan --event nightly
+scripts/test-cadence plan --event rc
+scripts/test-cadence plan --event release
+```
+
+The manifest inventories only executable cells. It does not manufacture
+capabilities: the full Claude/Codex/Gemini/OpenCode live-inference profile
+matrix still needs provider credentials and remains deliberate local coverage;
+nightly owns only its configured Ollama subset. The K8s job remains conditional
+on equipped CI infrastructure and `GC_K8S_AVAILABLE`, so a skipped step is not
+provider conformance evidence. No cadence row claims missing provider secrets,
+unavailable K8s infrastructure, Tier-3 portfolio ownership, dynamic timing
+authority, or architecture work outside the command it binds. Those blockers
+must be resolved before adding a required provider cell.
 
 ## The authoring rule: one risk, one smallest owning proof
 
@@ -218,10 +278,10 @@ and the unique cross-boundary failure it catches. When two journeys catch the
 same regression, keep the clearer and faster one.
 
 Record the journey, unique risk, lower-layer owners, path triggers, lane,
-budget, diagnostics, and owner in the checked E2E/provider manifest owned by
-`ga-80po0c.6`. Until that manifest lands, put the same fields in the PR
-description. On-demand coverage does not count as a release proof without a
-freshness gate for the exact release SHA.
+budget, diagnostics, and owner in the checked `.github/test-cadence.json`
+manifest owned by `ga-80po0c.6`. `scripts/test-cadence check` binds that record
+to its executable workflow job. On-demand coverage does not count as a release
+proof without a successful RC gate for the exact release SHA.
 
 ## Flakes are defects
 
@@ -550,6 +610,13 @@ For broad local runs, prefer the repo's sharded wrappers over raw `go test`
 commands. They use the same buckets as CI, run under a scrubbed environment,
 and split single-package bottlenecks such as `cmd/gc` across multiple
 processes.
+
+Validate or inspect cadence policy before choosing a broad local entry point:
+
+```bash
+make test-cadence-policy
+scripts/test-cadence plan --event pull_request --changed-file path/to/change.go
+```
 
 Use these as the default entry points:
 

@@ -29,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Checkout dispatch target
         if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -48,7 +49,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Resolve RC tag
+      - name: Resolve RC release target
         id: rc
         env:
           DISPATCH_TAG: ${{ inputs.tag_name }}
@@ -67,30 +68,75 @@ jobs:
             exit 1
           fi
 
-          commit="$(git rev-parse HEAD)"
+          commit="$(git rev-parse 'HEAD^{commit}')"
           git fetch --force --tags origin
+          tag_exists=false
 
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            tagged_commit="$(git rev-list -n 1 "$tag")"
+            tagged_commit="$(git rev-parse "refs/tags/$tag^{commit}")"
             if [ "$tagged_commit" != "$commit" ]; then
               echo "ERROR: tag $tag points at $tagged_commit, not checked-out commit $commit" >&2
               exit 1
             fi
+            tag_exists=true
             echo "Using existing tag $tag at $commit"
-          else
-            if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
-              echo "ERROR: push event for $tag did not leave a local tag ref" >&2
-              exit 1
-            fi
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag -a "$tag" -m "Release $tag" "$commit"
-            git push origin "refs/tags/$tag"
-            echo "Created tag $tag at $commit"
+          elif [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "ERROR: push event for $tag did not leave a local tag ref" >&2
+            exit 1
           fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
+
+      - name: Require exact-SHA RC Gate evidence
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PUBLISH_SHA: ${{ steps.rc.outputs.commit }}
+        with:
+          script: |
+            const publishSha = process.env.PUBLISH_SHA;
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...context.repo,
+              workflow_id: 'rc-gate.yml',
+              head_sha: publishSha,
+              event: 'workflow_dispatch',
+              status: 'success',
+              per_page: 100,
+            });
+            const run = runs.find(candidate =>
+              candidate.head_sha === publishSha &&
+              candidate.event === 'workflow_dispatch' &&
+              candidate.conclusion === 'success'
+            );
+            if (!run) {
+              core.setFailed(
+                `No successful workflow_dispatch RC Gate run found for exact publish SHA ${publishSha}. ` +
+                'Dispatch RC Gate for this exact commit, wait for it to succeed, then rerun this RC release.'
+              );
+              return;
+            }
+            core.info(`Accepted RC Gate run ${run.html_url} for exact publish SHA ${publishSha}.`);
+            await core.summary
+              .addHeading('RC Gate evidence', 3)
+              .addRaw(
+                `- Publish SHA: \`${publishSha}\`\n` +
+                `- Successful workflow_dispatch RC Gate run: [${run.id}](${run.html_url})\n`
+              )
+              .write();
+
+      - name: Create RC tag
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.rc.outputs.tag_exists == 'false' }}
+        env:
+          TAG_NAME: ${{ steps.rc.outputs.tag }}
+          TARGET_COMMIT: ${{ steps.rc.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME" "$TARGET_COMMIT"
+          git push origin "refs/tags/$TAG_NAME"
+          echo "Created tag $TAG_NAME at $TARGET_COMMIT"
 
       - name: Reject replace directives in go.mod
         run: |

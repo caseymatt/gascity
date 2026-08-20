@@ -28,6 +28,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       force_blacksmith: true
+      force_full_suite: true
     secrets: inherit
 
   ubuntu_fast_tests:
@@ -447,7 +448,7 @@ jobs:
               "",
               "The `ci_parity` entry is the aggregate result of the shared CI workflow. Inspect the nested CI jobs in this run for per-check detail.",
               "",
-              "Jobs that show `skipped` were intentionally gated off by the same conditional logic used in CI.",
+              "Every direct RC Gate dependency must succeed. A skipped job fails this gate.",
               "",
               "| Job | Result |",
               "| --- | --- |",
@@ -456,7 +457,7 @@ jobs:
           for job_id, meta in needs.items():
               result = meta.get("result", "unknown")
               lines.append(f"| {job_id} | {result} |")
-              if result not in {"success", "skipped"}:
+              if result != "success":
                   fail = True
           with open(summary_path, "a", encoding="utf-8") as handle:
               handle.write("\n".join(lines) + "\n")

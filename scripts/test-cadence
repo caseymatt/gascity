@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""Validate and resolve the repository test-cadence manifest."""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any, Iterable
+
+ROOT = Path(__file__).resolve().parents[1]
+MANIFEST_PATH = Path(".github/test-cadence.json")
+EVENT_WORKFLOWS = {
+    "pull_request": (Path(".github/workflows/ci.yml"),),
+    "push": (Path(".github/workflows/ci.yml"),),
+    "nightly": (Path(".github/workflows/nightly.yml"),),
+    "rc": (Path(".github/workflows/rc-gate.yml"),),
+    "release": (
+        Path(".github/workflows/release.yml"),
+        Path(".github/workflows/rc-release.yml"),
+    ),
+}
+AUDITED_WORKFLOWS = {
+    "pull_request": Path(".github/workflows/ci.yml"),
+    "push": Path(".github/workflows/ci.yml"),
+    "nightly": Path(".github/workflows/nightly.yml"),
+    "rc": Path(".github/workflows/rc-gate.yml"),
+}
+CLASSES = {"small", "medium", "journey", "provider"}
+TOP_FIELDS = {"schema", "shared_paths", "suites"}
+SUITE_FIELDS = {
+    "id",
+    "class",
+    "command",
+    "cadences",
+    "required_on",
+    "owner",
+    "budget_minutes",
+    "paths",
+    "workflow_jobs",
+    "top_level_tests",
+}
+REQUIRED_SUITE_FIELDS = SUITE_FIELDS - {"top_level_tests"}
+ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):(?:\s|$)")
+TOP_LEVEL_TEST_RE = re.compile(r"^Test(?:[A-Z0-9_][A-Za-z0-9_]*)?$")
+MAKE_TEST_RE = re.compile(r"\bmake\s+(test-[A-Za-z0-9_.-]+|check-docs)\b")
+SCRIPT_TEST_RE = re.compile(r"(?<![A-Za-z0-9_.-])((?:\./)?scripts/test-[A-Za-z0-9_.-]+(?:\s+[^\s;&|\\]+)*)")
+GO_TEST_RE = re.compile(r"\bgo test\b.*")
+NPM_TEST_RE = re.compile(r"\bnpm\s+(?:test(?:\s+[^;&|]+)?|run\s+(?:(?:--workspace\s+\S+\s+)?(?:test(?:\S*)?|[^\s;&|]*:test(?:\S*)?)(?:\s+[^;&|]+)?))")
+
+
+class ManifestError(ValueError):
+    """A user-actionable cadence policy violation."""
+
+
+def fail(message: str) -> None:
+    raise ManifestError(message)
+
+
+def _object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            fail(f"duplicate JSON field: {key}")
+        result[key] = value
+    return result
+
+
+def load_manifest(root: Path = ROOT) -> dict[str, Any]:
+    path = root / MANIFEST_PATH
+    try:
+        with path.open(encoding="utf-8") as handle:
+            data = json.load(handle, object_pairs_hook=_object_no_duplicates)
+    except OSError as error:
+        fail(f"cannot read {MANIFEST_PATH}: {error}")
+    except json.JSONDecodeError as error:
+        fail(f"invalid JSON in {MANIFEST_PATH}: {error}")
+    if not isinstance(data, dict):
+        fail("manifest must be a JSON object")
+    return data
+
+
+def _unknown_fields(value: dict[str, Any], allowed: set[str], where: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        fail(f"{where} has unknown field(s): {', '.join(unknown)}")
+
+
+def _string_list(
+    value: Any,
+    where: str,
+    *,
+    nonempty: bool = False,
+    sorted_required: bool = False,
+) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        fail(f"{where} must be an array of nonempty strings")
+    if nonempty and not value:
+        fail(f"{where} must not be empty")
+    if len(value) != len(set(value)):
+        fail(f"{where} must not contain duplicates")
+    if sorted_required and value != sorted(value):
+        fail(f"{where} must be sorted")
+    return value
+
+
+def _relative_patterns(value: Any, where: str, *, nonempty: bool) -> list[str]:
+    patterns = _string_list(value, where, nonempty=nonempty, sorted_required=True)
+    for pattern in patterns:
+        path = Path(pattern)
+        if path.is_absolute() or ".." in path.parts or "\\" in pattern or pattern.startswith("./"):
+            fail(f"{where} contains a non-repository-relative path: {pattern}")
+    return patterns
+
+
+def workflow_jobs(text: str, workflow: Path) -> dict[str, str]:
+    lines = text.splitlines()
+    jobs_line = next((index for index, line in enumerate(lines) if line == "jobs:"), None)
+    if jobs_line is None:
+        fail(f"{workflow} has no top-level jobs mapping")
+    result: dict[str, str] = {}
+    current: str | None = None
+    block: list[str] = []
+    for line in lines[jobs_line + 1 :]:
+        match = JOB_RE.match(line)
+        if match:
+            if current is not None:
+                result[current] = "\n".join(block)
+            current = match.group(1)
+            block = [line]
+            continue
+        if current is not None:
+            if line and not line.startswith(" "):
+                break
+            block.append(line)
+    if current is not None:
+        result[current] = "\n".join(block)
+    return result
+
+
+def read_workflows(root: Path = ROOT) -> dict[Path, dict[str, str]]:
+    workflows: dict[Path, dict[str, str]] = {}
+    for paths in EVENT_WORKFLOWS.values():
+        for path in paths:
+            if path in workflows:
+                continue
+            try:
+                text = (root / path).read_text(encoding="utf-8")
+            except OSError as error:
+                fail(f"cannot read {path}: {error}")
+            workflows[path] = workflow_jobs(text, path)
+    return workflows
+
+
+def _normalize_command(command: str) -> str:
+    return " ".join(command.split())
+
+def _command_present(command: str, block: str) -> bool:
+    needle = _normalize_command(command)
+    haystack = _normalize_command(block)
+    return re.search(
+        rf"(?<![A-Za-z0-9_.-]){re.escape(needle)}(?![A-Za-z0-9_.-])",
+        haystack,
+    ) is not None
+
+
+def _job_for_event(
+    workflows: dict[Path, dict[str, str]], event: str, job_id: str
+) -> tuple[Path, str] | None:
+    matches = [
+        (path, workflows[path][job_id])
+        for path in EVENT_WORKFLOWS[event]
+        if job_id in workflows[path]
+    ]
+    if len(matches) > 1:
+        fail(f"workflow job {job_id!r} is ambiguous for {event}")
+    return matches[0] if matches else None
+
+
+def validate_manifest(
+    manifest: dict[str, Any],
+    workflows: dict[Path, dict[str, str]],
+    *,
+    audit_orphans: bool = True,
+) -> list[dict[str, Any]]:
+    _unknown_fields(manifest, TOP_FIELDS, "manifest")
+    if set(manifest) != TOP_FIELDS:
+        fail(f"manifest is missing field(s): {', '.join(sorted(TOP_FIELDS - set(manifest)))}")
+    if type(manifest["schema"]) is not int or manifest["schema"] != 1:
+        fail("schema must be the integer 1")
+    _relative_patterns(manifest["shared_paths"], "shared_paths", nonempty=True)
+    suites = manifest["suites"]
+    if not isinstance(suites, list) or not suites:
+        fail("suites must be a nonempty array")
+
+    seen_ids: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for index, suite in enumerate(suites):
+        where = f"suites[{index}]"
+        if not isinstance(suite, dict):
+            fail(f"{where} must be an object")
+        _unknown_fields(suite, SUITE_FIELDS, where)
+        missing = REQUIRED_SUITE_FIELDS - set(suite)
+        if missing:
+            fail(f"{where} is missing field(s): {', '.join(sorted(missing))}")
+
+        suite_id = suite["id"]
+        if not isinstance(suite_id, str) or not ID_RE.fullmatch(suite_id):
+            fail(f"{where}.id must be a lower-kebab-case string")
+        if suite_id in seen_ids:
+            fail(f"duplicate suite id: {suite_id}")
+        seen_ids.add(suite_id)
+        if not isinstance(suite["class"], str) or suite["class"] not in CLASSES:
+            fail(f"{where}.class is unknown: {suite['class']!r}")
+        if not isinstance(suite["command"], str) or not suite["command"].strip():
+            fail(f"{where}.command must be a nonempty string")
+        if "\n" in suite["command"] or suite["command"] != suite["command"].strip():
+            fail(f"{where}.command must be a single normalized line")
+
+        cadences = _string_list(suite["cadences"], f"{where}.cadences", nonempty=True, sorted_required=True)
+        unknown_events = sorted(set(cadences) - set(EVENT_WORKFLOWS))
+        if unknown_events:
+            fail(f"{where}.cadences has unknown event(s): {', '.join(unknown_events)}")
+        required = _string_list(suite["required_on"], f"{where}.required_on", sorted_required=True)
+        unknown_required = sorted(set(required) - set(EVENT_WORKFLOWS))
+        if unknown_required:
+            fail(f"{where}.required_on has unknown event(s): {', '.join(unknown_required)}")
+        outside = sorted(set(required) - set(cadences))
+        if outside:
+            fail(f"{where}.required_on is outside cadences: {', '.join(outside)}")
+        if not isinstance(suite["owner"], str) or not suite["owner"].strip():
+            fail(f"{where}.owner must be a nonempty string")
+        if type(suite["budget_minutes"]) is not int or suite["budget_minutes"] <= 0:
+            fail(f"{where}.budget_minutes must be a positive integer")
+        _relative_patterns(suite["paths"], f"{where}.paths", nonempty=True)
+
+        jobs = suite["workflow_jobs"]
+        if not isinstance(jobs, dict):
+            fail(f"{where}.workflow_jobs must be an object")
+        if set(jobs) != set(cadences):
+            missing_jobs = sorted(set(cadences) - set(jobs))
+            extra_jobs = sorted(set(jobs) - set(cadences))
+            detail = []
+            if missing_jobs:
+                detail.append(f"missing {', '.join(missing_jobs)}")
+            if extra_jobs:
+                detail.append(f"extra {', '.join(extra_jobs)}")
+            fail(f"{where}.workflow_jobs must map every cadence exactly ({'; '.join(detail)})")
+        for event, job_id in jobs.items():
+            if not isinstance(job_id, str) or not job_id:
+                fail(f"{where}.workflow_jobs.{event} must be a nonempty job id")
+            match = _job_for_event(workflows, event, job_id)
+            if match is None:
+                paths = ", ".join(str(path) for path in EVENT_WORKFLOWS[event])
+                fail(f"{where} maps {event} to missing workflow job {job_id!r} in {paths}")
+            path, block = match
+            if not _command_present(suite["command"], block):
+                fail(
+                    f"{where}.command is not present in {path} job {job_id!r}: "
+                    f"{suite['command']}"
+                )
+
+        if "top_level_tests" in suite:
+            tests = _string_list(
+                suite["top_level_tests"],
+                f"{where}.top_level_tests",
+                nonempty=True,
+                sorted_required=True,
+            )
+            invalid = [name for name in tests if not TOP_LEVEL_TEST_RE.fullmatch(name)]
+            if invalid:
+                fail(f"{where}.top_level_tests has invalid Go test name(s): {', '.join(invalid)}")
+        normalized.append(suite)
+
+    if [suite["id"] for suite in normalized] != sorted(seen_ids):
+        fail("suites must be sorted by id")
+    if audit_orphans:
+        validate_no_orphaned_commands(normalized, workflows)
+    return normalized
+
+
+def _yaml_scalars(block: str, key: str) -> Iterable[str]:
+    lines = block.splitlines()
+    index = 0
+    marker = re.compile(rf"^(\s*)(?:-\s+)?{re.escape(key)}:\s*(.*)$")
+    while index < len(lines):
+        match = marker.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        indent = len(match.group(1))
+        value = match.group(2).strip()
+        if value not in {"|", ">", "|-", ">-", "|+", ">+"}:
+            yield value
+            index += 1
+            continue
+        folded = value.startswith(">")
+        body: list[str] = []
+        index += 1
+        while index < len(lines):
+            line = lines[index]
+            if line.strip() and len(line) - len(line.lstrip()) <= indent:
+                break
+            body.append(line.strip())
+            index += 1
+        yield (" " if folded else "\n").join(body)
+
+
+def extract_test_commands(block: str) -> set[str]:
+    commands: set[str] = set()
+    for scalar in list(_yaml_scalars(block, "command")) + list(_yaml_scalars(block, "run")):
+        for line in scalar.splitlines() or [scalar]:
+            normalized = _normalize_command(line)
+            for match in MAKE_TEST_RE.finditer(normalized):
+                commands.add(f"make {match.group(1)}")
+            for match in SCRIPT_TEST_RE.finditer(normalized):
+                commands.add(_normalize_command(match.group(1)).rstrip("'\"$)"))
+            go_match = GO_TEST_RE.search(normalized)
+            if go_match:
+                commands.add(_normalize_command(go_match.group(0)).rstrip("'\";"))
+            for match in NPM_TEST_RE.finditer(normalized):
+                command = _normalize_command(match.group(0)).rstrip("'\"; ")
+                if "test:e2e:install" not in command:
+                    commands.add(command)
+    return commands
+
+
+def validate_no_orphaned_commands(
+    suites: list[dict[str, Any]], workflows: dict[Path, dict[str, str]]
+) -> None:
+    for path in sorted(set(AUDITED_WORKFLOWS.values()), key=str):
+        events = {
+            event for event, event_path in AUDITED_WORKFLOWS.items() if event_path == path
+        }
+        for job_id, block in workflows[path].items():
+            commands = extract_test_commands(block)
+            for command in sorted(commands):
+                covered = any(
+                    any(
+                        event in suite["cadences"]
+                        and suite["workflow_jobs"].get(event) == job_id
+                        for event in events
+                    )
+                    and _normalize_command(suite["command"]) == command
+                    for suite in suites
+                )
+                if not covered:
+                    fail(f"orphaned test command in {path} job {job_id!r}: {command}")
+
+
+def _matches(path: str, patterns: Iterable[str]) -> bool:
+    return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+
+
+def plan(manifest: dict[str, Any], suites: list[dict[str, Any]], event: str, changed: list[str]) -> dict[str, Any]:
+    if event not in EVENT_WORKFLOWS:
+        fail(f"unknown event: {event}")
+    changed_files = sorted(set(changed))
+    for path in changed_files:
+        parsed = Path(path)
+        if not path or parsed.is_absolute() or ".." in parsed.parts or "\\" in path or path.startswith("./"):
+            fail(f"changed file must be repository-relative: {path!r}")
+    shared = event == "pull_request" and any(
+        _matches(path, manifest["shared_paths"]) for path in changed_files
+    )
+    selected: list[dict[str, Any]] = []
+    for suite in suites:
+        if event not in suite["cadences"]:
+            continue
+        if event != "pull_request":
+            selected.append(suite)
+        elif suite["class"] == "small" or shared or any(
+            _matches(path, suite["paths"]) for path in changed_files
+        ):
+            selected.append(suite)
+    suite_ids = sorted(suite["id"] for suite in selected)
+    workflow_jobs_selected = sorted({suite["workflow_jobs"][event] for suite in selected})
+    required_suite_ids = sorted(
+        suite["id"] for suite in selected if event in suite["required_on"]
+    )
+    return {
+        "changed_files": changed_files,
+        "event": event,
+        "full_suite": event != "pull_request" or shared,
+        "required_suite_ids": required_suite_ids,
+        "suite_ids": suite_ids,
+        "workflow_jobs": workflow_jobs_selected,
+    }
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+    subparsers.add_parser("check", help="validate manifest and workflow bindings")
+    planner = subparsers.add_parser("plan", help="resolve suites for an event")
+    planner.add_argument("--event", required=True, choices=sorted(EVENT_WORKFLOWS))
+    planner.add_argument("--changed-file", action="append", default=[])
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = parse_args(sys.argv[1:] if argv is None else argv)
+        manifest = load_manifest()
+        workflows = read_workflows()
+        suites = validate_manifest(manifest, workflows)
+        if args.subcommand == "check":
+            output: dict[str, Any] = {
+                "schema": manifest["schema"],
+                "status": "ok",
+                "suite_count": len(suites),
+            }
+        else:
+            output = plan(manifest, suites, args.event, args.changed_file)
+        json.dump(output, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
+    except ManifestError as error:
+        print(f"test-cadence: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

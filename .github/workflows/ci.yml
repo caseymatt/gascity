@@ -8,6 +8,11 @@ on:
         required: false
         type: boolean
         default: false
+      force_full_suite:
+        description: Run every path-gated deterministic suite, including the full REST matrix.
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
@@ -52,25 +57,26 @@ jobs:
     needs: runner-policy
     runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     outputs:
-      # Gated outputs fold in the `shared` filter: a change to a cross-cutting
-      # core path runs the full suite (union run) even when the path-scoped
-      # filter would not match on its own. This closes the path-filter
-      # asymmetry where a subtle change in shared code skips the jobs it could
-      # break. Downstream consumers read these outputs unchanged.
-      mail: ${{ steps.filter.outputs.mail == 'true' || steps.filter.outputs.shared == 'true' }}
-      docker: ${{ steps.filter.outputs.docker == 'true' || steps.filter.outputs.shared == 'true' }}
-      k8s: ${{ steps.filter.outputs.k8s == 'true' || steps.filter.outputs.shared == 'true' }}
-      beads: ${{ steps.filter.outputs.beads == 'true' || steps.filter.outputs.shared == 'true' }}
-      packs: ${{ steps.filter.outputs.packs == 'true' || steps.filter.outputs.shared == 'true' }}
-      worker: ${{ steps.filter.outputs.worker == 'true' || steps.filter.outputs.shared == 'true' }}
-      worker_phase2: ${{ steps.filter.outputs.worker_phase2 == 'true' || steps.filter.outputs.shared == 'true' }}
-      cmd_gc_process: ${{ steps.filter.outputs.cmd_gc_process == 'true' || steps.filter.outputs.shared == 'true' }}
-      credential_provider: ${{ steps.filter.outputs.credential_provider == 'true' || steps.filter.outputs.shared == 'true' }}
-      integration: ${{ steps.filter.outputs.integration == 'true' || steps.filter.outputs.shared == 'true' }}
-      openclaw_bridge: ${{ steps.filter.outputs.openclaw_bridge }}
+      # A main-branch push and an explicitly forced reusable invocation run
+      # every path-gated deterministic suite. Pull requests remain scoped to
+      # their matching filters unless a cross-cutting `shared` path changes,
+      # in which case they run the same full union. Downstream consumers keep
+      # reading these outputs as boolean strings.
+      mail: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.mail == 'true' || steps.filter.outputs.shared == 'true' }}
+      docker: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.docker == 'true' || steps.filter.outputs.shared == 'true' }}
+      k8s: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.k8s == 'true' || steps.filter.outputs.shared == 'true' }}
+      beads: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.beads == 'true' || steps.filter.outputs.shared == 'true' }}
+      packs: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.packs == 'true' || steps.filter.outputs.shared == 'true' }}
+      worker: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.worker == 'true' || steps.filter.outputs.shared == 'true' }}
+      worker_phase2: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.worker_phase2 == 'true' || steps.filter.outputs.shared == 'true' }}
+      cmd_gc_process: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.cmd_gc_process == 'true' || steps.filter.outputs.shared == 'true' }}
+      credential_provider: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.credential_provider == 'true' || steps.filter.outputs.shared == 'true' }}
+      integration: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.integration == 'true' || steps.filter.outputs.shared == 'true' }}
+      openclaw_bridge: ${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.openclaw_bridge == 'true' || steps.filter.outputs.shared == 'true' }}
       # Raw cross-cutting signal and per-run coverage classification (metric).
       shared: ${{ steps.filter.outputs.shared }}
       suite_mode: ${{ steps.coverage.outputs.suite_mode }}
+      suite_reason: ${{ steps.coverage.outputs.suite_reason }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -92,7 +98,7 @@ jobs:
             beads:
               - 'go.mod'
               - 'internal/beads/**'
-              - 'test/acceptance/beads_cli_contract_test.go'
+              - 'test/acceptance/**'
               - 'deps.env'
               - '.github/scripts/install-bd-archive.sh'
               - 'cmd/gc/init_provider_readiness.go'
@@ -112,8 +118,7 @@ jobs:
               - 'internal/modelwindow/**'
               - 'internal/runtime/**'
               - 'internal/config/**'
-              - 'cmd/gc/template_resolve*.go'
-              - 'cmd/gc/session_*'
+              - 'cmd/gc/**'
               - 'test/**worker**'
             worker_phase2:
               - 'go.mod'
@@ -166,19 +171,25 @@ jobs:
               - 'go.mod'
               - 'go.sum'
               - 'Makefile'
-              - '.github/workflows/**'
-              - '.github/actions/setup-gascity-ubuntu/**'
-              - '.github/scripts/install-dolt-archive.sh'
+              - '.github/actions/**'
               - '.github/scripts/install-bd-archive.sh'
               - '.github/scripts/install-claude-native.sh'
+              - '.github/scripts/install-dolt-archive.sh'
+              - '.github/test-cadence.json'
+              - '.github/workflows/**'
               - 'internal/beads/**'
-              - 'internal/events/**'
               - 'internal/config/**'
+              - 'internal/events/**'
+              - 'scripts/test-cadence'
       - name: Classify suite coverage
         id: coverage
         env:
           SHARED_FILTER_RESULT: ${{ steps.filter.outputs.shared }}
-        run: python3 .github/workflows/scripts/ci_suite_coverage.py classify "$SHARED_FILTER_RESULT"
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_FULL_SUITE: ${{ inputs.force_full_suite }}
+        run: >-
+          python3 .github/workflows/scripts/ci_suite_coverage.py classify
+          "$SHARED_FILTER_RESULT" "$EVENT_NAME" "$FORCE_FULL_SUITE"
 
   preflight-static:
     name: Preflight / static checks
@@ -233,30 +244,13 @@ jobs:
           # storm (ga-35qn7i, ga-v7x9vk, ga-l14mnf, ga-ndx34y). A miss now
           # forces a fully fresh, never-poisoned recompute.
           key: ${{ runner.os }}-golangci-lint-${{ steps.glint-version.outputs.version }}-${{ steps.glint-version.outputs.goversion }}-${{ hashFiles('go.sum', '.golangci.yml') }}
-      - name: Lint affected packages
-        if: steps.static-scope.outputs.scope == 'changed'
+      - name: Run selected static-analysis branch
         env:
+          CI_STATIC_SCOPE: ${{ steps.static-scope.outputs.scope }}
           GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.cache/golangci-lint
           LINT_CHANGED_SCOPE: tracked
           LINT_CHANGED_REF: ${{ github.event.pull_request.base.sha }}
-        run: make lint-affected
-      - name: Lint full repository
-        if: steps.static-scope.outputs.scope != 'changed'
-        env:
-          GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.cache/golangci-lint
-        run: make lint
-      - name: Format changed files
-        if: steps.static-scope.outputs.scope == 'changed'
-        env:
-          LINT_CHANGED_SCOPE: tracked
-          LINT_CHANGED_REF: ${{ github.event.pull_request.base.sha }}
-        run: make fmt-check-changed
-      - name: Format full repository
-        if: steps.static-scope.outputs.scope != 'changed'
-        run: make fmt-check
-      - name: Vet
-        if: steps.static-scope.outputs.scope != 'changed'
-        run: make vet
+        run: make check-static-scope
       - name: Docs
         run: make check-docs
 
@@ -734,14 +728,15 @@ jobs:
       - name: Run integration shard
         run: ${{ matrix.command }}
 
-  # The full REST suite is broad release/post-merge coverage. PRs run the
-  # focused REST smoke contract above; pushes retain all full-suite shards.
+  # The full REST suite is broad post-merge/full-union coverage. Pull requests
+  # normally run the focused REST smoke contract above; main pushes and forced
+  # reusable invocations run all full-suite shards.
   integration-rest-full:
     name: Integration / rest-full-${{ matrix.shard }}-of-16
     needs:
       - runner-policy
       - changes
-    if: github.event_name == 'push' && needs.changes.outputs.integration == 'true'
+    if: (github.event_name == 'push' || inputs.force_full_suite) && needs.changes.outputs.integration == 'true'
     runs-on: ${{ needs.runner-policy.outputs.runner_32vcpu }}
     timeout-minutes: 15
     strategy:

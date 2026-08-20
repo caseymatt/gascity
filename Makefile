@@ -105,6 +105,8 @@ endif
 
 .PHONY: build check check-all check-bd check-docker check-docs check-dolt check-eventexport-isolation check-gomod-replace check-core-boundary check-native-dependency-surface check-routed-test-rows check-split-topology-rows check-version-tag lint lint-full lint-new lint-changed lint-affected fmt-check fmt-check-changed fmt vet test test-ci-policy test-mac test-fast-parallel test-fsys-darwin-compile test-pack-registry-live test-native-doltlite-beads test-cmd-gc-process test-cmd-gc-process-shard test-cmd-gc-process-parallel test-productmetrics-testhook test-worker-core test-worker-core-phase2 test-worker-core-phase2-all test-worker-core-phase2-real-transport setup-worker-inference test-worker-inference test-worker-inference-phase3 test-acceptance test-bd-cli-contract test-bd-conditional-release-contract test-acceptance-b test-acceptance-c test-acceptance-all test-tutorial-goldens test-tutorial-regression test-tutorial test-integration test-integration-shards test-integration-shards-parallel test-integration-shards-cover test-integration-packages test-integration-packages-cover test-integration-review-formulas test-integration-review-formulas-cover test-integration-review-formulas-basic test-integration-review-formulas-basic-cover test-integration-review-formulas-retries test-integration-review-formulas-retries-cover test-integration-review-formulas-recovery test-integration-review-formulas-recovery-cover test-integration-bdstore test-integration-bdstore-cover test-integration-rest test-integration-rest-cover test-integration-rest-smoke test-integration-rest-smoke-cover test-integration-rest-full test-integration-rest-full-cover test-local-full-parallel test-mail-wisp-insert test-mcp-mail test-openclaw-bridge test-docker test-k8s test-cover test-cover-mac test-cover-noncmdgc test-cover-cmdgc-shard cover check-self-contained install install-tools install-buildx setup clean generate check-schema docker-base docker-agent docker-controller docs-dev diagrams-excalidraw dashboard-smoke dashboard-e2e-go dashboard-e2e-play dashboard-e2e
 .PHONY: check-release-dist-ignore
+.PHONY: test-race
+.PHONY: test-cadence-policy
 
 ## build: compile gc binary with version metadata
 build:
@@ -291,7 +293,9 @@ LINT_CHANGED_SCOPE ?= worktree
 LINT_FLAGS ?=
 QUALITY_GATE_GOFLAGS = $$(go env GOFLAGS | sed -E 's/(^|[[:space:]])-mod=[^[:space:]]+//g') -mod=readonly
 CI_STATIC_SELECT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))scripts/ci-static-select
+CI_STATIC_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 CI_STATIC_GO ?= go
+GENERATOR_TARGETS ?= ./cmd/genspec ./cmd/genschema
 
 ## lint: run full-repo golangci-lint
 lint: lint-full
@@ -362,7 +366,7 @@ fmt-check-changed: $(GOLANGCI_LINT)
 fmt: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) fmt ./...
 
-.PHONY: test-affected
+.PHONY: check-static-scope generator-affected test-affected vet-affected
 
 ## test-affected: run focused tests for packages owning changed build inputs
 test-affected:
@@ -371,6 +375,29 @@ test-affected:
 ## vet: run go vet
 vet:
 	GOFLAGS="$(QUALITY_GATE_GOFLAGS)" go vet ./...
+
+## vet-affected: vet packages affected by staged or changed Go build inputs
+vet-affected:
+	@GOFLAGS="$(QUALITY_GATE_GOFLAGS)" "$(CI_STATIC_SELECT)" vet-affected "$(CI_STATIC_GO)"
+
+## generator-affected: print generators owned by the staged or changed package graph
+generator-affected:
+	@GOFLAGS="$(QUALITY_GATE_GOFLAGS)" "$(CI_STATIC_SELECT)" generator-affected "$(CI_STATIC_GO)" $(GENERATOR_TARGETS)
+
+## check-static-scope: run the validated changed or full static-analysis branch
+check-static-scope:
+	@case "$(CI_STATIC_SCOPE)" in \
+		changed) \
+			$(MAKE) --no-print-directory -f "$(CI_STATIC_MAKEFILE)" lint-affected && $(MAKE) --no-print-directory -f "$(CI_STATIC_MAKEFILE)" fmt-check-changed; \
+			;; \
+		full) \
+			$(MAKE) --no-print-directory -f "$(CI_STATIC_MAKEFILE)" lint && $(MAKE) --no-print-directory -f "$(CI_STATIC_MAKEFILE)" fmt-check && $(MAKE) --no-print-directory -f "$(CI_STATIC_MAKEFILE)" vet; \
+			;; \
+		*) \
+			echo "unknown CI_STATIC_SCOPE=$(CI_STATIC_SCOPE); expected changed or full" >&2; \
+			exit 2; \
+			;; \
+	esac
 
 ## TEST_ENV: env -i wrapper for `go test` invocations. Strips host env so
 ## agent-session vars (GC_CITY, GC_HOME, GC_SESSION_ID, ...) cannot leak into
@@ -440,9 +467,16 @@ TEST_ENV = env -i \
 	CGO_LDFLAGS="$${CGO_LDFLAGS-}" \
 	$(EXTRA_TEST_ENV)
 
+## test-cadence-policy: validate cadence manifest bindings, routing, and fixtures
+test-cadence-policy:
+	$(TEST_ENV) PYTHONDONTWRITEBYTECODE=1 python3 -S -m unittest discover -s .github/workflows/scripts -p 'test_test_cadence.py'
+	$(TEST_ENV) PYTHONDONTWRITEBYTECODE=1 ./scripts/test-cadence check
+
 ## test-ci-policy: run the fast workflow-policy suite
 test-ci-policy:
+	$(MAKE) test-cadence-policy
 	$(TEST_ENV) PYTHONDONTWRITEBYTECODE=1 python3 -S -m unittest discover -s .github/workflows/scripts -p 'test_runner_policy.py'
+	$(TEST_ENV) PYTHONDONTWRITEBYTECODE=1 python3 -S -m unittest discover -s .github/workflows/scripts -p 'test_rc_gate_policy.py'
 	$(TEST_ENV) PYTHONDONTWRITEBYTECODE=1 python3 -S -m unittest discover -s .github/workflows/scripts -p 'test_ci_suite_coverage.py'
 	$(TEST_ENV) GOFLAGS= GOENV=off GOWORK=off go test -count=1 ./scripts/cipolicy
 	$(TEST_ENV) GOFLAGS= GOENV=off GOWORK=off go test -count=1 -run '^(TestPreflightStaticScopesOrdinaryPRsWithoutWeakeningProtectedRuns|TestFullStaticLintExplicitlyOwnsConfiguredGolangCIGovet|TestChangedStaticTargetsScopeLintAndFormattingToTheDiff|TestCIStaticScopeClassifierFailsClosedOutsideValidatedPullRequestMerge)$$' ./scripts
@@ -457,6 +491,10 @@ test-ci-policy:
 ## Wrapped in $(TEST_ENV) — see comment above for why.
 test: test-fsys-darwin-compile
 	$(TEST_ENV) GOFLAGS="$(QUALITY_GATE_GOFLAGS)" GC_FAST_UNIT=1 scripts/go-test-observable test -- -p=4 -count=1 -timeout 15m ./...
+
+## test-race: run all untagged fast packages with the race detector
+test-race:
+	$(TEST_ENV) GOFLAGS="$(QUALITY_GATE_GOFLAGS)" GC_FAST_UNIT=1 scripts/go-test-observable test-race -- -race -p=4 -count=1 -timeout 30m ./...
 
 # MAC_UNIT_PKGS excludes cmd/gc from the Mac unit sweep; cmd/gc runs
 # sharded via the mac-cmd-gc-process CI matrix job instead.

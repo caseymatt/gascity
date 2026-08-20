@@ -870,12 +870,9 @@ func TestPreflightStaticScopesOrdinaryPRsWithoutWeakeningProtectedRuns(t *testin
 
 	checkoutIndex := -1
 	classifierIndex := -1
-	var checkout, classifier ciCriticalPathStep
-	runCounts := make(map[string]int)
-	stepsByRun := make(map[string]struct {
-		index int
-		step  ciCriticalPathStep
-	})
+	staticIndex := -1
+	staticCount := 0
+	var checkout, classifier, static ciCriticalPathStep
 	for i, step := range job.Steps {
 		if strings.HasPrefix(step.Uses, "actions/checkout@") {
 			checkoutIndex = i
@@ -885,12 +882,22 @@ func TestPreflightStaticScopesOrdinaryPRsWithoutWeakeningProtectedRuns(t *testin
 			classifierIndex = i
 			classifier = step
 		}
-		if run := strings.TrimSpace(step.Run); run != "" {
-			runCounts[run]++
-			stepsByRun[run] = struct {
-				index int
-				step  ciCriticalPathStep
-			}{index: i, step: step}
+		run := strings.TrimSpace(step.Run)
+		if run == "make check-static-scope" {
+			staticIndex = i
+			static = step
+			staticCount++
+		}
+		for _, forbidden := range []string{
+			"make lint-affected",
+			"make fmt-check-changed",
+			"make lint",
+			"make fmt-check",
+			"make vet",
+		} {
+			if run == forbidden {
+				t.Errorf("preflight-static must bind required evidence to the unconditional wrapper, not direct conditional step %q", forbidden)
+			}
 		}
 	}
 
@@ -932,48 +939,23 @@ func TestPreflightStaticScopesOrdinaryPRsWithoutWeakeningProtectedRuns(t *testin
 		}
 	}
 
-	changedCondition := "steps.static-scope.outputs.scope == 'changed'"
-	fullCondition := "steps.static-scope.outputs.scope != 'changed'"
-	for _, step := range job.Steps {
-		run := strings.TrimSpace(step.Run)
-		if strings.Contains(run, "make vet") || strings.Contains(run, "go vet") {
-			if got := strings.TrimSpace(step.If); got != fullCondition {
-				t.Errorf("vet step %q condition = %q, want full scope so ordinary PRs do not duplicate full-repository vet", step.Name, step.If)
-			}
-		}
+	if staticCount != 1 {
+		t.Fatalf("preflight-static check-static-scope step count = %d, want exactly 1", staticCount)
 	}
-	for _, tc := range []struct {
-		run       string
-		condition string
-		changed   bool
-	}{
-		{run: "make lint-affected", condition: changedCondition, changed: true},
-		{run: "make fmt-check-changed", condition: changedCondition, changed: true},
-		{run: "make lint", condition: fullCondition},
-		{run: "make fmt-check", condition: fullCondition},
-		{run: "make vet", condition: fullCondition},
-	} {
-		if got := runCounts[tc.run]; got != 1 {
-			t.Errorf("preflight-static %q step count = %d, want exactly 1", tc.run, got)
-		}
-		entry, ok := stepsByRun[tc.run]
-		if !ok {
-			t.Errorf("preflight-static has no %q step", tc.run)
-			continue
-		}
-		if classifierIndex >= 0 && entry.index <= classifierIndex {
-			t.Errorf("%q step %d must follow static-scope classifier step %d", tc.run, entry.index, classifierIndex)
-		}
-		if got := strings.TrimSpace(entry.step.If); got != tc.condition {
-			t.Errorf("%q condition = %q, want %q", tc.run, entry.step.If, tc.condition)
-		}
-		if tc.changed {
-			if got := entry.step.Env["LINT_CHANGED_SCOPE"]; got != "tracked" {
-				t.Errorf("%q LINT_CHANGED_SCOPE = %q, want tracked", tc.run, got)
-			}
-			if got := entry.step.Env["LINT_CHANGED_REF"]; got != "${{ github.event.pull_request.base.sha }}" {
-				t.Errorf("%q LINT_CHANGED_REF = %q, want exact pull-request base SHA", tc.run, got)
-			}
+	if staticIndex <= classifierIndex {
+		t.Errorf("check-static-scope step %d must follow static-scope classifier step %d", staticIndex, classifierIndex)
+	}
+	if got := strings.TrimSpace(static.If); got != "" {
+		t.Errorf("check-static-scope condition = %q, want unconditional required evidence", got)
+	}
+	wantStaticEnv := map[string]string{
+		"CI_STATIC_SCOPE":    "${{ steps.static-scope.outputs.scope }}",
+		"LINT_CHANGED_SCOPE": "tracked",
+		"LINT_CHANGED_REF":   "${{ github.event.pull_request.base.sha }}",
+	}
+	for name, want := range wantStaticEnv {
+		if got := static.Env[name]; got != want {
+			t.Errorf("check-static-scope %s = %q, want %q", name, got, want)
 		}
 	}
 }

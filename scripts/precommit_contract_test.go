@@ -22,7 +22,7 @@ cat
 printf '\n'
 `)
 
-	source := filepath.Join(t.TempDir(), "needs_format.go")
+	source := filepath.Join(t.TempDir(), "needs\nformat.go")
 	if err := os.WriteFile(source, []byte("package main"), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
@@ -34,7 +34,7 @@ printf '\n'
 		"HOME=" + t.TempDir(),
 		"TMPDIR=" + t.TempDir(),
 	}
-	cmd.Stdin = strings.NewReader(source + "\n")
+	cmd.Stdin = strings.NewReader(source + "\x00")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("precommit formatter failed: %v\n%s", err, out)
@@ -333,7 +333,7 @@ func TestPreCommitRegeneratesDashboardClientOnSpecChange(t *testing.T) {
 			"doesn't match the new spec fails typecheck immediately instead of silently building against stale types")
 	}
 
-	clientAddNeedle := "git add internal/api/dashboardspa/web/shared/src/generated/gc-supervisor-client"
+	clientAddNeedle := "git add -- internal/api/dashboardspa/web/shared/src/generated/gc-supervisor-client"
 	genClientAddIdx := strings.Index(npmBlock, clientAddNeedle)
 	if genClientAddIdx < 0 {
 		t.Fatal("pre-commit hook must stage the regenerated dashboard client so a spec-only commit includes it")
@@ -372,11 +372,13 @@ func TestPreCommitReachesDashboardBlockWhenOnlySpecFileStaged(t *testing.T) {
 
 	specPath := filepath.Join(tmpRepo, "internal", "api", "openapi.json")
 	clientPath := filepath.Join(tmpRepo, "internal", "api", "dashboardspa", "web", "shared", "src", "generated", "gc-supervisor-client")
+	goClientPath := filepath.Join(tmpRepo, "internal", "api", "genclient", "client_gen.go")
 	distPath := filepath.Join(tmpRepo, "internal", "api", "dashboardspa", "dist", "placeholder")
 
 	runGit("init")
 	writeTestFile(t, specPath, "{}\n")
 	writeTestFile(t, clientPath, "placeholder\n")
+	writeTestFile(t, goClientPath, "placeholder\n")
 	writeTestFile(t, distPath, "placeholder\n")
 	runGit("add", "-A")
 	runGit("commit", "-m", "init")
@@ -391,6 +393,9 @@ func TestPreCommitReachesDashboardBlockWhenOnlySpecFileStaged(t *testing.T) {
 	writeExecutable(t, filepath.Join(binDir, "npm"), `#!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >> "`+npmLog+`"
+exit 0
+`)
+	writeExecutable(t, filepath.Join(binDir, "go"), `#!/usr/bin/env bash
 exit 0
 `)
 	// Stub make: this test verifies the control-flow reaches the dashboard
@@ -441,9 +446,11 @@ func TestPreCommitFailsClosedWhenSpecStagedButNpmAbsent(t *testing.T) {
 	}
 
 	specPath := filepath.Join(tmpRepo, "internal", "api", "openapi.json")
+	clientPath := filepath.Join(tmpRepo, "internal", "api", "genclient", "client_gen.go")
 
 	runGit("init")
 	writeTestFile(t, specPath, "{}\n")
+	writeTestFile(t, clientPath, "placeholder\n")
 	runGit("add", "-A")
 	runGit("commit", "-m", "init")
 
@@ -456,7 +463,10 @@ func TestPreCommitFailsClosedWhenSpecStagedButNpmAbsent(t *testing.T) {
 	cmd := exec.Command("bash", hookPath)
 	cmd.Dir = tmpRepo
 	cmd.Env = []string{
-		"PATH=" + restrictedPathWithoutNpm(t, nil),
+		"PATH=" + restrictedPathWithoutNpm(t, map[string]string{
+			"go":   "#!/usr/bin/env bash\nexit 0\n",
+			"make": "#!/usr/bin/env bash\nexit 0\n",
+		}),
 		"HOME=" + t.TempDir(),
 	}
 	out, err := cmd.CombinedOutput()
@@ -471,7 +481,7 @@ func TestPreCommitFailsClosedWhenSpecStagedButNpmAbsent(t *testing.T) {
 	}
 }
 
-func TestPreCommitFailsClosedWhenGoBlockStagesSpecAsSideEffectAndNpmAbsent(t *testing.T) {
+func TestPreCommitUnrelatedGoUsesAffectedVetWithoutGenerators(t *testing.T) {
 	repoRoot := repoRoot(t)
 	hookPath := filepath.Join(repoRoot, ".githooks", "pre-commit")
 
@@ -489,84 +499,64 @@ func TestPreCommitFailsClosedWhenGoBlockStagesSpecAsSideEffectAndNpmAbsent(t *te
 		}
 	}
 
-	goFilePath := filepath.Join(tmpRepo, "main.go")
-	specPath := filepath.Join(tmpRepo, "internal", "api", "openapi.json")
+	goFilePath := filepath.Join(tmpRepo, "unrelated", "unrelated.go")
 	formatStagedGoPath := filepath.Join(tmpRepo, "scripts", "precommit-format-staged-go")
-	// Every path the Go block unconditionally `git add`s after each
-	// generation step must already exist on disk, or that `git add` fails
-	// closed under `set -euo pipefail` before the hook ever reaches the
-	// npm-absent branch this test targets.
-	generatedPaths := []string{
-		specPath,
-		filepath.Join(tmpRepo, "docs", "reference", "schema", "openapi.json"),
-		filepath.Join(tmpRepo, "docs", "reference", "schema", "openapi.txt"),
-		filepath.Join(tmpRepo, "internal", "api", "genclient", "client_gen.go"),
-		filepath.Join(tmpRepo, "docs", "reference", "schema", "city-schema.json"),
-		filepath.Join(tmpRepo, "docs", "reference", "schema", "city-schema.txt"),
-		filepath.Join(tmpRepo, "docs", "reference", "config.md"),
-		filepath.Join(tmpRepo, "docs", "reference", "cli.md"),
-	}
-
-	runGit("init")
-	writeTestFile(t, goFilePath, "package main\n\nfunc main() {}\n")
-	for _, p := range generatedPaths {
-		writeTestFile(t, p, "{}\n")
-	}
 	if err := os.MkdirAll(filepath.Dir(formatStagedGoPath), 0o755); err != nil {
-		t.Fatalf("create parent for %s: %v", formatStagedGoPath, err)
+		t.Fatalf("create scripts directory: %v", err)
 	}
+	runGit("init")
+	writeTestFile(t, goFilePath, "package unrelated\n\nfunc Value() int { return 1 }\n")
 	writeExecutable(t, formatStagedGoPath, "#!/usr/bin/env bash\nexit 0\n")
 	runGit("add", "-A")
 	runGit("commit", "-m", "init")
 
-	// Stage ONLY a .go file -- internal/api/openapi.json is untouched by the
-	// user's own `git add`. The hook's own Go block (staged_go_files branch)
-	// regenerates and stages openapi.json as a SIDE EFFECT via
-	// `go run ./cmd/genspec`, which is exactly the #4627/#4607 staleness
-	// trap the npm-present branch re-reads for (fresh spec_changed) but
-	// which the npm-absent fail-closed branch used to miss (ga-jg89a5): it
-	// checked a snapshot taken before the hook ran at all, so it never saw
-	// the spec this commit was actually about to ship.
-	writeTestFile(t, goFilePath, "package main\n\nfunc main() { println(1) }\n")
-	runGit("add", "main.go")
+	writeTestFile(t, goFilePath, "package unrelated\n\nfunc Value() int { return 2 }\n")
+	runGit("add", "unrelated/unrelated.go")
 
-	goStub := `#!/usr/bin/env bash
+	makeLog := filepath.Join(t.TempDir(), "make.log")
+	makeStub := `#!/usr/bin/env bash
 set -euo pipefail
-if [ "$1" = "run" ] && [ "$2" = "./cmd/genspec" ]; then
-  printf '{"changed":true}\n' > internal/api/openapi.json
-fi
-exit 0
+printf '%s\n' "$*" >> "` + makeLog + `"
 `
-
 	cmd := exec.Command("bash", hookPath)
 	cmd.Dir = tmpRepo
 	cmd.Env = []string{
 		"PATH=" + restrictedPathWithoutNpm(t, map[string]string{
-			"make": "#!/usr/bin/env bash\nexit 0\n",
-			// Stands in for format/lint/genspec/genclient/genschema/vet.
-			// Only `run ./cmd/genspec` has an observable side effect
-			// (rewriting internal/api/openapi.json, which the hook's own
-			// `git add` then stages), matching what the real cmd/genspec
-			// does against a live Huma API -- the rest of the Go block is
-			// exercised for control-flow only.
-			"go": goStub,
+			"make": makeStub,
 		}),
 		"HOME=" + t.TempDir(),
 	}
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("pre-commit hook must fail when its own Go block stages internal/api/openapi.json as a side "+
-			"effect (go run ./cmd/genspec, triggered by staging a .go file) and npm is not on PATH -- the "+
-			"generated TS client can't be regenerated, so the commit would silently ship a stale client with "+
-			"no enforcement until CI runs. Hook exited 0, output:\n%s", out)
+	if err != nil {
+		t.Fatalf("pre-commit hook failed for unrelated Go change: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "npm ci") || !strings.Contains(string(out), "generate:client") {
-		t.Fatalf("pre-commit hook's npm-absent+spec-staged-as-side-effect failure must name the exact "+
-			"recovery command (cd internal/api/dashboardspa/web && npm ci && npm run generate:client), got:\n%s", out)
+
+	logContent, err := os.ReadFile(makeLog)
+	if err != nil {
+		t.Fatalf("read make log: %v", err)
+	}
+	log := string(logContent)
+	for _, want := range []string{
+		"lint-changed LINT_CHANGED_SCOPE=staged",
+		"vet-affected LINT_CHANGED_SCOPE=staged",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("unrelated Go change did not run %q:\n%s", want, log)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+		if line == "vet" || strings.HasPrefix(line, "vet ") {
+			t.Errorf("unrelated Go change ran full make vet instead of vet-affected:\n%s", log)
+		}
+	}
+	for _, forbidden := range []string{"genspec", "genschema", "genclient", "dashboard-check"} {
+		if strings.Contains(log, forbidden) || strings.Contains(string(out), forbidden) {
+			t.Errorf("unrelated Go change unexpectedly ran %s (make log: %s; hook output: %s)", forbidden, log, out)
+		}
 	}
 }
 
-func TestPreCommitWarnsOnlyWhenNpmAbsentAndSpecNotStaged(t *testing.T) {
+func TestPreCommitDoesNotEnterDashboardForDocsOnlyChange(t *testing.T) {
 	repoRoot := repoRoot(t)
 	hookPath := filepath.Join(repoRoot, ".githooks", "pre-commit")
 
@@ -591,10 +581,8 @@ func TestPreCommitWarnsOnlyWhenNpmAbsentAndSpecNotStaged(t *testing.T) {
 	runGit("add", "-A")
 	runGit("commit", "-m", "init")
 
-	// Stage a docs-only change -- internal/api/openapi.json is untouched,
-	// so npm's absence must stay a warning, not a hard failure. staged_docs
-	// being non-empty also exercises `make check-docs`, so stub `make` as a
-	// no-op; the fixture repo has none of the real doc-lint machinery.
+	// A docs-only change exercises check-docs, but is not a dashboard input.
+	// npm is deliberately absent so entering the dashboard branch is observable.
 	writeTestFile(t, docPath, "hello again\n")
 	runGit("add", "README.md")
 
@@ -608,12 +596,114 @@ func TestPreCommitWarnsOnlyWhenNpmAbsentAndSpecNotStaged(t *testing.T) {
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("pre-commit hook must still succeed (warn-only) when npm is absent and "+
-			"internal/api/openapi.json is NOT staged -- contributors without Node tooling must not be "+
-			"blocked on unrelated commits, got exit error: %v\n%s", err, out)
+		t.Fatalf("pre-commit hook must succeed when npm is absent for a docs-only change: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "npm not on PATH") {
-		t.Fatalf("pre-commit hook should still warn when npm is absent, got:\n%s", out)
+	if strings.Contains(string(out), "npm not on PATH") {
+		t.Fatalf("pre-commit hook must not enter the dashboard branch for docs-only changes, got:\n%s", out)
+	}
+}
+
+func TestPreCommitScopesGeneratorsAndStagesEveryOutput(t *testing.T) {
+	hookPath := filepath.Join(repoRoot(t), ".githooks", "pre-commit")
+	script, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read pre-commit hook: %v", err)
+	}
+	content := string(script)
+
+	for _, trigger := range []string{
+		"--name-only -z --no-renames --diff-filter=ACM",
+		"generator-affected LINT_CHANGED_SCOPE=staged",
+		"./cmd/genspec",
+		"./cmd/genschema",
+		"internal/api/dashboardspa/web/",
+		"cmd/gen-client/",
+	} {
+		if !strings.Contains(content, trigger) {
+			t.Errorf("pre-commit hook is missing dependency-aware, delete-safe trigger %q", trigger)
+		}
+	}
+	selector, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "ci-static-select"))
+	if err != nil {
+		t.Fatalf("read static selector: %v", err)
+	}
+	selectorContent := string(selector)
+	for _, contract := range []string{
+		`"-deps"`,
+		`{"go.mod", "go.sum"}`,
+		"direct_selected",
+		"validate_changed_package_dir",
+		"GENERATOR_RUNTIME_DIRS",
+		"GENERATOR_OWNED_OUTPUTS",
+		"generator-affected: selecting all generators",
+	} {
+		if !strings.Contains(selectorContent, contract) {
+			t.Errorf("generator ownership selector is missing fail-safe dependency contract %q", contract)
+		}
+	}
+	if !strings.Contains(content, "--diff-filter=ACM -- '*.go'") {
+		t.Error("pre-commit formatting must remain limited to existing added/copied/modified Go files")
+	}
+	if !strings.Contains(content, "make vet-affected LINT_CHANGED_SCOPE=staged") {
+		t.Error("pre-commit hook must vet the staged affected-package graph")
+	}
+	for _, forbidden := range []string{"\nmake vet\n", "\n  make vet\n"} {
+		if strings.Contains(content, forbidden) {
+			t.Error("pre-commit hook must not run unconditional full make vet")
+		}
+	}
+
+	block := func(start, end string) string {
+		t.Helper()
+		startIndex := strings.Index(content, start)
+		if startIndex < 0 {
+			t.Fatalf("pre-commit hook is missing block start %q", start)
+		}
+		endIndex := strings.Index(content[startIndex:], end)
+		if endIndex < 0 {
+			t.Fatalf("pre-commit hook block %q is missing terminator %q", start, end)
+		}
+		return content[startIndex : startIndex+endIndex]
+	}
+
+	genspecBlock := block(`if [ "$run_genspec" = true ]`, "# Re-read the index after genspec")
+	for _, output := range []string{
+		"internal/api/openapi.json",
+		"docs/reference/schema/openapi.json",
+		"docs/reference/schema/openapi.txt",
+		"docs/reference/schema/events.json",
+		"docs/reference/schema/events.txt",
+	} {
+		if !strings.Contains(genspecBlock, output) {
+			t.Errorf("genspec output %s is not staged", output)
+		}
+	}
+
+	clientBlock := block(`if [ "$run_genclient" = true ]`, `if [ "$run_genschema" = true ]`)
+	for _, want := range []string{"go generate ./internal/api/genclient", "git add -- internal/api/genclient/client_gen.go"} {
+		if !strings.Contains(clientBlock, want) {
+			t.Errorf("spec-changed client block is missing %q", want)
+		}
+	}
+
+	genschemaBlock := block(`if [ "$run_genschema" = true ]`, "# The selector reads the complete staged diff")
+	for _, output := range []string{
+		"docs/reference/schema/city-schema.json",
+		"docs/reference/schema/city-schema.txt",
+		"docs/reference/schema/pack-schema.json",
+		"docs/reference/schema/pack-schema.txt",
+		"docs/reference/config.md",
+		"docs/reference/cli.md",
+	} {
+		if !strings.Contains(genschemaBlock, output) {
+			t.Errorf("genschema output %s is not staged", output)
+		}
+	}
+	genschemaIndex := strings.Index(content, `if [ "$run_genschema" = true ]`)
+	docsSnapshotIndex := strings.Index(content, "# Re-read after generation")
+	checkDocsIndex := strings.Index(content, "make check-docs")
+	if genschemaIndex < 0 || docsSnapshotIndex < genschemaIndex || checkDocsIndex < docsSnapshotIndex {
+		t.Error("pre-commit hook must re-read and validate staged docs after running generators")
 	}
 }
 

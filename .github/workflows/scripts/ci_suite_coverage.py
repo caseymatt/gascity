@@ -2,20 +2,20 @@
 r"""CI suite-coverage classification and aggregation.
 
 Companion to the ``changes`` job in ``.github/workflows/ci.yml``. That job
-gates downstream jobs on dorny/paths-filter outputs, so a change confined to
-one filter group skips jobs in other groups. A subtle cross-cutting change
-(e.g. an ``internal/beads`` edit that breaks a worker test) can therefore land
-without the affected jobs ever running. The ``shared`` filter closes that gap:
-when a cross-cutting core path changes it is folded into every gated output, so
-all downstream jobs run as a union ("full suite") regardless of their own
-filter result.
+gates downstream jobs on dorny/paths-filter outputs. Pull requests normally
+run only path-matched suites; a cross-cutting ``shared`` path expands that to
+the full union. Main-branch pushes and reusable calls with
+``force_full_suite`` also run the full union, independently of the changed
+paths.
 
-This module is the deterministic mechanism behind that wiring and the metric
-that measures it. No semantic judgement lives here — callers pass the
-already-computed filter result (a boolean string) and these functions only do
-arithmetic and string matching:
+This module centralizes the deterministic mechanism behind that wiring and the
+metric that measures it. Callers provide the event, force flag, and
+already-computed filter results:
 
   * ``classify_mode`` — label a run ``full`` or ``filtered``.
+  * ``classify_reason`` — explain why that mode was selected.
+  * ``path_suite_selected`` — model the path-gated suite policy.
+  * ``full_rest_selected`` — model the full REST policy.
   * ``paths_match`` — dorny-compatible glob matching for deterministic policy
     fixtures and offline changed-file simulation.
   * ``aggregate`` — compute the share of runs that took each path.
@@ -23,8 +23,10 @@ arithmetic and string matching:
 Usage:
 
   # In CI (the ``changes`` job), record this run's classification:
-  #   python3 ci_suite_coverage.py classify "$SHARED_FILTER_RESULT"
-  # Writes ``suite_mode`` to $GITHUB_OUTPUT and a row to $GITHUB_STEP_SUMMARY.
+  #   python3 ci_suite_coverage.py classify \
+  #     "$SHARED_FILTER_RESULT" "$EVENT_NAME" "$FORCE_FULL_SUITE"
+  # Writes ``suite_mode`` and ``suite_reason`` to $GITHUB_OUTPUT and a row to
+  # $GITHUB_STEP_SUMMARY.
 
   # Aggregate the metric across recent main-branch merges. Collect the
   # per-run modes (emitted by the classify step as ``ci_suite_mode=<mode>``
@@ -48,17 +50,69 @@ from typing import Iterable, Mapping
 FULL = "full"
 FILTERED = "filtered"
 
-# Values dorny/paths-filter writes for a matched/unmatched filter.
+REASON_FORCED = "forced"
+REASON_MAIN_PUSH = "main-push"
+REASON_SHARED_PATH = "shared-path"
+REASON_PATH_FILTERED = "path-filtered"
+
+# Values dorny/paths-filter and GitHub boolean inputs render as when true.
 TRUE = "true"
 
 
-def classify_mode(shared_matched: bool) -> str:
-    """Return the suite mode for a run.
+def full_suite_requested(event_name: str, force_full_suite: bool) -> bool:
+    """Return whether the invocation requires every deterministic suite."""
+    return event_name == "push" or force_full_suite
 
-    ``full`` means a cross-cutting core path changed, so every gated job ran.
-    ``filtered`` means only path-scoped jobs ran.
-    """
-    return FULL if shared_matched else FILTERED
+
+def classify_mode(
+    shared_matched: bool,
+    event_name: str = "pull_request",
+    force_full_suite: bool = False,
+) -> str:
+    """Return ``full`` when shared paths, push, or an explicit force selects it."""
+    return (
+        FULL
+        if shared_matched or full_suite_requested(event_name, force_full_suite)
+        else FILTERED
+    )
+
+
+def classify_reason(
+    shared_matched: bool,
+    event_name: str = "pull_request",
+    force_full_suite: bool = False,
+) -> str:
+    """Return the stable reason code for a suite-coverage classification."""
+    if force_full_suite:
+        return REASON_FORCED
+    if event_name == "push":
+        return REASON_MAIN_PUSH
+    if shared_matched:
+        return REASON_SHARED_PATH
+    return REASON_PATH_FILTERED
+
+
+def path_suite_selected(
+    path_matched: bool,
+    shared_matched: bool,
+    event_name: str,
+    force_full_suite: bool,
+) -> bool:
+    """Model one path-gated suite output from the workflow's ``changes`` job."""
+    return (
+        path_matched
+        or shared_matched
+        or full_suite_requested(event_name, force_full_suite)
+    )
+
+
+def full_rest_selected(
+    integration_selected: bool,
+    event_name: str,
+    force_full_suite: bool,
+) -> bool:
+    """Return whether the broad REST matrix runs for this invocation."""
+    return integration_selected and full_suite_requested(event_name, force_full_suite)
 
 
 def _glob_to_regex_body(pattern: str) -> str:
@@ -145,37 +199,55 @@ def aggregate(modes: Iterable[str]) -> Mapping[str, object]:
     }
 
 
-def _emit_classification(shared_result: str) -> None:
-    """Record this run's suite mode for the metric.
+def _emit_classification(
+    shared_result: str,
+    event_name: str,
+    force_full_suite_result: str,
+) -> None:
+    """Record this run's suite mode and reason for the metric.
 
-    Writes the ``suite_mode`` job output and a human-readable row to the step
-    summary, and prints a grep-able ``ci_suite_mode=<mode>`` notice that the
-    aggregation step harvests from run logs.
+    Writes the ``suite_mode`` and ``suite_reason`` job outputs and a
+    human-readable row to the step summary. The notice retains the existing
+    ``ci_suite_mode=<full|filtered>`` token consumed by aggregation tooling.
     """
-    mode = classify_mode(shared_result.strip().lower() == TRUE)
+    shared_matched = shared_result.strip().lower() == TRUE
+    force_full_suite = force_full_suite_result.strip().lower() == TRUE
+    mode = classify_mode(shared_matched, event_name, force_full_suite)
+    reason = classify_reason(shared_matched, event_name, force_full_suite)
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a", encoding="utf-8") as handle:
             handle.write(f"suite_mode={mode}\n")
+            handle.write(f"suite_reason={reason}\n")
 
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:
         with open(step_summary, "a", encoding="utf-8") as handle:
             handle.write("## CI Suite Coverage\n\n")
             handle.write(f"- mode: `{mode}`\n")
+            handle.write(f"- reason: `{reason}`\n")
+            handle.write(f"- event: `{event_name}`\n")
+            handle.write(f"- full suite forced: `{force_full_suite_result}`\n")
             handle.write(f"- cross-cutting core path changed: `{shared_result}`\n")
 
     # A workflow notice annotation, also grep-able from `gh run view --log`.
-    print(f"::notice title=CI suite coverage::ci_suite_mode={mode}")
+    print(
+        f"::notice title=CI suite coverage::"
+        f"ci_suite_mode={mode} ci_suite_reason={reason}"
+    )
 
 
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[1] == "classify":
-        if len(argv) != 3:
-            print("usage: ci_suite_coverage.py classify <shared-filter-result>", file=sys.stderr)
+        if len(argv) != 5:
+            print(
+                "usage: ci_suite_coverage.py classify "
+                "<shared-filter-result> <event-name> <force-full-suite>",
+                file=sys.stderr,
+            )
             return 2
-        _emit_classification(argv[2])
+        _emit_classification(argv[2], argv[3], argv[4])
         return 0
 
     # Default: aggregate mode tokens read from stdin, one per line.

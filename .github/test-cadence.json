@@ -1,0 +1,2657 @@
+{
+  "schema": 1,
+  "shared_paths": [
+    ".github/actions/**",
+    ".github/scripts/install-bd-archive.sh",
+    ".github/scripts/install-claude-native.sh",
+    ".github/scripts/install-dolt-archive.sh",
+    ".github/test-cadence.json",
+    ".github/workflows/**",
+    "Makefile",
+    "go.mod",
+    "go.sum",
+    "internal/beads/**",
+    "internal/config/**",
+    "internal/events/**",
+    "scripts/test-cadence"
+  ],
+  "suites": [
+    {
+      "id": "ci-cmd-gc-process-cmd-gc-process-shard",
+      "class": "medium",
+      "command": "make test-cmd-gc-process-shard",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "internal/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "cmd-gc-process",
+        "push": "cmd-gc-process"
+      }
+    },
+    {
+      "id": "ci-cmd-gc-productmetrics-testhook-productmetrics-testhook",
+      "class": "medium",
+      "command": "make test-productmetrics-testhook",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "internal/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "cmd-gc-productmetrics-testhook",
+        "push": "cmd-gc-productmetrics-testhook"
+      },
+      "top_level_tests": [
+        "TestProductMetricsTaggedBinaryProcessContracts",
+        "TestProductMetricsTaggedProcessFixtureIsEnabled",
+        "TestProductMetricsTaggedRunnerReadsInjectionOnlyAtInvocation",
+        "TestProductMetricsTestOnlyCensusEscapeIsNarrow",
+        "TestProductMetricsTesthookCAReadIsBounded",
+        "TestProductMetricsTesthookEndpointAcceptsOnlyLoopbackHTTPS"
+      ]
+    },
+    {
+      "id": "ci-contract-acceptance-current-bd-cli-contract",
+      "class": "provider",
+      "command": "make test-bd-cli-contract",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        ".github/scripts/install-bd-archive.sh",
+        "deps.env",
+        "internal/beads/**",
+        "test/acceptance/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "contract-acceptance-current",
+        "push": "contract-acceptance-current"
+      },
+      "top_level_tests": [
+        "TestBdBasicCRUD",
+        "TestBdDependencies",
+        "TestBdDestructive",
+        "TestBdWorkflow"
+      ]
+    },
+    {
+      "id": "ci-contract-acceptance-current-bd-conditional-release-contract",
+      "class": "provider",
+      "command": "make test-bd-conditional-release-contract",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        ".github/scripts/install-bd-archive.sh",
+        "deps.env",
+        "internal/beads/**",
+        "test/acceptance/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "contract-acceptance-current",
+        "push": "contract-acceptance-current"
+      },
+      "top_level_tests": [
+        "TestBdStoreReleaseIfCurrentAgainstRealBd"
+      ]
+    },
+    {
+      "id": "ci-contract-acceptance-previous-bd-cli-contract",
+      "class": "provider",
+      "command": "make test-bd-cli-contract",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        ".github/scripts/install-bd-archive.sh",
+        "deps.env",
+        "internal/beads/**",
+        "test/acceptance/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "contract-acceptance-previous",
+        "push": "contract-acceptance-previous"
+      },
+      "top_level_tests": [
+        "TestBdBasicCRUD",
+        "TestBdDependencies",
+        "TestBdDestructive",
+        "TestBdWorkflow"
+      ]
+    },
+    {
+      "id": "ci-contract-radar-bd-head-bd-cli-contract",
+      "class": "provider",
+      "command": "make test-bd-cli-contract",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        ".github/scripts/install-bd-archive.sh",
+        "deps.env",
+        "internal/beads/**",
+        "test/acceptance/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "contract-radar-bd-head",
+        "push": "contract-radar-bd-head"
+      },
+      "top_level_tests": [
+        "TestBdBasicCRUD",
+        "TestBdDependencies",
+        "TestBdDestructive",
+        "TestBdWorkflow"
+      ]
+    },
+    {
+      "id": "ci-credential-provider-windows-count-1-internal-credentialprovider",
+      "class": "provider",
+      "command": "go test -count=1 ./internal/credentialprovider",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "go.mod",
+        "go.sum",
+        "internal/credentialprovider/**",
+        "internal/testenv/**",
+        "internal/testutil/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "credential-provider-windows",
+        "push": "credential-provider-windows"
+      }
+    },
+    {
+      "id": "ci-credential-provider-windows-tags-integration-count-1-internal-credentialprovider-run-testcredentialp",
+      "class": "provider",
+      "command": "go test -tags=integration -count=1 ./internal/credentialprovider -run '^TestCredentialProviderWindowsJob' -timeout=45s",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "go.mod",
+        "go.sum",
+        "internal/credentialprovider/**",
+        "internal/testenv/**",
+        "internal/testutil/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "credential-provider-windows",
+        "push": "credential-provider-windows"
+      },
+      "top_level_tests": [
+        "TestCredentialProviderWindowsJob"
+      ]
+    },
+    {
+      "id": "ci-dashboard-test",
+      "class": "medium",
+      "command": "npm run --workspace gas-city-dashboard-frontend test",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "internal/api/**",
+        "test/dashport/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "dashboard",
+        "push": "dashboard"
+      }
+    },
+    {
+      "id": "ci-dashboard-test-e2e",
+      "class": "medium",
+      "command": "npm run test:e2e",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "internal/api/**",
+        "test/dashport/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "dashboard",
+        "push": "dashboard"
+      }
+    },
+    {
+      "id": "ci-dashboard-typecheck-test",
+      "class": "medium",
+      "command": "npm run --workspace gas-city-dashboard-frontend typecheck:test",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "internal/api/**",
+        "test/dashport/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "dashboard",
+        "push": "dashboard"
+      }
+    },
+    {
+      "id": "ci-docker-session-docker",
+      "class": "provider",
+      "command": "make test-docker",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "contrib/session-scripts/**",
+        "internal/session/**",
+        "scripts/gc-session-docker",
+        "scripts/test-docker-session"
+      ],
+      "workflow_jobs": {
+        "pull_request": "docker-session",
+        "push": "docker-session"
+      }
+    },
+    {
+      "id": "ci-generated-dashboard",
+      "class": "small",
+      "command": "make dashboard-ci",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 15,
+      "paths": [
+        "internal/api/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-generated",
+        "push": "preflight-generated"
+      }
+    },
+    {
+      "id": "ci-generated-docs",
+      "class": "small",
+      "command": "./scripts/check-generated-docs-drift.sh",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 15,
+      "paths": [
+        "docs/**",
+        "scripts/check-generated-docs-drift.sh"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-generated",
+        "push": "preflight-generated"
+      }
+    },
+    {
+      "id": "ci-generated-openapi",
+      "class": "small",
+      "command": "make spec-ci",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 15,
+      "paths": [
+        "internal/api/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-generated",
+        "push": "preflight-generated"
+      }
+    },
+    {
+      "id": "ci-integration-rest-full-rest-full-matrix-shard-of-16",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard rest-full-${{ matrix.shard }}-of-16",
+      "cadences": [
+        "push"
+      ],
+      "required_on": [
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "push": "integration-rest-full"
+      }
+    },
+    {
+      "id": "ci-integration-shards-integration-bdstore",
+      "class": "medium",
+      "command": "make test-integration-bdstore",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-cmd-gc-integration",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-cmd-gc-integration",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-core-1-of-4",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-core-1-of-4",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-core-2-of-4",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-core-2-of-4",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-core-3-of-4",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-core-3-of-4",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-core-4-of-4",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-core-4-of-4",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-runtime-tmux-1-of-6",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-1-of-6",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-runtime-tmux-2-of-6",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-2-of-6",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-runtime-tmux-3-of-6",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-3-of-6",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-runtime-tmux-4-of-6",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-4-of-6",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-runtime-tmux-5-of-6",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-5-of-6",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-packages-runtime-tmux-6-of-6",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-6-of-6",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-rest-smoke-1-of-2",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard rest-smoke-1-of-2",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-integration-shards-rest-smoke-2-of-2",
+      "class": "medium",
+      "command": "./scripts/test-integration-shard rest-smoke-2-of-2",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        ".github/workflows/**",
+        "Makefile",
+        "examples/gastown/**",
+        "go.mod",
+        "go.sum",
+        "scripts/test-go-test-shard",
+        "scripts/test-integration-shard"
+      ],
+      "workflow_jobs": {
+        "pull_request": "integration-shards",
+        "push": "integration-shards"
+      }
+    },
+    {
+      "id": "ci-k8s-session-k8s",
+      "class": "provider",
+      "command": "make test-k8s",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "contrib/session-scripts/gc-session-k8s*",
+        "internal/session/**",
+        "test/integration/session_k8s_test.go"
+      ],
+      "workflow_jobs": {
+        "pull_request": "k8s-session",
+        "push": "k8s-session"
+      },
+      "top_level_tests": [
+        "TestK8sSessionConformance"
+      ]
+    },
+    {
+      "id": "ci-mcp-mail-mcp-mail",
+      "class": "provider",
+      "command": "make test-mcp-mail",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "contrib/mail-scripts/**",
+        "internal/mail/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "mcp-mail",
+        "push": "mcp-mail"
+      },
+      "top_level_tests": [
+        "TestMCPMailConformanceLive"
+      ]
+    },
+    {
+      "id": "ci-openclaw-bridge-test",
+      "class": "medium",
+      "command": "npm test",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "contrib/openclaw-bridge/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "openclaw-bridge",
+        "push": "openclaw-bridge"
+      }
+    },
+    {
+      "id": "ci-pack-gate-pack-registry-live",
+      "class": "provider",
+      "command": "make test-pack-registry-live",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "cmd/gc/embed_builtin_packs.go",
+        "examples/gastown/**",
+        "go.mod",
+        "internal/config/compose.go",
+        "internal/config/pack.go",
+        "scripts/update-bundled-gastown-pack"
+      ],
+      "workflow_jobs": {
+        "pull_request": "pack-gate",
+        "push": "pack-gate"
+      }
+    },
+    {
+      "id": "ci-pack-pins",
+      "class": "provider",
+      "command": "scripts/update-bundled-gastown-pack --check",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 15,
+      "paths": [
+        "cmd/gc/embed_builtin_packs.go",
+        "examples/gastown/**",
+        "go.mod",
+        "internal/config/compose.go",
+        "internal/config/pack.go",
+        "scripts/update-bundled-gastown-pack"
+      ],
+      "workflow_jobs": {
+        "pull_request": "pack-gate",
+        "push": "pack-gate"
+      }
+    },
+    {
+      "id": "ci-preflight-acceptance-acceptance",
+      "class": "medium",
+      "command": "make test-acceptance",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "internal/**",
+        "test/acceptance/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-acceptance",
+        "push": "preflight-acceptance"
+      }
+    },
+    {
+      "id": "ci-preflight-static-check-core-boundary",
+      "class": "small",
+      "command": "make check-core-boundary",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-static",
+        "push": "preflight-static"
+      }
+    },
+    {
+      "id": "ci-preflight-static-check-docs",
+      "class": "small",
+      "command": "make check-docs",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-static",
+        "push": "preflight-static"
+      }
+    },
+    {
+      "id": "ci-preflight-static-check-eventexport-isolation",
+      "class": "small",
+      "command": "make check-eventexport-isolation",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-static",
+        "push": "preflight-static"
+      }
+    },
+    {
+      "id": "ci-preflight-static-check-gomod-replace",
+      "class": "small",
+      "command": "make check-gomod-replace",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-static",
+        "push": "preflight-static"
+      }
+    },
+    {
+      "id": "ci-preflight-static-check-native-dependency-surface",
+      "class": "small",
+      "command": "make check-native-dependency-surface",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-static",
+        "push": "preflight-static"
+      }
+    },
+    {
+      "id": "ci-preflight-static-ci-policy",
+      "class": "small",
+      "command": "make test-ci-policy",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-static",
+        "push": "preflight-static"
+      }
+    },
+    {
+      "id": "ci-preflight-static-native-doltlite-beads",
+      "class": "small",
+      "command": "make test-native-doltlite-beads",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-static",
+        "push": "preflight-static"
+      }
+    },
+    {
+      "id": "ci-preflight-static-static-scope",
+      "class": "small",
+      "command": "make check-static-scope",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "preflight-static",
+        "push": "preflight-static"
+      }
+    },
+    {
+      "id": "ci-preflight-unit-cover-cmdgc-cover-cmdgc-shard",
+      "class": "medium",
+      "command": "make test-cover-cmdgc-shard",
+      "cadences": [
+        "push"
+      ],
+      "required_on": [
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "go.mod",
+        "go.sum"
+      ],
+      "workflow_jobs": {
+        "push": "preflight-unit-cover-cmdgc"
+      }
+    },
+    {
+      "id": "ci-preflight-unit-cover-noncmdgc-cover-noncmdgc",
+      "class": "medium",
+      "command": "make test-cover-noncmdgc",
+      "cadences": [
+        "push"
+      ],
+      "required_on": [
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "**/*.go",
+        "go.mod",
+        "go.sum"
+      ],
+      "workflow_jobs": {
+        "push": "preflight-unit-cover-noncmdgc"
+      }
+    },
+    {
+      "id": "ci-worker-core-claude-worker-core",
+      "class": "medium",
+      "command": "make test-worker-core",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "go.mod",
+        "go.sum",
+        "internal/config/**",
+        "internal/modelwindow/**",
+        "internal/runtime/**",
+        "internal/sessionlog/**",
+        "internal/worker/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "worker-core-claude",
+        "push": "worker-core-claude"
+      }
+    },
+    {
+      "id": "ci-worker-core-codex-worker-core",
+      "class": "medium",
+      "command": "make test-worker-core",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "go.mod",
+        "go.sum",
+        "internal/config/**",
+        "internal/modelwindow/**",
+        "internal/runtime/**",
+        "internal/sessionlog/**",
+        "internal/worker/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "worker-core-codex",
+        "push": "worker-core-codex"
+      }
+    },
+    {
+      "id": "ci-worker-core-gemini-worker-core",
+      "class": "medium",
+      "command": "make test-worker-core",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "go.mod",
+        "go.sum",
+        "internal/config/**",
+        "internal/modelwindow/**",
+        "internal/runtime/**",
+        "internal/sessionlog/**",
+        "internal/worker/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "worker-core-gemini",
+        "push": "worker-core-gemini"
+      }
+    },
+    {
+      "id": "ci-worker-core-phase2-claude-worker-core-phase2-all",
+      "class": "medium",
+      "command": "make test-worker-core-phase2-all",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "go.mod",
+        "go.sum",
+        "internal/config/**",
+        "internal/modelwindow/**",
+        "internal/runtime/**",
+        "internal/sessionlog/**",
+        "internal/worker/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "worker-core-phase2-claude",
+        "push": "worker-core-phase2-claude"
+      }
+    },
+    {
+      "id": "ci-worker-core-phase2-codex-worker-core-phase2-all",
+      "class": "medium",
+      "command": "make test-worker-core-phase2-all",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "go.mod",
+        "go.sum",
+        "internal/config/**",
+        "internal/modelwindow/**",
+        "internal/runtime/**",
+        "internal/sessionlog/**",
+        "internal/worker/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "worker-core-phase2-codex",
+        "push": "worker-core-phase2-codex"
+      }
+    },
+    {
+      "id": "ci-worker-core-phase2-gemini-worker-core-phase2-all",
+      "class": "medium",
+      "command": "make test-worker-core-phase2-all",
+      "cadences": [
+        "pull_request",
+        "push"
+      ],
+      "required_on": [
+        "pull_request",
+        "push"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 20,
+      "paths": [
+        "cmd/gc/**",
+        "go.mod",
+        "go.sum",
+        "internal/config/**",
+        "internal/modelwindow/**",
+        "internal/runtime/**",
+        "internal/sessionlog/**",
+        "internal/worker/**"
+      ],
+      "workflow_jobs": {
+        "pull_request": "worker-core-phase2-gemini",
+        "push": "worker-core-phase2-gemini"
+      }
+    },
+    {
+      "id": "nightly-bundled-pack-pins",
+      "class": "provider",
+      "command": "scripts/update-bundled-gastown-pack --check",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 15,
+      "paths": [
+        "examples/gastown/**",
+        "go.mod",
+        "internal/config/**"
+      ],
+      "workflow_jobs": {
+        "nightly": "bundled-pack-pins"
+      }
+    },
+    {
+      "id": "nightly-deterministic-full",
+      "class": "medium",
+      "command": "uses: ./.github/workflows/ci.yml",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 60,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "nightly": "deterministic-full"
+      }
+    },
+    {
+      "id": "nightly-dolt-chaos-chaos-dolt",
+      "class": "journey",
+      "command": "make test-chaos-dolt",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 60,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "nightly": "dolt-chaos"
+      },
+      "top_level_tests": [
+        "TestManagedDoltChaos_CityAndRigCallersRemainConsistent"
+      ]
+    },
+    {
+      "id": "nightly-formula-recovery-integration-review-formulas-recovery",
+      "class": "journey",
+      "command": "make test-integration-review-formulas-recovery",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 45,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "nightly": "formula-recovery"
+      },
+      "top_level_tests": [
+        "TestRetryManagedPooledWorkerRecoversClaimedAttemptAfterCrash"
+      ]
+    },
+    {
+      "id": "nightly-integration-sqlite-coordstore-acceptance",
+      "class": "provider",
+      "command": "make test-acceptance",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 60,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "nightly": "integration-sqlite-coordstore"
+      }
+    },
+    {
+      "id": "nightly-integration-sqlite-coordstore-integration-bdstore",
+      "class": "provider",
+      "command": "make test-integration-bdstore",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 60,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "nightly": "integration-sqlite-coordstore"
+      }
+    },
+    {
+      "id": "nightly-race-race",
+      "class": "medium",
+      "command": "make test-race",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "nightly": "race"
+      }
+    },
+    {
+      "id": "nightly-tier-b-acceptance-b",
+      "class": "medium",
+      "command": "make test-acceptance-b",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 30,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "nightly": "tier-b"
+      }
+    },
+    {
+      "id": "nightly-tier-c-tags-acceptance-c-timeout-45m-v-test-acceptance-tier-c-run-test-bdcmdsep",
+      "class": "provider",
+      "command": "go test -tags acceptance_c -timeout 45m -v ./test/acceptance/tier_c/... -run 'Test(BdCmdSeparatesStdoutAndStderrOnError|BdCmdReturnsPureStdoutOnSuccessfulJSONCommand|Swarm_SlingWorkCoderCommits|Gastown_PolecatLifecycle|Gastown_MayorDispatchPipeline|TierCEnvAuthDoesNotMirrorAuthTokenIntoAPIKey)$",
+      "cadences": [
+        "nightly"
+      ],
+      "required_on": [
+        "nightly"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 60,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "nightly": "tier-c"
+      },
+      "top_level_tests": [
+        "TestBdCmdReturnsPureStdoutOnSuccessfulJSONCommand",
+        "TestBdCmdSeparatesStdoutAndStderrOnError",
+        "TestGastown_MayorDispatchPipeline",
+        "TestGastown_PolecatLifecycle",
+        "TestSwarm_SlingWorkCoderCommits",
+        "TestTierCEnvAuthDoesNotMirrorAuthTokenIntoAPIKey"
+      ]
+    },
+    {
+      "id": "rc-ci-parity",
+      "class": "medium",
+      "command": "uses: ./.github/workflows/ci.yml",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 60,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ci_parity"
+      }
+    },
+    {
+      "id": "rc-mac-regression",
+      "class": "medium",
+      "command": "uses: ./.github/workflows/mac-regression.yml",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 60,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "mac_regression"
+      }
+    },
+    {
+      "id": "rc-release-dist-ignore",
+      "class": "small",
+      "command": "make check-release-dist-ignore",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        ".gitignore",
+        ".goreleaser.yaml",
+        "Makefile"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_goreleaser_snapshot"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-tags-acceptance-a-timeout-8m-test-acceptance-helpers",
+      "class": "journey",
+      "command": "go test -tags acceptance_a -timeout 8m ./test/acceptance/helpers",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-test-acceptance-1-8",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance 1 8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-test-acceptance-2-8",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance 2 8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-test-acceptance-3-8",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance 3 8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-test-acceptance-4-8",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance 4 8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-test-acceptance-5-8",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance 5 8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-test-acceptance-6-8",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance 6 8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-test-acceptance-7-8",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance 7 8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-a-test-acceptance-8-8",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance 8 8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_a"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-b-test-acceptance-tier-b-matrix-shard-index-3",
+      "class": "journey",
+      "command": "./scripts/test-go-test-shard ./test/acceptance/tier_b ${{ matrix.shard_index }} 3",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_b"
+      }
+    },
+    {
+      "id": "rc-ubuntu-acceptance-c-test-acceptance-tier-c-matrix-shard-index-5",
+      "class": "provider",
+      "command": "./scripts/test-go-test-shard ./test/acceptance/tier_c ${{ matrix.shard_index }} 5",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 60,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_acceptance_c"
+      }
+    },
+    {
+      "id": "rc-ubuntu-fast-tests-c-o-tmp-fsys-test-internal-fsys",
+      "class": "medium",
+      "command": "go test -c -o \"$tmp/fsys.test\" ./internal/fsys",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_fast_tests"
+      }
+    },
+    {
+      "id": "rc-ubuntu-fast-tests-cmd-gc-1-6",
+      "class": "medium",
+      "command": "./scripts/test-go-test-shard ./cmd/gc 1 6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_fast_tests"
+      }
+    },
+    {
+      "id": "rc-ubuntu-fast-tests-cmd-gc-2-6",
+      "class": "medium",
+      "command": "./scripts/test-go-test-shard ./cmd/gc 2 6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_fast_tests"
+      }
+    },
+    {
+      "id": "rc-ubuntu-fast-tests-cmd-gc-3-6",
+      "class": "medium",
+      "command": "./scripts/test-go-test-shard ./cmd/gc 3 6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_fast_tests"
+      }
+    },
+    {
+      "id": "rc-ubuntu-fast-tests-cmd-gc-4-6",
+      "class": "medium",
+      "command": "./scripts/test-go-test-shard ./cmd/gc 4 6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_fast_tests"
+      }
+    },
+    {
+      "id": "rc-ubuntu-fast-tests-cmd-gc-5-6",
+      "class": "medium",
+      "command": "./scripts/test-go-test-shard ./cmd/gc 5 6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_fast_tests"
+      }
+    },
+    {
+      "id": "rc-ubuntu-fast-tests-cmd-gc-6-6",
+      "class": "medium",
+      "command": "./scripts/test-go-test-shard ./cmd/gc 6 6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_fast_tests"
+      }
+    },
+    {
+      "id": "rc-ubuntu-fast-tests-timeout-8m-go-list-grep-v-github-com-gastownhall-gascity-cmd-gc",
+      "class": "medium",
+      "command": "go test -timeout 8m $(go list ./... | grep -v '^github.com/gastownhall/gascity/cmd/gc$')",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_fast_tests"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-integration-bdstore",
+      "class": "journey",
+      "command": "make test-integration-bdstore",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-integration-review-formulas-recovery",
+      "class": "journey",
+      "command": "make test-integration-review-formulas-recovery",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-cmd-gc-1-of-6",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-cmd-gc-1-of-6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-cmd-gc-2-of-6",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-cmd-gc-2-of-6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-cmd-gc-3-of-6",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-cmd-gc-3-of-6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-cmd-gc-4-of-6",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-cmd-gc-4-of-6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-cmd-gc-5-of-6",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-cmd-gc-5-of-6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-cmd-gc-6-of-6",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-cmd-gc-6-of-6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-core-1-of-4",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-core-1-of-4",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-core-2-of-4",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-core-2-of-4",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-core-3-of-4",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-core-3-of-4",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-core-4-of-4",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-core-4-of-4",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-runtime-tmux-1-of-3",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-1-of-3",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-runtime-tmux-2-of-3",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-2-of-3",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-packages-runtime-tmux-3-of-3",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard packages-runtime-tmux-3-of-3",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-full-1-of-8",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-full-1-of-8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-full-2-of-8",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-full-2-of-8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-full-3-of-8",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-full-3-of-8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-full-4-of-8",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-full-4-of-8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-full-5-of-8",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-full-5-of-8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-full-6-of-8",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-full-6-of-8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-full-7-of-8",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-full-7-of-8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-full-8-of-8",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-full-8-of-8",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-smoke-1-of-2",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-smoke-1-of-2",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-rest-smoke-2-of-2",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard rest-smoke-2-of-2",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-review-formulas-basic-1-of-2",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard review-formulas-basic-1-of-2",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-review-formulas-basic-2-of-2",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard review-formulas-basic-2-of-2",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-review-formulas-retries-1-of-2",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard review-formulas-retries-1-of-2",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-integration-shards-review-formulas-retries-2-of-2",
+      "class": "journey",
+      "command": "./scripts/test-integration-shard review-formulas-retries-2-of-2",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_integration_shards"
+      }
+    },
+    {
+      "id": "rc-ubuntu-make-check-docs-check-docs",
+      "class": "medium",
+      "command": "make check-docs",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 35,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_make_check_docs"
+      }
+    },
+    {
+      "id": "rc-ubuntu-tutorial-test-acceptance-tutorial-goldens-matrix-shard-index-6",
+      "class": "provider",
+      "command": "./scripts/test-go-test-shard ./test/acceptance/tutorial_goldens ${{ matrix.shard_index }} 6",
+      "cadences": [
+        "rc"
+      ],
+      "required_on": [
+        "rc"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 110,
+      "paths": [
+        "**"
+      ],
+      "workflow_jobs": {
+        "rc": "ubuntu_tutorial"
+      }
+    },
+    {
+      "id": "release-exact-sha-rc-evidence",
+      "class": "journey",
+      "command": "uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd",
+      "cadences": [
+        "release"
+      ],
+      "required_on": [
+        "release"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        ".github/workflows/rc-gate.yml",
+        ".github/workflows/release.yml"
+      ],
+      "workflow_jobs": {
+        "release": "release"
+      }
+    },
+    {
+      "id": "release-output-ignore",
+      "class": "small",
+      "command": "make check-release-dist-ignore",
+      "cadences": [
+        "release"
+      ],
+      "required_on": [
+        "release"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        ".gitignore",
+        ".goreleaser.yaml",
+        "Makefile"
+      ],
+      "workflow_jobs": {
+        "release": "release"
+      }
+    },
+    {
+      "id": "release-rc-exact-sha-evidence",
+      "class": "journey",
+      "command": "uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd",
+      "cadences": [
+        "release"
+      ],
+      "required_on": [
+        "release"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        ".github/workflows/rc-gate.yml",
+        ".github/workflows/rc-release.yml"
+      ],
+      "workflow_jobs": {
+        "release": "rc-release"
+      }
+    },
+    {
+      "id": "release-stable-version-tag",
+      "class": "small",
+      "command": "make check-version-tag",
+      "cadences": [
+        "release"
+      ],
+      "required_on": [
+        "release"
+      ],
+      "owner": "ga-80po0c.6",
+      "budget_minutes": 10,
+      "paths": [
+        "Makefile"
+      ],
+      "workflow_jobs": {
+        "release": "release"
+      }
+    }
+  ]
+}

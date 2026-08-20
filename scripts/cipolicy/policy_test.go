@@ -155,6 +155,100 @@ func TestExecutionShapeMutationsFailPolicy(t *testing.T) {
 	}
 }
 
+func TestFullSuiteRoutingMutationsFailPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, map[string]any)
+	}{
+		{
+			name: "force input default",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				call := triggerMap(t, workflow)["workflow_call"].(map[string]any)
+				inputs := call["inputs"].(map[string]any)
+				inputs["force_full_suite"].(map[string]any)["default"] = true
+			},
+		},
+		{
+			name: "main push omitted from output union",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				outputs := job(t, workflow, "changes")["outputs"].(map[string]any)
+				outputs["mail"] = "${{ inputs.force_full_suite || steps.filter.outputs.mail == 'true' || steps.filter.outputs.shared == 'true' }}"
+			},
+		},
+		{
+			name: "shared path omitted from openclaw union",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				outputs := job(t, workflow, "changes")["outputs"].(map[string]any)
+				outputs["openclaw_bridge"] = "${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.openclaw_bridge == 'true' }}"
+			},
+		},
+		{
+			name: "force omitted from classifier",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				delete(step(t, job(t, workflow, "changes"), 2)["env"].(map[string]any), "FORCE_FULL_SUITE")
+			},
+		},
+		{
+			name: "full REST opened to ordinary PR",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				job(t, workflow, "integration-rest-full")["if"] = "needs.changes.outputs.integration == 'true'"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			docs := loadPolicyDocuments(t)
+			tt.mutate(t, docs.ci)
+			if err := validateFullSuiteRouting(docs.ci); err == nil {
+				t.Fatal("full-suite routing mutation unexpectedly passed")
+			}
+		})
+	}
+}
+
+func TestNightlyCadenceMutationsFailPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, map[string]any)
+	}{
+		{
+			name: "deterministic union not forced",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				job(t, workflow, "deterministic-full")["with"].(map[string]any)["force_full_suite"] = false
+			},
+		},
+		{
+			name: "race command",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				step(t, job(t, workflow, "race"), 2)["run"] = "go test -race ./..."
+			},
+		},
+		{
+			name: "dolt chaos command",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				step(t, job(t, workflow, "dolt-chaos"), 2)["run"] = "true"
+			},
+		},
+		{
+			name: "formula recovery command",
+			mutate: func(t *testing.T, workflow map[string]any) {
+				step(t, job(t, workflow, "formula-recovery"), 2)["run"] = "true"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			docs := loadPolicyDocuments(t)
+			tt.mutate(t, docs.nightly)
+			if err := validateNightlyCadenceJobs(docs.nightly); err == nil {
+				t.Fatal("nightly cadence mutation unexpectedly passed")
+			}
+		})
+	}
+}
+
 func TestTopologyAndProviderOwnershipMutationsFailPolicy(t *testing.T) {
 	tests := []struct {
 		name   string

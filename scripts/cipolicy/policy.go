@@ -19,10 +19,10 @@ const (
 	// approximating shell semantics: any execution change requires explicit
 	// policy review, while workflow, job, step, and input descriptions remain
 	// free to change. A failure prints the projection and candidate digest.
-	expectedCITriggersHash       = "d1a8bcd089019589658d8f154af9c26a70877285d84a384c2dcea299efc9554a"
-	expectedCIExecutionHash      = "ba5381bced878344c38f6009e9449ec3c864518ebadedfbe2bea9fe530b3ac1c"
+	expectedCITriggersHash       = "baa07c17c0483684d13d3ba7b875e2f0a96679b618400259fa6ef987dbba8633"
+	expectedCIExecutionHash      = "4f164f974bdfaf35b6f971ee840ae7da5e402a04f55db54488f680546d18c2c5"
 	expectedNightlyTriggersHash  = "0a4400a09ac567e90adf8be1232eef1f14e36efd8dba3e143aa6e36f5b7a36f5"
-	expectedNightlyExecutionHash = "80575ca368f28ba9f8b14bf72ce5767a7877ffe4dcadc136854ab4b0b5f1377a"
+	expectedNightlyExecutionHash = "edb317b55dcf950872667fb5529512dbea136fb83b81948590c8ca0f8e258422"
 	expectedSetupActionHash      = "8f2d6b3a57f11d4f33a41211b1d3d5362d1437ba40c7b6db068abb98e731e5ac"
 )
 
@@ -42,7 +42,7 @@ var requiredFilterPaths = map[string][]string{
 	"beads": {
 		"go.mod",
 		"internal/beads/**",
-		"test/acceptance/beads_cli_contract_test.go",
+		"test/acceptance/**",
 		"deps.env",
 		".github/scripts/install-bd-archive.sh",
 		"cmd/gc/init_provider_readiness.go",
@@ -64,8 +64,7 @@ var requiredFilterPaths = map[string][]string{
 		"internal/modelwindow/**",
 		"internal/runtime/**",
 		"internal/config/**",
-		"cmd/gc/template_resolve*.go",
-		"cmd/gc/session_*",
+		"cmd/gc/**",
 		"test/**worker**",
 	},
 	"worker_phase2": {
@@ -110,18 +109,34 @@ var requiredFilterPaths = map[string][]string{
 	},
 	"openclaw_bridge": {"contrib/openclaw-bridge/**", ".github/workflows/**"},
 	"shared": {
-		"go.mod",
-		"go.sum",
-		"Makefile",
-		".github/workflows/**",
-		".github/actions/setup-gascity-ubuntu/**",
-		".github/scripts/install-dolt-archive.sh",
+		".github/actions/**",
 		".github/scripts/install-bd-archive.sh",
 		".github/scripts/install-claude-native.sh",
+		".github/scripts/install-dolt-archive.sh",
+		".github/test-cadence.json",
+		".github/workflows/**",
+		"Makefile",
+		"go.mod",
+		"go.sum",
 		"internal/beads/**",
-		"internal/events/**",
 		"internal/config/**",
+		"internal/events/**",
+		"scripts/test-cadence",
 	},
+}
+
+var pathGatedSuiteFilters = []string{
+	"mail",
+	"docker",
+	"k8s",
+	"beads",
+	"packs",
+	"worker",
+	"worker_phase2",
+	"cmd_gc_process",
+	"credential_provider",
+	"integration",
+	"openclaw_bridge",
 }
 
 var (
@@ -172,6 +187,9 @@ func validate(ci, nightly, action map[string]any) error {
 	if err := validateChangesJob(ci); err != nil {
 		return err
 	}
+	if err := validateFullSuiteRouting(ci); err != nil {
+		return err
+	}
 	if err := validatePolicyWiring(ci); err != nil {
 		return err
 	}
@@ -196,6 +214,9 @@ func validate(ci, nightly, action map[string]any) error {
 		projectTriggers(nightly),
 		expectedNightlyTriggersHash,
 	); err != nil {
+		return err
+	}
+	if err := validateNightlyCadenceJobs(nightly); err != nil {
 		return err
 	}
 	if err := validateNightlyProviderOwnership(nightly); err != nil {
@@ -254,6 +275,122 @@ func validateChangesJob(workflow map[string]any) error {
 		}
 	}
 
+	return nil
+}
+
+func validateFullSuiteRouting(workflow map[string]any) error {
+	triggers, ok := workflow["on"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("CI triggers must be a mapping")
+	}
+	workflowCall, ok := triggers["workflow_call"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("CI workflow_call trigger must be a mapping")
+	}
+	inputs, ok := workflowCall["inputs"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("CI workflow_call inputs must be a mapping")
+	}
+	forceInput, ok := inputs["force_full_suite"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("CI workflow_call must define force_full_suite")
+	}
+	for field, want := range map[string]any{
+		"required": false,
+		"type":     "boolean",
+		"default":  false,
+	} {
+		if got := forceInput[field]; got != want {
+			return fmt.Errorf("CI force_full_suite %s must be %v, got %v", field, want, got)
+		}
+	}
+
+	changeJob, err := workflowJob(workflow, "changes")
+	if err != nil {
+		return err
+	}
+	outputs, ok := changeJob["outputs"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("changes outputs must be a mapping")
+	}
+	for _, filter := range pathGatedSuiteFilters {
+		want := fmt.Sprintf(
+			"${{ github.event_name == 'push' || inputs.force_full_suite || steps.filter.outputs.%s == 'true' || steps.filter.outputs.shared == 'true' }}",
+			filter,
+		)
+		if got := outputs[filter]; got != want {
+			return fmt.Errorf("changes output %q must preserve PR filtering and the push/force/shared full union", filter)
+		}
+	}
+	if got := outputs["suite_mode"]; got != "${{ steps.coverage.outputs.suite_mode }}" {
+		return fmt.Errorf("changes suite_mode output must preserve the full|filtered aggregation token")
+	}
+	if got := outputs["suite_reason"]; got != "${{ steps.coverage.outputs.suite_reason }}" {
+		return fmt.Errorf("changes suite_reason output must expose the classification reason")
+	}
+
+	steps, err := mappingSlice(changeJob["steps"], "changes steps")
+	if err != nil {
+		return err
+	}
+	coverageStep := steps[2]
+	wantEnv := map[string]any{
+		"SHARED_FILTER_RESULT": "${{ steps.filter.outputs.shared }}",
+		"EVENT_NAME":           "${{ github.event_name }}",
+		"FORCE_FULL_SUITE":     "${{ inputs.force_full_suite }}",
+	}
+	if got := coverageStep["env"]; !reflect.DeepEqual(got, wantEnv) {
+		return fmt.Errorf("changes coverage classification must receive shared, event, and force inputs")
+	}
+	const wantRun = `python3 .github/workflows/scripts/ci_suite_coverage.py classify "$SHARED_FILTER_RESULT" "$EVENT_NAME" "$FORCE_FULL_SUITE"`
+	if got := coverageStep["run"]; got != wantRun {
+		return fmt.Errorf("changes coverage classification command must record full-suite reasons")
+	}
+
+	restJob, err := workflowJob(workflow, "integration-rest-full")
+	if err != nil {
+		return err
+	}
+	const wantRESTGate = "(github.event_name == 'push' || inputs.force_full_suite) && needs.changes.outputs.integration == 'true'"
+	if got := restJob["if"]; got != wantRESTGate {
+		return fmt.Errorf("integration-rest-full must run only for push or forced full-suite invocations")
+	}
+	return nil
+}
+
+func validateNightlyCadenceJobs(workflow map[string]any) error {
+	deterministic, err := workflowJob(workflow, "deterministic-full")
+	if err != nil {
+		return err
+	}
+	if got := deterministic["uses"]; got != "./.github/workflows/ci.yml" {
+		return fmt.Errorf("nightly deterministic-full must call the local CI workflow")
+	}
+	wantWith := map[string]any{"force_full_suite": true}
+	if got := deterministic["with"]; !reflect.DeepEqual(got, wantWith) {
+		return fmt.Errorf("nightly deterministic-full must force the complete CI union")
+	}
+	if got := deterministic["secrets"]; got != "inherit" {
+		return fmt.Errorf("nightly deterministic-full must inherit reusable-workflow secrets")
+	}
+
+	for jobName, command := range map[string]string{
+		"race":             "make test-race",
+		"dolt-chaos":       "make test-chaos-dolt",
+		"formula-recovery": "make test-integration-review-formulas-recovery",
+	} {
+		job, err := workflowJob(workflow, jobName)
+		if err != nil {
+			return err
+		}
+		steps, err := mappingSlice(job["steps"], jobName+" steps")
+		if err != nil {
+			return err
+		}
+		if findStep(steps, "run", command) < 0 {
+			return fmt.Errorf("nightly %s must run %q exactly once", jobName, command)
+		}
+	}
 	return nil
 }
 

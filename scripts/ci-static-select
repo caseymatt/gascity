@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select changed Go surfaces for formatting, static analysis, or focused tests."""
+"""Select changed Go surfaces for generation, formatting, static analysis, or focused tests."""
 
 from __future__ import annotations
 
@@ -53,6 +53,32 @@ NATIVE_SOURCE_FIELDS = (
     "SwigCXXFiles",
     "SysoFiles",
 )
+
+GENERATOR_RUNTIME_DIRS = {
+    "./cmd/genschema": frozenset({"cmd/gc"}),
+}
+
+GENERATOR_OWNED_OUTPUTS = {
+    "./cmd/genspec": frozenset(
+        {
+            "internal/api/openapi.json",
+            "docs/reference/schema/openapi.json",
+            "docs/reference/schema/openapi.txt",
+            "docs/reference/schema/events.json",
+            "docs/reference/schema/events.txt",
+        }
+    ),
+    "./cmd/genschema": frozenset(
+        {
+            "docs/reference/schema/city-schema.json",
+            "docs/reference/schema/city-schema.txt",
+            "docs/reference/schema/pack-schema.json",
+            "docs/reference/schema/pack-schema.txt",
+            "docs/reference/config.md",
+            "docs/reference/cli.md",
+        }
+    ),
+}
 
 
 class SelectionError(Exception):
@@ -411,6 +437,30 @@ def lint_affected(
     return run_static_checks(lint_tool, go_tool, lint_flags, packages)
 
 
+def full_vet(go_tool: str, reason: Exception) -> int:
+    print(f"vet-affected: selecting full repository: {reason}", file=sys.stderr)
+    return run_tool([go_tool, "vet", "./..."])
+
+
+def vet_affected(go_tool: str) -> int:
+    try:
+        records = diff_records()
+    except SelectionError as error:
+        return full_vet(go_tool, error)
+    if not records:
+        print("vet-affected: no changed paths")
+        return 0
+    try:
+        packages = affected_package_args(records, go_tool)
+    except SelectionError as error:
+        return full_vet(go_tool, error)
+    if not packages:
+        print("vet-affected: no changed Go build inputs, embedded files, or native consumers")
+        return 0
+    print(f"vet-affected: {' '.join(packages)}")
+    return run_tool([go_tool, "vet", *packages])
+
+
 def test_affected(go_tool: str) -> int:
     try:
         records = diff_records()
@@ -464,18 +514,169 @@ def is_regular_file(path: str) -> bool:
     return stat.S_ISREG(mode)
 
 
+def generator_dependency_dirs(
+    go_tool: str, target: str, repo_root: str
+) -> set[str]:
+    if (
+        not target.startswith("./")
+        or target == "./"
+        or ".." in target.removeprefix("./").split("/")
+    ):
+        raise SelectionError(f"unsafe generator package target {target!r}")
+
+    packages = decode_json_stream(
+        command_output(
+            [go_tool, "list", "-mod=readonly", "-deps", "-json", target]
+        )
+    )
+    if not packages:
+        raise SelectionError(f"go list returned no dependencies for {target}")
+
+    matched_target = False
+    directories: set[str] = set()
+    for package in packages:
+        if package.get("Error") or package.get("DepsErrors") or package.get("Incomplete"):
+            import_path = package.get("ImportPath", target)
+            raise SelectionError(
+                f"go list reported an incomplete generator graph at {import_path}"
+            )
+        if target in string_list(package, "Match"):
+            matched_target = True
+        directory = package.get("Dir")
+        if not isinstance(directory, str) or not directory:
+            raise SelectionError(
+                f"go list dependency for {target} is missing its directory"
+            )
+        absolute_dir = os.path.abspath(directory)
+        try:
+            if os.path.commonpath([repo_root, absolute_dir]) != repo_root:
+                continue
+        except ValueError:
+            continue
+        directories.add(os.path.relpath(absolute_dir, repo_root).replace(os.sep, "/"))
+    directories.update(GENERATOR_RUNTIME_DIRS.get(target, ()))
+
+    if not matched_target:
+        raise SelectionError(f"go list did not identify generator package {target}")
+    return directories
+
+
+def validate_changed_package_dir(
+    go_tool: str, relative_dir: str, repo_root: str
+) -> None:
+    package_arg = "." if relative_dir == "." else f"./{relative_dir}"
+    packages = decode_json_stream(
+        command_output([go_tool, "list", "-mod=readonly", "-json", package_arg])
+    )
+    if len(packages) != 1:
+        raise SelectionError(
+            f"changed build-input directory {relative_dir!r} has no unique package"
+        )
+    package = packages[0]
+    if package.get("Error") or package.get("DepsErrors") or package.get("Incomplete"):
+        raise SelectionError(
+            f"go list reported an incomplete package at {relative_dir!r}"
+        )
+    directory = package.get("Dir")
+    if not isinstance(directory, str) or not directory:
+        raise SelectionError(
+            f"go list package at {relative_dir!r} is missing its directory"
+        )
+    expected_dir = os.path.abspath(
+        repo_root if relative_dir == "." else os.path.join(repo_root, relative_dir)
+    )
+    if os.path.abspath(directory) != expected_dir:
+        raise SelectionError(
+            f"changed build-input directory {relative_dir!r} mapped to {directory!r}"
+        )
+
+
+def generator_affected(go_tool: str, targets: list[str]) -> int:
+    try:
+        records = diff_records()
+        direct_selected = {
+            target
+            for _, path in records
+            for target in targets
+            if path == target.removeprefix("./")
+            or path.startswith(target.removeprefix("./") + "/")
+            or path in GENERATOR_OWNED_OUTPUTS.get(target, ())
+        }
+        build_records = [
+            (status, path)
+            for status, path in records
+            if path in {"go.mod", "go.sum"} or is_go_build_input(path)
+        ]
+        if not direct_selected and not build_records:
+            return 0
+        if any(path in {"go.mod", "go.sum"} for _, path in build_records):
+            selected = targets
+        elif not build_records:
+            selected = [target for target in targets if target in direct_selected]
+        else:
+            repo_root = os.path.abspath(
+                os.fsdecode(
+                    command_output(["git", "rev-parse", "--show-toplevel"])
+                ).strip()
+            )
+            dependencies = {
+                target: generator_dependency_dirs(go_tool, target, repo_root)
+                for target in targets
+            }
+            selected_set: set[str] = set(direct_selected)
+            validated_unowned_dirs: set[str] = set()
+            for _, path in build_records:
+                relative_dir = posixpath.dirname(path) or "."
+                owners = [
+                    target
+                    for target, directories in dependencies.items()
+                    if relative_dir in directories
+                ]
+                if owners:
+                    selected_set.update(owners)
+                    continue
+                if relative_dir not in validated_unowned_dirs:
+                    validate_changed_package_dir(go_tool, relative_dir, repo_root)
+                    validated_unowned_dirs.add(relative_dir)
+            selected = [target for target in targets if target in selected_set]
+    except SelectionError as error:
+        print(
+            f"generator-affected: selecting all generators: {error}",
+            file=sys.stderr,
+        )
+        selected = targets
+
+    for target in selected:
+        print(target)
+    return 0
+
+
 def main(argv: list[str]) -> int:
-    modes = {"lint-affected", "fmt-check-changed", "test-affected"}
+    modes = {
+        "lint-affected",
+        "vet-affected",
+        "generator-affected",
+        "fmt-check-changed",
+        "test-affected",
+    }
     if len(argv) < 3 or argv[1] not in modes:
         print(
             "usage: ci-static-select "
-            "{lint-affected|fmt-check-changed|test-affected} "
-            "TOOL [GO [LINT_FLAG ...]]",
+            "{lint-affected|vet-affected|generator-affected|fmt-check-changed|test-affected} "
+            "TOOL [TARGET_OR_GO [LINT_FLAG ...]]",
             file=sys.stderr,
         )
         return 2
     mode = argv[1]
     tool = argv[2]
+    if mode == "generator-affected":
+        if len(argv) < 4:
+            print(
+                "generator-affected requires GO and at least one generator package",
+                file=sys.stderr,
+            )
+            return 2
+        return generator_affected(tool, argv[3:])
     if mode == "fmt-check-changed":
         if len(argv) != 3:
             print("fmt-check-changed only accepts GOLANGCI_LINT", file=sys.stderr)
@@ -486,6 +687,11 @@ def main(argv: list[str]) -> int:
             print("test-affected only accepts GO", file=sys.stderr)
             return 2
         return test_affected(tool)
+    if mode == "vet-affected":
+        if len(argv) != 3:
+            print("vet-affected only accepts GO", file=sys.stderr)
+            return 2
+        return vet_affected(tool)
     if len(argv) < 4:
         print("lint-affected requires GOLANGCI_LINT and GO", file=sys.stderr)
         return 2
