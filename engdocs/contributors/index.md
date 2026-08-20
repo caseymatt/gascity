@@ -36,6 +36,11 @@ description: The shortest path for new contributors to get productive in Gas Cit
 - Run `make check-docs` when changing navigation, cross-links, or docs
   structure.
 
+## Operational Handoffs
+
+- [Dogfood Latency Hardening](dogfood-latency-hardening-handoff.md) records the
+  controller, trace, Dolt recovery, graph-root claim, and Sprocket proof state.
+
 ## Active Proposals
 
 - [Testing Pyramid Audit and Hardening Plan](testing-pyramid-hardening-plan.md)
