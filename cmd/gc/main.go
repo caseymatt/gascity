@@ -335,6 +335,7 @@ func newRootCmdWithOptions(stdout, stderr io.Writer, options rootCommandOptions)
 		newSuspendCmd(stdout, stderr),
 		newResumeCmd(stdout, stderr),
 		newRigCmd(stdout, stderr),
+		newWorktreeCmd(stdout, stderr),
 		newMailCmd(stdout, stderr),
 		newMaintenanceCmd(stdout, stderr),
 		newNudgeCmd(stdout, stderr),

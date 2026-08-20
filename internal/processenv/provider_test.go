@@ -110,11 +110,9 @@ func TestProviderProcessPassthroughEnvKeepsExplicitLocaleAndXDG(t *testing.T) {
 	}
 }
 
-// The controller token is controller scope. Every session-env builder starts
-// from this map, and the map is an OVERLAY on an environment the child already
-// inherits — the tmux server's global env, or os.Environ() on the
-// subprocess/ACP paths — so an omitted key is an inherited key.
-// Present-and-empty is the only value that withholds it.
+// Controller-only values are inherited directly by tmux, subprocess, and ACP
+// agent runtimes unless the session overlay contains the exact key with an empty
+// value. Omitting a key is not sufficient.
 func TestProviderProcessPassthroughEnvPinsControllerOnlyKeysEmpty(t *testing.T) {
 	for _, key := range ControllerOnlyEnvKeys {
 		t.Setenv(key, "controller-scope-value")
@@ -134,17 +132,37 @@ func TestProviderProcessPassthroughEnvPinsControllerOnlyKeysEmpty(t *testing.T) 
 	}
 }
 
-// Pinning the keys is not enough on its own: config-authored values are expanded
-// against the controller process, so "$GC_CONTROLLER_TOKEN" would copy the token
-// into a session variable no key-level guard is watching.
+func TestControllerOnlyEnvKeysAreExact(t *testing.T) {
+	want := map[string]bool{
+		"GC_CONTROLLER_TOKEN": true,
+		"PIERRE_PRIVATE_KEY":  true,
+	}
+	for _, key := range ControllerOnlyEnvKeys {
+		if !want[key] {
+			t.Errorf("ControllerOnlyEnvKeys contains unexpected key %q", key)
+		}
+		delete(want, key)
+	}
+	for key := range want {
+		t.Errorf("ControllerOnlyEnvKeys is missing %q", key)
+	}
+}
+
+// Pinning the exact keys is not enough on its own: config-authored values are
+// expanded against the controller process, so a reference could copy a
+// controller-only value into a session variable no key-level guard watches.
 func TestExpandSessionEnvValueMasksControllerOnlyKeys(t *testing.T) {
 	t.Setenv("GC_CONTROLLER_TOKEN", "super-secret-controller-token")
+	t.Setenv("PIERRE_PRIVATE_KEY", "super-secret-pierre-key")
 	t.Setenv("GC_CONTROLLER_TRACE", "on")
 
 	for _, tc := range []struct{ in, want string }{
 		{"$GC_CONTROLLER_TOKEN", ""},
 		{"${GC_CONTROLLER_TOKEN}", ""},
 		{"Bearer $GC_CONTROLLER_TOKEN", "Bearer "},
+		{"$PIERRE_PRIVATE_KEY", ""},
+		{"${PIERRE_PRIVATE_KEY}", ""},
+		{"Key $PIERRE_PRIVATE_KEY", "Key "},
 		{"$GC_CONTROLLER_TRACE", "on"},
 		{"trace=${GC_CONTROLLER_TRACE}", "trace=on"},
 	} {

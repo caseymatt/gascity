@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gc worktree list result",
+  "description": "The bare array of managed worktree records emitted by gc worktree list --json.",
+  "x-gc-raw-json": true,
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "owner",
+      "rig",
+      "rig_root",
+      "path",
+      "attempt",
+      "base",
+      "branch",
+      "head_sha",
+      "created_at",
+      "cargo_target_dir",
+      "cargo_home",
+      "published",
+      "published_ref",
+      "published_sha",
+      "published_at",
+      "size_bytes",
+      "reclaimable",
+      "reason"
+    ],
+    "properties": {
+      "id": { "type": "string" },
+      "owner": { "type": "string" },
+      "rig": { "type": "string" },
+      "rig_root": { "type": "string" },
+      "path": { "type": "string" },
+      "attempt": { "type": "integer", "minimum": 1 },
+      "base": { "type": "string" },
+      "branch": { "type": "string" },
+      "head_sha": { "type": "string" },
+      "created_at": { "type": "string" },
+      "cargo_target_dir": { "type": "string" },
+      "cargo_home": { "type": "string" },
+      "published": { "type": "boolean" },
+      "published_ref": { "type": "string" },
+      "published_sha": { "type": "string" },
+      "published_at": { "type": "string" },
+      "size_bytes": { "type": "integer", "minimum": 0 },
+      "reclaimable": { "type": "boolean" },
+      "reason": { "type": "string" }
+    },
+    "additionalProperties": false
+  }
+}

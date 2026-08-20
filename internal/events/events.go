@@ -26,6 +26,10 @@ const (
 	BeadUpdated             = "bead.updated"
 	BeadWorktreeReaped      = "bead.worktree.reaped"
 	BeadWorktreeReapSkipped = "bead.worktree.reap_skipped"
+	WorktreeCreated         = "worktree.created"
+	WorktreePublished       = "worktree.published"
+	WorktreeReclaimSkipped  = "worktree.reclaim_skipped"
+	WorktreeReclaimed       = "worktree.reclaimed"
 	// BeadClaimRejected fires when a worker attempts to claim a work bead that
 	// is already live-claimed by a different worker — the claim is rejected as
 	// an idempotent no-op rather than fanning out a second concurrent claim.
@@ -352,6 +356,7 @@ var KnownEventTypes = []string{
 	SessionColdStartTimeout,
 	BeadCreated, BeadClosed, BeadDeleted, BeadUpdated,
 	BeadWorktreeReaped, BeadWorktreeReapSkipped,
+	WorktreeCreated, WorktreePublished, WorktreeReclaimSkipped, WorktreeReclaimed,
 	BeadClaimRejected, BeadClaimReleased,
 	BeadDeadAssigneeReopened,
 	ExecutionWorkAssociated, ExecutionRunAnchored, ExecutionStepDefined, ExecutionStepStarted, ExecutionStepCompleted,

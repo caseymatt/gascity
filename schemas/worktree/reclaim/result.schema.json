@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gc worktree reclaim result",
+  "description": "The flat reclaim decision emitted by gc worktree reclaim --json.",
+  "x-gc-raw-json": true,
+  "type": "object",
+  "required": [
+    "id",
+    "owner",
+    "rig",
+    "path",
+    "reclaimed",
+    "dry_run",
+    "reclaimable",
+    "reason",
+    "head_sha",
+    "published_ref",
+    "published_sha"
+  ],
+  "properties": {
+    "id": { "type": "string" },
+    "owner": { "type": "string" },
+    "rig": { "type": "string" },
+    "path": { "type": "string" },
+    "reclaimed": { "type": "boolean" },
+    "dry_run": { "type": "boolean" },
+    "reclaimable": { "type": "boolean" },
+    "reason": { "type": "string" },
+    "head_sha": { "type": "string" },
+    "published_ref": { "type": "string" },
+    "published_sha": { "type": "string" }
+  },
+  "additionalProperties": false
+}
