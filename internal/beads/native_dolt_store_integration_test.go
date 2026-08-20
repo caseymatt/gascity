@@ -128,7 +128,55 @@ type testRawDBGetter interface {
 	DB() *sql.DB
 }
 
-// TestNativeDoltStoreOpenPreservesMissingIDDefaults verifies the v59 contract:
+// TestNativeDoltStoreOpensV65WithoutSchemaSkewOverride creates a disposable
+// v65 store through the embedded dependency, closes it, then proves the native
+// adapter can reopen it without the forward-schema escape hatch.
+func TestNativeDoltStoreOpensV65WithoutSchemaSkewOverride(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("BD_IGNORE_SCHEMA_SKEW", "")
+
+	scopeRoot := t.TempDir()
+	port := startTestDoltServer(t)
+	beadsDir := filepath.Join(scopeRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("create .beads directory: %v", err)
+	}
+	metadata := fmt.Sprintf(`{"backend":"dolt","database":"beads","dolt_mode":"server","dolt_server_host":"127.0.0.1","dolt_server_port":%d}`, port)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(metadata), 0o644); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+
+	storage, err := beadslib.OpenBestAvailable(ctx, beadsDir)
+	if err != nil {
+		t.Fatalf("initialize disposable v65 store: %v", err)
+	}
+	accessor, ok := storage.(testRawDBGetter)
+	if !ok {
+		_ = storage.Close()
+		t.Fatal("server-mode storage does not expose a raw DB")
+	}
+	var schemaVersion int
+	if err := accessor.DB().QueryRowContext(
+		ctx,
+		"SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+	).Scan(&schemaVersion); err != nil {
+		_ = storage.Close()
+		t.Fatalf("read disposable store schema version: %v", err)
+	}
+	if schemaVersion != 65 {
+		_ = storage.Close()
+		t.Fatalf("disposable store schema version = %d, want 65", schemaVersion)
+	}
+	if err := storage.Close(); err != nil {
+		t.Fatalf("close disposable v65 store: %v", err)
+	}
+
+	if _, err := newNativeDoltStoreAt(ctx, scopeRoot, nil); err != nil {
+		t.Fatalf("reopen v65 store without BD_IGNORE_SCHEMA_SKEW: %v", err)
+	}
+}
+
+// TestNativeDoltStoreOpenPreservesMissingIDDefaults verifies the v65 contract:
 // dependencies.id, events.id, and wisp_events.id intentionally have no server
 // default. Opening a native store must not mutate that schema, and normal
 // writes must provide their IDs explicitly.
