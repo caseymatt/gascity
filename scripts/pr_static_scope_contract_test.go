@@ -68,11 +68,54 @@ func Value() int { return alpha.Value() }
 		fixture.requireGoCalls(t, []string{"vet", "./alpha", "./consumer"})
 
 		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTarget("test-affected"); err != nil {
+			t.Errorf("test-affected failed for one changed Go file: %v\n%s", err, output)
+		}
+		fixture.requireCalls(t)
+		fixture.requireGoCalls(t, []string{
+			"test", "-p=4", "-count=1", "-timeout", "5m", "./alpha",
+		})
+
+		fixture.resetCalls(t)
 		if output, err := fixture.runMakeTarget("fmt-check-changed"); err != nil {
 			t.Errorf("fmt-check-changed failed for one changed Go file: %v\n%s", err, output)
 		}
 		fixture.requireCalls(t, []string{"fmt", "--diff", "--", "alpha/alpha.go"})
 		fixture.requireGoCalls(t)
+	})
+
+	t.Run("non-Go change has no package test owner", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"alpha/alpha.go": "package alpha\n\nfunc Value() int { return 1 }\n",
+			"README.md":      "baseline\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "README.md"), "changed\n")
+
+		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTarget("test-affected"); err != nil {
+			t.Errorf("test-affected failed for a non-Go change: %v\n%s", err, output)
+		}
+		fixture.requireNoCalls(t)
+	})
+
+	t.Run("tracked scope stops at the pushed head", func(t *testing.T) {
+		fixture := newPRStaticScopeFixture(t, map[string]string{
+			"alpha/alpha.go": "package alpha\n\nfunc Value() int { return 1 }\n",
+			"beta/beta.go":   "package beta\n\nfunc Value() int { return 1 }\n",
+		})
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "alpha", "alpha.go"), "package alpha\n\nfunc Value() int { return 2 }\n")
+		runGitFixtureCommands(t, fixture.repoRoot, fixture.commandEnv(), "git add alpha/alpha.go", "git commit -qm alpha")
+		pushedHead := strings.TrimSpace(runGitFixtureCommands(t, fixture.repoRoot, fixture.commandEnv(), "git rev-parse HEAD"))
+		writeTestFile(t, filepath.Join(fixture.repoRoot, "beta", "beta.go"), "package beta\n\nfunc Value() int { return 2 }\n")
+		runGitFixtureCommands(t, fixture.repoRoot, fixture.commandEnv(), "git add beta/beta.go", "git commit -qm beta")
+
+		fixture.resetCalls(t)
+		if output, err := fixture.runMakeTargetWithRange("test-affected", "HEAD~2", pushedHead); err != nil {
+			t.Errorf("test-affected failed for an explicit pushed head: %v\n%s", err, output)
+		}
+		fixture.requireGoCalls(t, []string{
+			"test", "-p=4", "-count=1", "-timeout", "5m", "./alpha",
+		})
 	})
 
 	t.Run("transitive and test-only reverse dependents", func(t *testing.T) {
@@ -279,6 +322,15 @@ func Moved() int {
 		}
 		fixture.requireCalls(t, []string{"fmt", "--diff", "./..."})
 		fixture.requireGoCalls(t)
+		fixture.resetCalls(t)
+		output, err := fixture.runMakeTargetWithRef("test-affected", "refs/heads/missing-static-base")
+		if err == nil {
+			t.Fatalf("test-affected did not fail closed for an invalid ref:\n%s", output)
+		}
+		if !strings.Contains(output, "cannot select a bounded changed surface") {
+			t.Errorf("test-affected failure did not explain the bounded selector:\n%s", output)
+		}
+		fixture.requireNoCalls(t)
 	})
 
 	t.Run("affected vet checks unchanged generated reverse dependent", func(t *testing.T) {
@@ -883,7 +935,7 @@ printf 'END\000' >> "$STATIC_SCOPE_LINT_LOG"
 set -eu
 : "${STATIC_SCOPE_GO_LOG:?}"
 : "${STATIC_SCOPE_REAL_GO:?}"
-if [ "${1-}" = "vet" ]; then
+if [ "${1-}" = "vet" ] || [ "${1-}" = "test" ]; then
   printf 'CALL\000' >> "$STATIC_SCOPE_GO_LOG"
   for arg in "$@"; do
     printf 'ARG\000%s\000' "$arg" >> "$STATIC_SCOPE_GO_LOG"
@@ -922,18 +974,22 @@ init:
 }
 
 func (f prStaticScopeFixture) runMakeTarget(target string) (string, error) {
-	return f.runMakeTargetWithOptions(target, "HEAD", f.fakeGo)
+	return f.runMakeTargetWithOptions(target, "HEAD", "", f.fakeGo)
 }
 
 func (f prStaticScopeFixture) runMakeTargetWithRef(target, ref string) (string, error) {
-	return f.runMakeTargetWithOptions(target, ref, f.fakeGo)
+	return f.runMakeTargetWithOptions(target, ref, "", f.fakeGo)
+}
+
+func (f prStaticScopeFixture) runMakeTargetWithRange(target, ref, head string) (string, error) {
+	return f.runMakeTargetWithOptions(target, ref, head, f.fakeGo)
 }
 
 func (f prStaticScopeFixture) runMakeTargetWithGo(target, goTool string) (string, error) {
-	return f.runMakeTargetWithOptions(target, "HEAD", goTool)
+	return f.runMakeTargetWithOptions(target, "HEAD", "", goTool)
 }
 
-func (f prStaticScopeFixture) runMakeTargetWithOptions(target, ref, goTool string) (string, error) {
+func (f prStaticScopeFixture) runMakeTargetWithOptions(target, ref, head, goTool string) (string, error) {
 	cmd := makeCommand(
 		"--no-print-directory",
 		"-f", f.productionMakefile,
@@ -941,8 +997,10 @@ func (f prStaticScopeFixture) runMakeTargetWithOptions(target, ref, goTool strin
 		"CI_STATIC_GO="+goTool,
 		"LINT_CHANGED_SCOPE=tracked",
 		"LINT_CHANGED_REF="+ref,
+		"LINT_CHANGED_HEAD="+head,
 		"LINT_FLAGS=",
 		"SYS_USR_CGO_FALLBACK=0",
+		"EXTRA_TEST_ENV=STATIC_SCOPE_GO_LOG="+f.goLog+" STATIC_SCOPE_REAL_GO="+f.realGo,
 		target,
 	)
 	cmd.Dir = f.repoRoot

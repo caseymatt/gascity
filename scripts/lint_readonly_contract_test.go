@@ -74,6 +74,7 @@ func TestQualityGateTargetsUseReadonlyModuleDownloads(t *testing.T) {
 		"fmt-check-changed":        `GOFLAGS="$(QUALITY_GATE_GOFLAGS)"`,
 		"vet":                      `GOFLAGS="$(QUALITY_GATE_GOFLAGS)"`,
 		"test":                     `$(TEST_ENV) GOFLAGS="$(QUALITY_GATE_GOFLAGS)"`,
+		"test-affected":            `$(TEST_ENV) GOFLAGS="$(QUALITY_GATE_GOFLAGS)"`,
 		"test-fsys-darwin-compile": `$(TEST_ENV) GOFLAGS="$(QUALITY_GATE_GOFLAGS)"`,
 	} {
 		t.Run(target, func(t *testing.T) {

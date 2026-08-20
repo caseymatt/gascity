@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run changed-Go formatting or affected-package static checks without lossy paths."""
+"""Select changed Go surfaces for formatting, static analysis, or focused tests."""
 
 from __future__ import annotations
 
@@ -70,6 +70,20 @@ def command_output(args: list[str]) -> bytes:
     return completed.stdout
 
 
+def resolve_diff_endpoint(ref: str) -> str:
+    errors: list[SelectionError] = []
+    for suffix in ("^{commit}", "^{tree}"):
+        try:
+            return os.fsdecode(
+                command_output(
+                    ["git", "rev-parse", "--verify", "--end-of-options", ref + suffix]
+                )
+            ).strip()
+        except SelectionError as error:
+            errors.append(error)
+    raise errors[-1]
+
+
 def parse_name_status(output: bytes) -> list[tuple[str, str]]:
     fields = output.split(b"\0")
     if fields and fields[-1] == b"":
@@ -92,6 +106,7 @@ def parse_name_status(output: bytes) -> list[tuple[str, str]]:
 def diff_records() -> list[tuple[str, str]]:
     scope = os.environ.get("LINT_CHANGED_SCOPE", "worktree")
     ref = os.environ.get("LINT_CHANGED_REF", "HEAD")
+    head = os.environ.get("LINT_CHANGED_HEAD")
     common = [
         "git",
         "diff",
@@ -108,19 +123,27 @@ def diff_records() -> list[tuple[str, str]]:
             f"unknown LINT_CHANGED_SCOPE={scope}; expected staged, tracked, or worktree"
         )
 
-    resolved_ref = os.fsdecode(
-        command_output(
-            ["git", "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}"]
-        )
-    ).strip()
-    records = parse_name_status(command_output([*common, resolved_ref, "--"]))
+    resolved_ref = resolve_diff_endpoint(ref)
+    diff_args = [*common, resolved_ref]
+    if scope == "tracked" and head:
+        resolved_head = os.fsdecode(
+            command_output(
+                [
+                    "git",
+                    "rev-parse",
+                    "--verify",
+                    "--end-of-options",
+                    f"{head}^{{commit}}",
+                ]
+            )
+        ).strip()
+        diff_args.append(resolved_head)
+    records = parse_name_status(command_output([*diff_args, "--"]))
     if scope == "worktree":
         untracked = command_output(
             ["git", "ls-files", "--others", "--exclude-standard", "-z", "--"]
         ).split(b"\0")
-        records.extend(
-            ("A", os.fsdecode(path)) for path in untracked if path
-        )
+        records.extend(("A", os.fsdecode(path)) for path in untracked if path)
     return sorted(set(records), key=lambda record: (record[1], record[0]))
 
 
@@ -191,7 +214,10 @@ def path_is_beneath_package(path: str, package_dir: str) -> bool:
 
 
 def affected_package_args(
-    records: Iterable[tuple[str, str]], go_tool: str
+    records: Iterable[tuple[str, str]],
+    go_tool: str,
+    *,
+    include_reverse_dependents: bool = True,
 ) -> list[str]:
     changed = list(records)
     if not changed:
@@ -312,6 +338,9 @@ def affected_package_args(
     if not seeds:
         return []
 
+    if not include_reverse_dependents:
+        return sorted(arg_by_import[import_path] for import_path in seeds)
+
     reverse: dict[str, set[str]] = defaultdict(set)
     for importer, package in by_import.items():
         imports = set(
@@ -382,6 +411,32 @@ def lint_affected(
     return run_static_checks(lint_tool, go_tool, lint_flags, packages)
 
 
+def test_affected(go_tool: str) -> int:
+    try:
+        records = diff_records()
+        packages = affected_package_args(
+            records, go_tool, include_reverse_dependents=False
+        )
+    except SelectionError as error:
+        print(
+            f"test-affected: cannot select a bounded changed surface: {error}",
+            file=sys.stderr,
+        )
+        return 2
+    if not records:
+        print("test-affected: no changed paths")
+        return 0
+    if not packages:
+        print(
+            "test-affected: no changed Go build inputs, embedded files, or native consumers"
+        )
+        return 0
+    print(f"test-affected: {' '.join(packages)}")
+    return run_tool(
+        [go_tool, "test", "-p=4", "-count=1", "-timeout", "5m", *packages]
+    )
+
+
 def fmt_check_changed(tool: str) -> int:
     try:
         records = diff_records()
@@ -410,24 +465,31 @@ def is_regular_file(path: str) -> bool:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 3 or argv[1] not in {"lint-affected", "fmt-check-changed"}:
+    modes = {"lint-affected", "fmt-check-changed", "test-affected"}
+    if len(argv) < 3 or argv[1] not in modes:
         print(
-            "usage: ci-static-select {lint-affected|fmt-check-changed} "
-            "GOLANGCI_LINT [GO [LINT_FLAG ...]]",
+            "usage: ci-static-select "
+            "{lint-affected|fmt-check-changed|test-affected} "
+            "TOOL [GO [LINT_FLAG ...]]",
             file=sys.stderr,
         )
         return 2
     mode = argv[1]
-    lint_tool = argv[2]
+    tool = argv[2]
     if mode == "fmt-check-changed":
         if len(argv) != 3:
             print("fmt-check-changed only accepts GOLANGCI_LINT", file=sys.stderr)
             return 2
-        return fmt_check_changed(lint_tool)
+        return fmt_check_changed(tool)
+    if mode == "test-affected":
+        if len(argv) != 3:
+            print("test-affected only accepts GO", file=sys.stderr)
+            return 2
+        return test_affected(tool)
     if len(argv) < 4:
         print("lint-affected requires GOLANGCI_LINT and GO", file=sys.stderr)
         return 2
-    return lint_affected(lint_tool, argv[3], argv[4:])
+    return lint_affected(tool, argv[3], argv[4:])
 
 
 if __name__ == "__main__":

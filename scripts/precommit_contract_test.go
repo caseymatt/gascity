@@ -198,27 +198,107 @@ func localTestCgroupEnv(t *testing.T, version, limit, current string) []string {
 	}
 }
 
-func TestPrePushUsesCanonicalMachineAwareConcurrency(t *testing.T) {
+func TestPrePushUsesStableChangedSurfaceSelection(t *testing.T) {
 	repoRoot := repoRoot(t)
 	script, err := os.ReadFile(filepath.Join(repoRoot, ".githooks", "pre-push"))
 	if err != nil {
 		t.Fatalf("read pre-push hook: %v", err)
 	}
 	content := string(script)
-	if strings.Contains(content, `LOCAL_TEST_JOBS="${LOCAL_TEST_JOBS:-3}"`) {
-		t.Fatal("pre-push hook must not replace the canonical machine-aware default with a fixed three-job cap")
+	if strings.Contains(content, "test-fast-parallel") {
+		t.Fatal("pre-push hook must not run the full untagged repository sweep")
 	}
-	if !strings.Contains(content, "exec make test-fast-parallel") {
-		t.Fatal("pre-push hook must continue delegating the unchanged fast-suite inventory to make test-fast-parallel")
+	for _, required := range []string{
+		"make test-affected",
+		"LINT_CHANGED_SCOPE=tracked",
+		`LINT_CHANGED_REF="$base_sha"`,
+		`LINT_CHANGED_HEAD="$head_sha"`,
+		`base_sha="$remote_sha"`,
+		"git merge-base",
+		"assert_bead_still_claimed",
+	} {
+		if !strings.Contains(content, required) {
+			t.Errorf("pre-push hook is missing changed-surface contract %q", required)
+		}
 	}
-	for _, path := range []string{"Makefile", filepath.Join("scripts", "test-local-parallel")} {
-		content, err := os.ReadFile(filepath.Join(repoRoot, path))
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
+}
+
+func TestPrePushPassesExactStableRangeToFocusedTests(t *testing.T) {
+	productionRoot := repoRoot(t)
+	repo := t.TempDir()
+	writeTestFile(t, filepath.Join(repo, "main.go"), "package main\n")
+	runGitFixtureCommands(t, repo, os.Environ(),
+		"git init -q -b main",
+		"git config user.email pre-push@example.invalid",
+		"git config user.name pre-push-test",
+		"git add main.go",
+		"git commit -qm baseline",
+	)
+	base := strings.TrimSpace(runGitFixtureCommands(t, repo, os.Environ(), "git rev-parse HEAD"))
+	writeTestFile(t, filepath.Join(repo, "main.go"), "package main\n\nfunc changed() {}\n")
+	runGitFixtureCommands(t, repo, os.Environ(),
+		"git add main.go",
+		"git commit -qm changed",
+	)
+	head := strings.TrimSpace(runGitFixtureCommands(t, repo, os.Environ(), "git rev-parse HEAD"))
+	runGitFixtureCommands(t, repo, os.Environ(),
+		"git update-ref refs/remotes/origin/main "+base,
+		"git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",
+	)
+
+	hookBody, err := os.ReadFile(filepath.Join(productionRoot, ".githooks", "pre-push"))
+	if err != nil {
+		t.Fatalf("read production pre-push hook: %v", err)
+	}
+	for _, directory := range []string{".githooks", "scripts"} {
+		if err := os.MkdirAll(filepath.Join(repo, directory), 0o755); err != nil {
+			t.Fatalf("create %s: %v", directory, err)
 		}
-		if !strings.Contains(string(content), "scripts/test-local-job-count") {
-			t.Fatalf("%s must use the canonical machine-aware job detector", path)
-		}
+	}
+	hook := filepath.Join(repo, ".githooks", "pre-push")
+	writeExecutable(t, hook, string(hookBody))
+	writeExecutable(t, filepath.Join(repo, "scripts", "push-ownership-guard.sh"), `#!/usr/bin/env bash
+assert_bead_still_claimed() { return 0; }
+`)
+	binDir := t.TempDir()
+	makeLog := filepath.Join(binDir, "make.log")
+	writeExecutable(t, filepath.Join(binDir, "make"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s|%s|%s|%s\n' "$LINT_CHANGED_SCOPE" "$LINT_CHANGED_REF" "$LINT_CHANGED_HEAD" "$*" >> "$PRE_PUSH_MAKE_LOG"
+`)
+	env := append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PRE_PUSH_MAKE_LOG="+makeLog,
+	)
+	zero := strings.Repeat("0", 40)
+	tests := []struct {
+		name      string
+		remoteSHA string
+	}{
+		{name: "existing branch", remoteSHA: base},
+		{name: "new branch", remoteSHA: zero},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(makeLog, nil, 0o644); err != nil {
+				t.Fatalf("reset make log: %v", err)
+			}
+			cmd := exec.Command(hook, "origin", "unused")
+			cmd.Dir = repo
+			cmd.Env = env
+			cmd.Stdin = strings.NewReader("refs/heads/topic " + head + " refs/heads/topic " + tt.remoteSHA + "\n")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run pre-push hook: %v\n%s", err, output)
+			}
+			logged, err := os.ReadFile(makeLog)
+			if err != nil {
+				t.Fatalf("read make log: %v", err)
+			}
+			want := "tracked|" + base + "|" + head + "|test-affected\n"
+			if string(logged) != want {
+				t.Fatalf("focused test range = %q, want %q", logged, want)
+			}
+		})
 	}
 }
 

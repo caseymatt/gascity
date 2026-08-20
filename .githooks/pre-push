@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Heavy `go test` fan-out runs here, at push time, instead of on every commit
-# (#3628). pre-commit previously invoked `make test-fast-parallel` on every
-# commit. Its outer shard fan-out can compile ~2.8 GiB test binaries per job,
-# so the canonical runner now derives concurrency from both CPU and available
-# memory while preserving an explicit LOCAL_TEST_JOBS override. Running the
-# suite at push time also fires it only when Go sources actually change.
+# Run only tests owned by the exact surface being pushed. Existing remote
+# branches provide an authoritative base SHA on stdin. New branches use the
+# merge base with the locally fetched remote default branch. A genuinely empty
+# remote uses Git's empty tree as its exact base. Unreachable or unfetched
+# non-empty remotes fail closed instead of selecting an unrelated subset.
 #
 # git feeds "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref
 # on stdin (see githooks(5)).
 
 zero="0000000000000000000000000000000000000000"
-
-go_changed=0
+remote_name="${1:-origin}"
+remote_url="${2:-$remote_name}"
+ranges=()
 any_non_deletion=0
 while read -r _local_ref local_sha _remote_ref remote_sha; do
   # Branch deletion — nothing to test, nothing to guard.
@@ -21,14 +21,39 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
     continue
   fi
   any_non_deletion=1
-  # New remote branch: no cheap base to diff against — run the suite.
+
+  base_sha="$remote_sha"
   if [ "$remote_sha" = "$zero" ]; then
-    go_changed=1
-    continue
+    remote_head="$(git symbolic-ref --quiet "refs/remotes/$remote_name/HEAD" 2>/dev/null || true)"
+    if [ -z "$remote_head" ]; then
+      for candidate in "refs/remotes/$remote_name/main" "refs/remotes/$remote_name/master"; do
+        if git rev-parse --verify --quiet "$candidate^{commit}" >/dev/null; then
+          remote_head="$candidate"
+          break
+        fi
+      done
+    fi
+    if [ -z "$remote_head" ]; then
+      if ! remote_listing="$(git ls-remote "$remote_url" HEAD 2>/dev/null)"; then
+        echo "pre-push: cannot read $remote_name's default branch" >&2
+        exit 1
+      fi
+      if [ -z "$remote_listing" ]; then
+        base_sha="$(git hash-object -t tree /dev/null)"
+      else
+        read -r remote_head _ <<<"$remote_listing"
+      fi
+    fi
+    if [ -n "$remote_head" ]; then
+      if ! git cat-file -e "$remote_head^{commit}" 2>/dev/null ||
+        ! base_sha="$(git merge-base "$local_sha" "$remote_head")"; then
+        echo "pre-push: cannot resolve a stable base for new ref $_local_ref" >&2
+        echo "pre-push: fetch $remote_name's default branch, then retry" >&2
+        exit 1
+      fi
+    fi
   fi
-  if git diff --name-only "$remote_sha" "$local_sha" -- '*.go' 2>/dev/null | grep -q .; then
-    go_changed=1
-  fi
+  ranges+=("$base_sha:$local_sha")
 done
 
 # Bead ownership/staleness guard (ga-fip9ps.1): re-checks bd claim state
@@ -46,10 +71,11 @@ if [ "$any_non_deletion" -eq 1 ]; then
   fi
 fi
 
-if [ "$go_changed" -eq 0 ]; then
-  exit 0
-fi
-
-# The Makefile and direct sharded runner share scripts/test-local-job-count as
-# their default policy. Do not shadow it here; an explicit override still wins.
-exec make test-fast-parallel
+for range in "${ranges[@]}"; do
+  IFS=: read -r base_sha head_sha <<<"$range"
+  echo "pre-push: testing changed surface $base_sha..$head_sha"
+  LINT_CHANGED_SCOPE=tracked \
+    LINT_CHANGED_REF="$base_sha" \
+    LINT_CHANGED_HEAD="$head_sha" \
+    make test-affected
+done

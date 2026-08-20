@@ -723,11 +723,9 @@ test_fallback_cannot_detect_staleness_after_status_leaves_in_progress() {
 # install_guard_hook copies the REAL guard lib and the REAL
 # .githooks/pre-push (not a re-implementation) into the temp repo, so these
 # tests catch a future edit to either file breaking the wiring. A trivial
-# Makefile stands in for the real one: pushing a brand-new branch makes the
-# hook's `go_changed` gate trip (no remote counterpart to diff against) and
-# fall through to `exec make test-fast-parallel`, which these tests don't
-# want to actually run — only the ownership guard's wiring is under test
-# here.
+# Makefile stands in for the real one: pushes invoke the focused changed-surface
+# target after the ownership check passes.
+# The focused target is stubbed because selector behavior is tested separately.
 # ---------------------------------------------------------------------------
 
 install_guard_hook() {
@@ -736,7 +734,7 @@ install_guard_hook() {
     cp "$LIB" "$repo/scripts/push-ownership-guard.sh"
     cp "$REPO_ROOT/.githooks/pre-push" "$repo/.githooks/pre-push"
     chmod +x "$repo/.githooks/pre-push"
-    printf 'test-fast-parallel:\n\t@true\n' > "$repo/Makefile"
+    printf 'test-affected:\n\t@true\n' > "$repo/Makefile"
     git -C "$repo" config core.hooksPath .githooks
 }
 

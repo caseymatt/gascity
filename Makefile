@@ -362,6 +362,12 @@ fmt-check-changed: $(GOLANGCI_LINT)
 fmt: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) fmt ./...
 
+.PHONY: test-affected
+
+## test-affected: run focused tests for packages owning changed build inputs
+test-affected:
+	$(TEST_ENV) GOFLAGS="$(QUALITY_GATE_GOFLAGS)" GC_FAST_UNIT=1 PYTHONDONTWRITEBYTECODE=1 LINT_CHANGED_SCOPE="$${LINT_CHANGED_SCOPE:-worktree}" LINT_CHANGED_REF="$${LINT_CHANGED_REF:-HEAD}" LINT_CHANGED_HEAD="$${LINT_CHANGED_HEAD-}" "$(CI_STATIC_SELECT)" test-affected "$(CI_STATIC_GO)"
+
 ## vet: run go vet
 vet:
 	GOFLAGS="$(QUALITY_GATE_GOFLAGS)" go vet ./...
