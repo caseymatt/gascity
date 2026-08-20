@@ -67,6 +67,13 @@ The proof also exercised:
 
 Gas City verification completed with all `make test-fast-parallel` shards passing and focused `go vet` clean. The Gas City pack state-adapter regression suite contains 141 passing tests.
 
+Final runtime checks on commit `583a0d650` report `gc doctor`
+`blocking_failed=0`, `failed=0`, and `passed=103`. Managed full GC through
+`gc dolt compact --gc-only` reduced `hq/.dolt` from 18 GB to 15 GB and
+`sp/.dolt` from 2.6 GB to 2.5 GB; the doctor footprint check moved from error
+to warning. `gc dolt health` reports the managed server reachable, all five
+databases queryable, and zero orphans.
+
 ## Pack integration fixes discovered by the proof
 
 The beads JSON wire returns structured metadata fields as JSON strings. Pack commit `3a2f0be` decodes and validates `candidate_ids`, `source_beads`, `repair_bead_ids`, and transition history at the adapter boundary. Pack commit `79afcce` allows a candidate recovered from a failed or cancelled epoch to point at its replacement epoch while preserving reverse-pointer checks for active and promoted epochs.
@@ -75,8 +82,9 @@ The dogfood city pins pack commit `79afcce99b08acba6b13b75d488f3cb2a6170316`.
 
 ## Residuals
 
-- The existing Dolt database schema is v65 while the installed embedded beads schema is v59. The city intentionally sets `BD_IGNORE_SCHEMA_SKEW=1`; health and proof operations pass, but this remains explicit technical debt rather than a claim of schema equality.
-- Cleanup removed all candidate/source worktrees. It preserved clean epoch worktrees named `epoch-spp-2oau` and `verify-spp-2oau` because those names do not match the pack's declared ownership forms `thunderdome-epoch-<epoch-id>` and `verify-<epoch-id>-r<N>`. Do not force-remove them; align creation names with the cleanup contract, then rerun guarded cleanup.
+- The existing Dolt database schema is v65 while the installed embedded beads schema is v59. The city intentionally sets `BD_IGNORE_SCHEMA_SKEW=1`; health and proof operations pass, but this remains explicit technical debt tracked by `ga-d55`, not a claim of schema equality.
+- The city has no configured off-box Dolt backup. A full local copy was not possible within the available filesystem headroom; the incomplete copy was removed before the sanctioned `--gc-only` reclaim. Do not run history-flattening recovery without first adding backup capacity.
+- Cleanup removed all candidate/source worktrees. It preserved clean epoch worktrees named `epoch-spp-2oau` and `verify-spp-2oau` because those names do not match the pack's declared ownership forms `thunderdome-epoch-<epoch-id>` and `verify-<epoch-id>-r<N>`. Do not force-remove them; `ga-7xr` tracks alignment of creation names with the guarded cleanup contract.
 - No performance claim should be inferred for providers or models not exercised by this proof. The changes bound and expose controller latency; they do not promise model execution time.
 
 ## Resume commands
