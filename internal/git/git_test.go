@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -314,6 +315,165 @@ func TestProbeDefaultBranch_NoRepo(t *testing.T) {
 	got := g.ProbeDefaultBranch()
 	if got != "" {
 		t.Errorf("ProbeDefaultBranch() = %q, want empty (no repo)", got)
+	}
+}
+
+func TestWorktreeAddCtxDetachedAtExactBase(t *testing.T) {
+	repo := initTestRepo(t)
+	g := New(repo)
+	base, err := g.HeadCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HeadCtx(base): %v", err)
+	}
+	runGit(t, repo, "commit", "--allow-empty", "-m", "later")
+
+	path := filepath.Join(t.TempDir(), "detached")
+	if err := g.WorktreeAddCtx(context.Background(), path, base, ""); err != nil {
+		t.Fatalf("WorktreeAddCtx(detached): %v", err)
+	}
+	worktree := New(path)
+	head, err := worktree.HeadCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HeadCtx(worktree): %v", err)
+	}
+	if head != base {
+		t.Fatalf("worktree HEAD = %q, want exact base %q", head, base)
+	}
+	branch, err := worktree.CurrentBranchCtx(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentBranchCtx: %v", err)
+	}
+	if branch != "HEAD" {
+		t.Fatalf("worktree branch = %q, want detached HEAD", branch)
+	}
+}
+
+func TestWorktreeAddCtxCreatesBranchAtExactBase(t *testing.T) {
+	repo := initTestRepo(t)
+	g := New(repo)
+	base, err := g.HeadCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HeadCtx(base): %v", err)
+	}
+	runGit(t, repo, "commit", "--allow-empty", "-m", "later")
+
+	path := filepath.Join(t.TempDir(), "branched")
+	if err := g.WorktreeAddCtx(context.Background(), path, base, "work-item"); err != nil {
+		t.Fatalf("WorktreeAddCtx(branched): %v", err)
+	}
+	worktree := New(path)
+	head, err := worktree.HeadCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HeadCtx(worktree): %v", err)
+	}
+	if head != base {
+		t.Fatalf("worktree HEAD = %q, want exact base %q", head, base)
+	}
+	branch, err := worktree.CurrentBranchCtx(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentBranchCtx: %v", err)
+	}
+	if branch != "work-item" {
+		t.Fatalf("worktree branch = %q, want %q", branch, "work-item")
+	}
+}
+
+func TestWorktreeAddCtxRefusesExistingPath(t *testing.T) {
+	repo := initTestRepo(t)
+	path := filepath.Join(t.TempDir(), "already-exists")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := New(repo).WorktreeAddCtx(context.Background(), path, "HEAD", "")
+	if err == nil {
+		t.Fatal("WorktreeAddCtx() error = nil, want existing-path refusal")
+	}
+	if !strings.Contains(err.Error(), "path already exists") {
+		t.Fatalf("WorktreeAddCtx() error = %q, want useful existing-path reason", err)
+	}
+}
+
+func TestIsAncestorCtx(t *testing.T) {
+	repo := initTestRepo(t)
+	g := New(repo)
+	first, err := g.HeadCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HeadCtx(first): %v", err)
+	}
+	runGit(t, repo, "commit", "--allow-empty", "-m", "second")
+	second, err := g.HeadCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HeadCtx(second): %v", err)
+	}
+
+	isAncestor, err := g.IsAncestorCtx(context.Background(), first, second)
+	if err != nil {
+		t.Fatalf("IsAncestorCtx(first, second): %v", err)
+	}
+	if !isAncestor {
+		t.Error("IsAncestorCtx(first, second) = false, want true")
+	}
+	isAncestor, err = g.IsAncestorCtx(context.Background(), second, first)
+	if err != nil {
+		t.Fatalf("IsAncestorCtx(second, first): %v", err)
+	}
+	if isAncestor {
+		t.Error("IsAncestorCtx(second, first) = true, want false")
+	}
+}
+
+func TestHasWorktreeStashesCtxIsScopedToBranch(t *testing.T) {
+	repo := initTestRepo(t)
+	g := New(repo)
+	firstPath := filepath.Join(t.TempDir(), "first")
+	secondPath := filepath.Join(t.TempDir(), "second")
+	if err := g.WorktreeAddCtx(context.Background(), firstPath, "HEAD", "first-work"); err != nil {
+		t.Fatalf("WorktreeAddCtx(first): %v", err)
+	}
+	if err := g.WorktreeAddCtx(context.Background(), secondPath, "HEAD", "second-work"); err != nil {
+		t.Fatalf("WorktreeAddCtx(second): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(firstPath, "stash-me.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, firstPath, "add", "stash-me.txt")
+	runGit(t, firstPath, "stash", "push")
+
+	has, err := New(firstPath).HasWorktreeStashesCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HasWorktreeStashesCtx(first): %v", err)
+	}
+	if !has {
+		t.Error("HasWorktreeStashesCtx(first) = false, want true")
+	}
+	has, err = New(secondPath).HasWorktreeStashesCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HasWorktreeStashesCtx(second): %v", err)
+	}
+	if has {
+		t.Error("HasWorktreeStashesCtx(second) = true for sibling branch stash, want false")
+	}
+}
+
+func TestHasWorktreeStashesCtxDetectsDetachedStash(t *testing.T) {
+	repo := initTestRepo(t)
+	path := filepath.Join(t.TempDir(), "detached")
+	if err := New(repo).WorktreeAddCtx(context.Background(), path, "HEAD", ""); err != nil {
+		t.Fatalf("WorktreeAddCtx: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "stash-me.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, path, "add", "stash-me.txt")
+	runGit(t, path, "stash", "push")
+
+	has, err := New(path).HasWorktreeStashesCtx(context.Background())
+	if err != nil {
+		t.Fatalf("HasWorktreeStashesCtx: %v", err)
+	}
+	if !has {
+		t.Error("HasWorktreeStashesCtx() = false for detached stash, want true")
 	}
 }
 

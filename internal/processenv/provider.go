@@ -85,11 +85,12 @@ var providerCredentialEnvKeys = map[string]bool{
 	"AWS_WEB_IDENTITY_TOKEN_FILE":            true,
 }
 
-// ControllerOnlyEnvKeys are controller-scope variables that must never reach a
-// session. Today that is the controller token (convergence.TokenEnvVar), which
-// authorizes writes to the protected convergence.*/var.* metadata an agent is
-// deliberately not allowed to set for itself; an agent holding it can drive its
-// own convergence loop.
+// ControllerOnlyEnvKeys are exact controller-scope variables that must never
+// reach a session. GC_CONTROLLER_TOKEN authorizes writes to protected
+// convergence metadata an agent is deliberately not allowed to set for itself;
+// PIERRE_PRIVATE_KEY authorizes Code Storage publication. The controller keeps
+// access to both, but an agent holding either could act with controller
+// authority.
 //
 // These are SEEDED EMPTY rather than omitted, because the map this package
 // returns is an overlay on an environment the child already inherits, not the
@@ -106,6 +107,7 @@ var providerCredentialEnvKeys = map[string]bool{
 // anchors and the Dolt vars that agents legitimately need.
 var ControllerOnlyEnvKeys = []string{
 	"GC_CONTROLLER_TOKEN",
+	"PIERRE_PRIVATE_KEY",
 }
 
 // ControllerOnlyEnvOverlay returns ControllerOnlyEnvKeys pinned to the empty

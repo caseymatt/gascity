@@ -63,6 +63,66 @@ type BeadWorktreeReapSkippedPayload struct {
 // IsEventPayload marks BeadWorktreeReapSkippedPayload as an events.Payload variant.
 func (BeadWorktreeReapSkippedPayload) IsEventPayload() {}
 
+// WorktreeCreatedPayload is the credential-free typed payload for
+// worktree.created events. HeadSHA identifies the commit checked out when the
+// registered worktree was created.
+type WorktreeCreatedPayload struct {
+	ID      string `json:"id"`
+	Owner   string `json:"owner"`
+	Rig     string `json:"rig"`
+	Path    string `json:"path"`
+	HeadSHA string `json:"head_sha"`
+}
+
+// IsEventPayload marks WorktreeCreatedPayload as an events.Payload variant.
+func (WorktreeCreatedPayload) IsEventPayload() {}
+
+// WorktreePublishedPayload is the credential-free typed payload for
+// worktree.published events. Ref is the publication ref and HeadSHA is the
+// commit it resolves to.
+type WorktreePublishedPayload struct {
+	ID      string `json:"id"`
+	Owner   string `json:"owner"`
+	Rig     string `json:"rig"`
+	Path    string `json:"path"`
+	Ref     string `json:"ref"`
+	HeadSHA string `json:"head_sha"`
+}
+
+// IsEventPayload marks WorktreePublishedPayload as an events.Payload variant.
+func (WorktreePublishedPayload) IsEventPayload() {}
+
+// WorktreeReclaimSkippedPayload is the credential-free typed payload for
+// worktree.reclaim_skipped events. Reason records the preservation decision;
+// DryRun distinguishes an eligible worktree deliberately left in place.
+type WorktreeReclaimSkippedPayload struct {
+	ID      string `json:"id"`
+	Owner   string `json:"owner"`
+	Rig     string `json:"rig"`
+	Path    string `json:"path"`
+	HeadSHA string `json:"head_sha"`
+	Reason  string `json:"reason"`
+	DryRun  bool   `json:"dry_run"`
+}
+
+// IsEventPayload marks WorktreeReclaimSkippedPayload as an events.Payload variant.
+func (WorktreeReclaimSkippedPayload) IsEventPayload() {}
+
+// WorktreeReclaimedPayload is the credential-free typed payload for
+// worktree.reclaimed events. HeadSHA identifies the commit whose registered
+// checkout was removed. DryRun is explicit on the wire for lifecycle consumers.
+type WorktreeReclaimedPayload struct {
+	ID      string `json:"id"`
+	Owner   string `json:"owner"`
+	Rig     string `json:"rig"`
+	Path    string `json:"path"`
+	HeadSHA string `json:"head_sha"`
+	DryRun  bool   `json:"dry_run"`
+}
+
+// IsEventPayload marks WorktreeReclaimedPayload as an events.Payload variant.
+func (WorktreeReclaimedPayload) IsEventPayload() {}
+
 // BeadClaimRejectedPayload is the typed payload for bead.claim_rejected events
 // (ADR-0009). Emitted when AttemptedClaimant tries to claim BeadID while it is
 // already live-claimed by ExistingClaimant; the second claim is rejected as an
@@ -95,6 +155,10 @@ func (BeadClaimReleasedPayload) IsEventPayload() {}
 func init() {
 	RegisterPayload(BeadWorktreeReaped, BeadWorktreeReapedPayload{})
 	RegisterPayload(BeadWorktreeReapSkipped, BeadWorktreeReapSkippedPayload{})
+	RegisterPayload(WorktreeCreated, WorktreeCreatedPayload{})
+	RegisterPayload(WorktreePublished, WorktreePublishedPayload{})
+	RegisterPayload(WorktreeReclaimSkipped, WorktreeReclaimSkippedPayload{})
+	RegisterPayload(WorktreeReclaimed, WorktreeReclaimedPayload{})
 	RegisterPayload(BeadClaimRejected, BeadClaimRejectedPayload{})
 	RegisterPayload(BeadClaimReleased, BeadClaimReleasedPayload{})
 }

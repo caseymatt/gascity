@@ -3,6 +3,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -111,6 +112,141 @@ func (g *Git) CheckoutDetach(ref string) error {
 		return fmt.Errorf("checkout --detach %s: %w", ref, err)
 	}
 	return nil
+}
+
+// WorktreeAddCtx adds a worktree at path from exactly base. When branch is
+// empty, the new worktree has a detached HEAD; otherwise a new local branch
+// with that name is created at base. An existing filesystem entry is always
+// refused, including an empty directory, so retries cannot silently adopt or
+// overwrite state they did not create.
+func (g *Git) WorktreeAddCtx(ctx context.Context, path, base, branch string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("adding worktree: path is empty")
+	}
+	if strings.TrimSpace(base) == "" {
+		return fmt.Errorf("adding worktree at %q: base is empty", path)
+	}
+	destination := path
+	if !filepath.IsAbs(destination) {
+		destination = filepath.Join(g.workDir, destination)
+	}
+	if _, err := os.Lstat(destination); err == nil {
+		return fmt.Errorf("adding worktree at %q: path already exists", path)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("adding worktree at %q: checking destination: %w", path, err)
+	}
+
+	args := []string{"worktree", "add"}
+	if branch == "" {
+		args = append(args, "--detach")
+	} else {
+		args = append(args, "-b", branch)
+	}
+	args = append(args, "--", path, base)
+	if _, err := g.runCtx(ctx, args...); err != nil {
+		return fmt.Errorf("adding worktree at %q: %w", path, err)
+	}
+	return nil
+}
+
+// HeadCtx resolves HEAD to its exact commit object ID.
+func (g *Git) HeadCtx(ctx context.Context) (string, error) {
+	out, err := g.runCtx(ctx, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolving HEAD: %w", err)
+	}
+	head := strings.TrimSpace(out)
+	if head == "" {
+		return "", fmt.Errorf("resolving HEAD: git returned an empty object ID")
+	}
+	return head, nil
+}
+
+// IsAncestorCtx reports whether ancestor is an ancestor of (or equal to)
+// descendant. Git's exit status 1 is the deterministic false result; all other
+// failures are returned so cleanup callers can fail closed.
+func (g *Git) IsAncestorCtx(ctx context.Context, ancestor, descendant string) (bool, error) {
+	if strings.TrimSpace(ancestor) == "" || strings.TrimSpace(descendant) == "" {
+		return false, fmt.Errorf("checking commit ancestry: both object IDs are required")
+	}
+	_, err := g.runCtx(ctx, "merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("checking commit ancestry: %w", err)
+}
+
+// HasWorktreeStashesCtx reports whether the repository stash contains an entry
+// belonging to this checkout. Stashes are stored in a repository-wide ref, so
+// listing refs/stash alone incorrectly makes every sibling worktree look
+// unsafe. Git records a branch identity in each stash reflog subject, which
+// lets attached worktrees ignore stashes owned by sibling branches. Git records
+// every detached checkout as "(no branch)", so a detached stash cannot be
+// attributed more narrowly; all detached checkouts must preserve in that
+// ambiguous case.
+//
+// Probe, ambiguity, and malformed-output errors are returned so destructive
+// callers can preserve the checkout rather than guessing.
+func (g *Git) HasWorktreeStashesCtx(ctx context.Context) (bool, error) {
+	branch, detached, err := g.worktreeBranchCtx(ctx)
+	if err != nil {
+		return false, err
+	}
+	if detached {
+		branch = "(no branch)"
+	}
+	out, err := g.runCtx(ctx, "stash", "list", "--format=%H%x00%gs")
+	if err != nil {
+		return false, fmt.Errorf("checking worktree stashes: %w", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return false, nil
+	}
+
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		hash, subject, ok := strings.Cut(line, "\x00")
+		if !ok || hash == "" {
+			return false, fmt.Errorf("checking worktree stashes: malformed git output")
+		}
+		stashBranch, ok := stashSubjectBranch(subject)
+		if !ok {
+			return false, fmt.Errorf("checking worktree stashes: cannot safely attribute a stash to a worktree")
+		}
+		if stashBranch == branch {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func stashSubjectBranch(subject string) (string, bool) {
+	for _, prefix := range []string{"WIP on ", "On "} {
+		if rest, ok := strings.CutPrefix(subject, prefix); ok {
+			branch, _, found := strings.Cut(rest, ":")
+			return branch, found && branch != ""
+		}
+	}
+	return "", false
+}
+
+func (g *Git) worktreeBranchCtx(ctx context.Context) (branch string, detached bool, err error) {
+	out, runErr := g.runCtx(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if runErr == nil {
+		branch = strings.TrimSpace(out)
+		if branch == "" {
+			return "", false, fmt.Errorf("checking worktree branch: git returned an empty branch")
+		}
+		return branch, false, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1 {
+		return "", true, nil
+	}
+	return "", false, fmt.Errorf("checking worktree branch: %w", runErr)
 }
 
 // WorktreeRemove removes a worktree. If force is true, removes even with

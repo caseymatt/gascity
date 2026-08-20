@@ -9,7 +9,6 @@ import (
 
 	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/gastownhall/gascity/internal/config"
-	"github.com/gastownhall/gascity/internal/convergence"
 	"github.com/gastownhall/gascity/internal/materialize"
 	"github.com/gastownhall/gascity/internal/processenv"
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -27,14 +26,14 @@ import (
 // city anchors plus GC_BIN are authoritative. TOML-sourced workspace and
 // provider values support the same $VAR expansion as the CLI launch path.
 //
-// As the final step — mirroring the CLI env finalization in template_resolve.go
-// — the gc binary's directory is prepended to PATH so a bare `gc` in the
-// session resolves to this binary rather than a colliding one, and
-// GC_CONTROLLER_TOKEN is scrubbed so the controller-only token never reaches a
-// managed session even when a workspace/provider env entry expands to it.
-// Scrubbed means PINNED EMPTY, not absent: a managed session inherits the
-// controller's environment, so an omitted key is an inherited key
-// (processenv.ControllerOnlyEnvKeys).
+// As the final step — after every configurable environment layer, mirroring the
+// CLI env finalization in template_resolve.go — the gc binary's directory is
+// prepended to PATH so a bare `gc` in the session resolves to this binary rather
+// than a colliding one. Every controller-only key is then pinned empty so
+// workspace, provider, or agent configuration cannot reintroduce controller
+// authority. Empty is required because managed sessions inherit the controller
+// environment; an omitted key remains visible to tmux, subprocess, and ACP
+// runtimes (processenv.ControllerOnlyEnvKeys).
 //
 // Without these anchors, sessions spawned or restarted via the API code
 // paths cannot locate their city. Rig-scoped env remains a separate
@@ -72,7 +71,10 @@ func cityAnchoredSessionEnv(cityPath string, workspaceEnv, providerEnv map[strin
 		out["GC_BIN"] = gcBin
 		processenv.PrependGCBinDirToPATH(out, gcBin)
 	}
-	return convergence.ScrubTokenEnv(out)
+	for key, value := range processenv.ControllerOnlyEnvOverlay() {
+		out[key] = value
+	}
+	return out
 }
 
 func configuredWorkspaceSessionEnv(cfg *config.City) map[string]string {
