@@ -143,6 +143,7 @@ func (ce ConditionEnv) Environ() []string {
 		env = append(env, "GC_INTEGRATION_REAL_BD="+realBD)
 	}
 	for _, key := range []string{
+		"BD_IGNORE_SCHEMA_SKEW",
 		"BEADS_DOLT_AUTO_START",
 		"BEADS_DOLT_SERVER_HOST",
 		"BEADS_DOLT_SERVER_PORT",

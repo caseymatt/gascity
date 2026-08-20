@@ -2184,6 +2184,119 @@ func TestHookClaimSkipsMessageBeadsAheadOfRoutedWork(t *testing.T) {
 	}
 }
 
+// TestHookClaimSkipsGraphWorkflowRootsAcrossClaimTiers guards the workflow
+// envelope boundary. A graph.v2 root carries the worker route so it can create
+// pool demand, but the root is controller-owned lifecycle state, not executable
+// work. Returning it from any claim tier makes a worker race the root's real
+// child step in the same worktree.
+func TestHookClaimSkipsGraphWorkflowRootsAcrossClaimTiers(t *testing.T) {
+	const (
+		identity = "builder"
+		rootID   = "gcg-workflow-root"
+		workID   = "gcg-real-step"
+	)
+	for _, tc := range []struct {
+		name         string
+		rootStatus   string
+		rootAssignee string
+		workStatus   string
+		workAssignee string
+		wantReason   string
+		wantClaim    bool
+	}{
+		{
+			name:         "existing assignment",
+			rootStatus:   "in_progress",
+			rootAssignee: identity,
+			workStatus:   "in_progress",
+			workAssignee: identity,
+			wantReason:   "existing_assignment",
+		},
+		{
+			name:         "ready assignment",
+			rootStatus:   "open",
+			rootAssignee: identity,
+			workStatus:   "open",
+			workAssignee: identity,
+			wantReason:   "ready_assignment",
+			wantClaim:    true,
+		},
+		{
+			name:       "fresh claim",
+			rootStatus: "open",
+			workStatus: "open",
+			wantReason: "claimed",
+			wantClaim:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidates := []beads.Bead{
+				{
+					ID:       rootID,
+					Status:   tc.rootStatus,
+					Assignee: tc.rootAssignee,
+					Metadata: map[string]string{
+						"gc.kind":             "workflow",
+						"gc.formula_contract": "graph.v2",
+						"gc.routed_to":        identity,
+					},
+				},
+				{
+					ID:       workID,
+					Status:   tc.workStatus,
+					Assignee: tc.workAssignee,
+					Metadata: map[string]string{
+						"gc.root_bead_id": rootID,
+						"gc.routed_to":    identity,
+					},
+				},
+			}
+			output, err := json.Marshal(candidates)
+			if err != nil {
+				t.Fatalf("marshal candidates: %v", err)
+			}
+			claimedID := ""
+			ops := hookClaimOps{
+				Runner: func(string, string) (string, error) { return string(output), nil },
+				Claim: func(_ context.Context, _ string, _ []string, id, assignee string) (beads.Bead, bool, error) {
+					claimedID = id
+					return beads.Bead{
+						ID:       id,
+						Status:   "in_progress",
+						Assignee: assignee,
+						Metadata: candidates[1].Metadata,
+					}, true, nil
+				},
+			}
+			opts := hookClaimOptions{
+				Assignee:           identity,
+				IdentityCandidates: []string{identity},
+				RouteTargets:       []string{identity},
+				JSON:               true,
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := doHookClaim("bd ready --json", "/tmp/work", opts, ops, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("doHookClaim = %d, want 0; stderr=%s", code, stderr.String())
+			}
+			var result hookClaimJSONResult
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+				t.Fatalf("stdout is not JSON: %v\nraw: %s", err, stdout.String())
+			}
+			if result.BeadID != workID || result.Reason != tc.wantReason {
+				t.Fatalf("result = %+v, want bead=%q reason=%q", result, workID, tc.wantReason)
+			}
+			if tc.wantClaim && claimedID != workID {
+				t.Fatalf("claimed bead = %q, want real step %q", claimedID, workID)
+			}
+			if !tc.wantClaim && claimedID != "" {
+				t.Fatalf("claim mutation ran for %q, want existing step adoption without a mutation", claimedID)
+			}
+		})
+	}
+}
+
 func TestHookInjectAlwaysExitsZero(t *testing.T) {
 	// Even on command failure, inject mode exits 0.
 	runner := func(string, string) (string, error) { return "", fmt.Errorf("command failed") }
