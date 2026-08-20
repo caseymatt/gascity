@@ -493,6 +493,7 @@ func claimFirstReadyHookAssignment(candidates []beads.Bead, opts hookClaimOption
 	for _, candidate := range candidates {
 		if strings.TrimSpace(candidate.ID) == "" ||
 			hookClaimCandidateIsMessage(candidate) ||
+			hookClaimCandidateIsGraphWorkflowRoot(candidate) ||
 			!strings.EqualFold(strings.TrimSpace(candidate.Status), "open") ||
 			!hookClaimHasIdentity(candidate.Assignee, opts.IdentityCandidates) {
 			continue
@@ -690,11 +691,12 @@ func mergeHookClaimCandidateMetadata(candidate, claimed beads.Bead) beads.Bead {
 }
 
 // hookCandidateClaimable reports whether a work-query candidate is eligible for a
-// fresh claim: it has an id, is currently unassigned, and matches one of this
-// session's route targets.
+// fresh claim: it is executable work with an id, is currently unassigned, and
+// matches one of this session's route targets.
 func hookCandidateClaimable(candidate beads.Bead, routeTargets []string) bool {
 	return strings.TrimSpace(candidate.ID) != "" &&
 		strings.TrimSpace(candidate.Assignee) == "" &&
+		!hookClaimCandidateIsGraphWorkflowRoot(candidate) &&
 		hookClaimMatchesRoute(candidate, routeTargets)
 }
 
@@ -711,7 +713,7 @@ func reportHookClaimRejected(candidate, claimed beads.Bead, opts hookClaimOption
 
 func hookClaimExistingAssignment(candidates []beads.Bead, opts hookClaimOptions) (hookClaimJSONResult, beads.Bead, bool) {
 	for _, candidate := range candidates {
-		if hookClaimCandidateIsMessage(candidate) {
+		if hookClaimCandidateIsMessage(candidate) || hookClaimCandidateIsGraphWorkflowRoot(candidate) {
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(candidate.Status), "in_progress") &&
@@ -742,6 +744,18 @@ func hookClaimExistingAssignment(candidates []beads.Bead, opts hookClaimOptions)
 // claimFirstEligibleHookCandidate ever sees the routed candidates.
 func hookClaimCandidateIsMessage(candidate beads.Bead) bool {
 	return strings.EqualFold(strings.TrimSpace(candidate.Type), "message")
+}
+
+// hookClaimCandidateIsGraphWorkflowRoot reports whether candidate is the
+// controller-owned envelope of a graph.v2 run. The root's worker route creates
+// pool demand, but only descendants carrying gc.root_bead_id are executable.
+// Legacy workflow-shaped work remains claimable: older steps may carry
+// gc.kind=workflow without the graph.v2 contract.
+func hookClaimCandidateIsGraphWorkflowRoot(candidate beads.Bead) bool {
+	return strings.EqualFold(
+		strings.TrimSpace(candidate.Metadata[beadmeta.FormulaContractMetadataKey]),
+		beadmeta.FormulaContractGraphV2,
+	) && strings.TrimSpace(candidate.Metadata[beadmeta.RootBeadIDMetadataKey]) == ""
 }
 
 // writeHookClaimWorkResultForBead stamps, correlates and reports one claimed or
