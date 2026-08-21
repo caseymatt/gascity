@@ -1,6 +1,6 @@
 # External Dolt evaluation and migration test plan
 
-**Status:** operational recommendation, not proof that an external deployment is faster
+**Status:** evaluated 2026-08-20–21; candidate not promoted; managed-local topology restored
 **Incident examined:** bounded three-item Sprocket formulas v2 run, 2026-08-19
 **Related work:** `gc-um4u04` (orchestration latency), `ga-45n` (this document)
 
@@ -11,6 +11,91 @@ A nearby, dedicated external Dolt SQL server is the strongest operational mitiga
 It is not a complete fix by itself. The same query load, transaction conflicts, connection limits, storage growth, or server failure can produce timeouts against an external endpoint. Network round-trip time and another service dependency can also make a healthy remote server slower than a healthy local server.
 
 Do not migrate on this conclusion alone. Provision a representative external endpoint, copy the complete ledger, and run the controlled A/B test in this document. Promote the endpoint only if it removes the storage failures without regressing normal bead and orchestration latency.
+
+## Trial result, 2026-08-20–21
+
+**Decision:** do not promote the tested external endpoint.
+
+The candidate removed Dolt work from the build host and materially improved
+application-path CRUD and orchestrator latency. It did not satisfy the
+promotion gate: the measured three-item workflow was still open at the
+60-minute deadline. The clean managed-local baseline also recorded no SQL
+transport failures, so this trial did not reproduce the incident's reliability
+failure or establish that topology alone caused it.
+
+### Scope and controls
+
+The trial:
+
+- copied the complete five-database ledger offline, including Dolt history and
+  working-set state;
+- verified database names, table inventories, head hashes, row counts, and
+  working-set counts before cutover;
+- used Gas City build `26445a5e3-dirty`, source base
+  `77c5d74fb70f75b1f802f6d607df3a8f5c763dbd`, the
+  `thunderdome-build` formula, three independent source beads, the same agent
+  provider and model settings, and a worker-pool maximum of three;
+- ran ten application-path create, show, update, and close cycles per topology
+  while the city was quiet;
+- ran one 60-minute loaded workflow window per topology with fresh trace and
+  log boundaries and no manual intervention during either window.
+
+The workflow comparison is operational evidence, not a strict causal A/B.
+The local window observed two config revisions; the external window observed
+five config revisions and an automatic controller replacement after
+approximately 22 minutes. Shared-host load also differed: build-host run queue
+p50 was 21 locally and 35 during the external run. No full quiet formula run
+was possible on the shared host. These control failures bias against claiming
+that the endpoint change alone produced the latency difference.
+
+### Measurements
+
+| Measurement | Managed local | External candidate |
+|---|---:|---:|
+| Workflow state at 60 minutes | Timed out; no formula step closed | Timed out; `summarize` closed, review and finalization remained open |
+| Orchestrator cycle p50 / p95 / max | 46.709 s / 86.882 s / 115.169 s | 12.101 s / 26.874 s / 39.951 s |
+| `demand_snapshot.load` p50 / p95 / max | 36.742 s / 78.536 s / 101.800 s | 5.213 s / 15.564 s / 26.727 s |
+| `bead_reconcile_tick` p50 / p95 / max | 4.927 s / 10.096 s / 14.688 s | 3.354 s / 7.136 s / 15.268 s |
+| MySQL I/O timeout / unexpected EOF / circuit-open count | 0 / 0 / 0 | 0 / 0 / 0 |
+| Build-host CPU idle p50 / run queue p50 | 1% / 21 | 0% / 35 |
+| Database-host CPU idle p50 / run queue p50 | Same as build host | 45% / 2 |
+| Endpoint RTT p50 / p95 / max | Loopback | 1.17 ms / 18.3 ms / 81.2 ms |
+
+The external endpoint reduced cycle p95 by 69.1% and
+`demand_snapshot.load` p95 by 80.2%, despite higher measured load on the build
+host. Its 732 sampled ping replies had no sequence gap.
+
+Quiet application-path CRUD also improved:
+
+| CRUD p95 | Managed local | External candidate | Reduction |
+|---|---:|---:|---:|
+| Create | 11.097 s | 1.866 s | 83.2% |
+| Show | 16.173 s | 2.845 s | 82.4% |
+| Update | 13.293 s | 6.409 s | 51.8% |
+| Close | 23.253 s | 4.505 s | 80.6% |
+
+The external run closed prepare, drain, integration, validation, and three
+summary attempts before the deadline. The item drain manifest reported all
+three implementation items failed; integration and validation then closed with
+contract failures, and the summary attempts correctly reported the absent
+validated candidate. Those were workflow failures, not recorded database
+transport failures, but they prevented the required natural completion.
+
+### Gate and rollback
+
+Pass criterion 1 failed because neither topology completed naturally within
+60 minutes. The external candidate met the proof-specific cycle latency target
+and recorded no SQL transport failure, but a candidate must satisfy every gate.
+The tested endpoint therefore remains a promising isolation mechanism, not an
+approved production topology.
+
+After the failed gate, the city was quiesced, benchmark work was closed, and
+the external authoritative ledger was synchronized back into the retained
+managed store. The city was changed to `managed_city`, all three rigs were
+restored to `inherited_city`, the external service was stopped, and the
+managed-local city restarted with `running=true` and `health.usable=true`.
+Raw summaries and sampled logs remain on the benchmark host under
+`/var/tmp/gc-external-dolt-test-20260819T193038Z/`.
 
 ## What “remote Dolt” means
 
@@ -395,6 +480,21 @@ The following changes remain necessary whether the city stays local or moves:
 
 ## Evidence limitations
 
-The incident evidence establishes correlation and a credible mechanism, not a controlled causal proof. The run combined database instability, worker-pool occupancy, duplicated Rust verification, local disk pressure, and repeated artifact retries. It lacked a single trace joining workflow, queue, provider startup, claim, command, validation, retry, and finalization.
+The incident evidence establishes correlation and a credible mechanism, not a
+controlled causal proof. The incident combined database instability,
+worker-pool occupancy, duplicated Rust verification, local disk pressure, and
+repeated artifact retries. It lacked a single trace joining workflow, queue,
+provider startup, claim, command, validation, retry, and finalization.
 
-The A/B procedure above is therefore part of the recommendation. Without it, “remote Dolt fixes the run” remains an inference.
+The 2026-08-20–21 trial adds directional evidence: the external endpoint made
+CRUD and controller reads substantially faster under heavier build-host load.
+It does not prove a reliability improvement because the clean managed-local
+window did not reproduce any SQL transport failure. Config revision drift, an
+external-window controller replacement, different shared-host load, and failed
+implementation artifacts also prevent attributing the workflow difference to
+topology alone.
+
+The tested endpoint was therefore rejected under the documented all-gates
+rule. “External Dolt fixes the run” remains an inference until a stable,
+repeatable workflow completes naturally under both quiet and representative
+load with all controls held constant.
