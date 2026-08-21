@@ -82,6 +82,92 @@ func TestLaunchWorkflowDuplicateAttemptReturnsSameLiveRoot(t *testing.T) {
 	}
 }
 
+func TestLaunchWorkflowCompiledContentFingerprintSeparatesChangedRecipes(t *testing.T) {
+	formulaDir := t.TempDir()
+	cfg := graphV2SlingTestConfig(t, formulaDir)
+	deps := testDeps(cfg, runtime.NewFake(), newFakeRunner().run)
+	deps.CityPath = t.TempDir()
+	convoy, err := deps.Store.Create(beads.Bead{Title: "input", Type: "convoy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+	vars := map[string]string{"convoy_id": convoy.ID}
+	opts := molecule.Options{Vars: vars}
+
+	writeRecipe := func(title, variant string) {
+		t.Helper()
+		content := `formula = "graph-work"
+version = 2
+contract = "graph.v2"
+
+[[steps]]
+id = "step"
+title = "` + title + `"
+[steps.metadata]
+variant = "` + variant + `"
+`
+		if err := os.WriteFile(filepath.Join(formulaDir, "graph-work.formula.toml"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write graph recipe: %v", err)
+		}
+	}
+	compile := func() *formula.Recipe {
+		t.Helper()
+		recipe, err := formula.CompileWithoutRuntimeVarValidation(context.Background(), "graph-work", []string{formulaDir}, vars)
+		if err != nil {
+			t.Fatalf("compile graph recipe: %v", err)
+		}
+		return recipe
+	}
+	launch := func(recipe *formula.Recipe) *molecule.Result {
+		t.Helper()
+		result, err := InstantiateCompiledSlingFormula(context.Background(), recipe, "graph-work", opts, "", "default", "", a, deps)
+		if err != nil {
+			t.Fatalf("launch graph recipe: %v", err)
+		}
+		return result
+	}
+
+	writeRecipe("Do work", "baseline")
+	baselineRecipe := compile()
+	baseline := launch(baselineRecipe)
+	if got := baselineRecipe.RootStep().Metadata["gc.graphv2_root_key"]; got != "" {
+		t.Fatalf("launch mutated immutable compiled recipe with root key %q", got)
+	}
+
+	identical := launch(compile())
+	if identical.RootID != baseline.RootID {
+		t.Fatalf("identical compiled content produced root %q, want idempotent root %q", identical.RootID, baseline.RootID)
+	}
+
+	writeRecipe("Do changed work", "baseline")
+	changedInstruction := launch(compile())
+	if changedInstruction.RootID == baseline.RootID {
+		t.Fatalf("changed step instruction returned stale live root %q", baseline.RootID)
+	}
+
+	writeRecipe("Do work", "changed")
+	changedMetadata := launch(compile())
+	if changedMetadata.RootID == baseline.RootID || changedMetadata.RootID == changedInstruction.RootID {
+		t.Fatalf("changed step metadata root %q collided with baseline %q or instruction variant %q", changedMetadata.RootID, baseline.RootID, changedInstruction.RootID)
+	}
+
+	rootKeys := make(map[string]struct{}, 3)
+	for _, rootID := range []string{baseline.RootID, changedInstruction.RootID, changedMetadata.RootID} {
+		root, err := deps.Store.Get(rootID)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", rootID, err)
+		}
+		rootKeys[root.Metadata["gc.graphv2_root_key"]] = struct{}{}
+	}
+	if len(rootKeys) != 3 {
+		t.Fatalf("stamped graph root identities = %d, want one per compiled content variant", len(rootKeys))
+	}
+	if live := liveGraphV2Roots(t, deps.Store); len(live) != 3 {
+		t.Fatalf("live graph roots = %d, want three distinct compiled-content identities", len(live))
+	}
+}
+
 // TestLaunchWorkflowUsesCrossProcessFileLock proves the dedupe guard is the
 // cross-process sourceworkflow file lock, not the old process-local striped
 // mutex. A graph launch must leave a lock file under the city runtime dir; the

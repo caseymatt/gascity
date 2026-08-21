@@ -380,7 +380,6 @@ func newRootCmdWithOptions(stdout, stderr io.Writer, options rootCommandOptions)
 		newSessionCmd(stdout, stderr),
 		newConvergeCmd(stdout, stderr),
 		newWorkflowCmd(stdout, stderr),
-		newWorktreeCmd(stdout, stderr),
 		newRuntimeCmd(stdout, stderr),
 		newFormulaCmd(stdout, stderr),
 		newBdCmd(stdout, stderr),

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "next_id": 206,
+  "next_id": 210,
   "permanent_ids": [
     {
       "name": "help",
@@ -4571,14 +4571,16 @@
       "hidden": false,
       "effective_hidden": false,
       "disable_flag_parsing": false,
-      "shape": "structural",
+      "shape": "runnable-group",
       "recording_policy": "recordable",
       "mode": "standard",
       "notice_policy": "eligible",
-      "classification": "help",
-      "canonical_target": "@help",
-      "owner": "structural",
-      "id": 1
+      "classification": "unknown",
+      "canonical_target": "@unknown",
+      "owner": "deferred",
+      "resolver": "group-dispatch",
+      "deferred_default": "unknown",
+      "id": 3
     },
     {
       "path": "gc worktree cleanup",
@@ -4596,6 +4598,21 @@
       "id": 203
     },
     {
+      "path": "gc worktree create",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "worktree-create",
+      "owner": "immediate",
+      "id": 206
+    },
+    {
       "path": "gc worktree ensure",
       "aliases": [],
       "conditional_modes": [],
@@ -4609,6 +4626,51 @@
       "classification": "worktree-ensure",
       "owner": "immediate",
       "id": 204
+    },
+    {
+      "path": "gc worktree list",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "worktree-list",
+      "owner": "immediate",
+      "id": 207
+    },
+    {
+      "path": "gc worktree publish",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "worktree-publish",
+      "owner": "immediate",
+      "id": 208
+    },
+    {
+      "path": "gc worktree reclaim",
+      "aliases": [],
+      "conditional_modes": [],
+      "hidden": false,
+      "effective_hidden": false,
+      "disable_flag_parsing": false,
+      "shape": "runnable",
+      "recording_policy": "recordable",
+      "mode": "standard",
+      "notice_policy": "eligible",
+      "classification": "worktree-reclaim",
+      "owner": "immediate",
+      "id": 209
     },
     {
       "path": "gc worktree verify",

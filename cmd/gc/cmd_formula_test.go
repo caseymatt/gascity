@@ -19,6 +19,7 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/formulatest"
+	"github.com/gastownhall/gascity/internal/graphv2"
 	"github.com/gastownhall/gascity/internal/sourceworkflow"
 )
 
@@ -643,16 +644,22 @@ func TestFormulaShowJSONFromRecipe(t *testing.T) {
 		map[string]string{"target": "unit"},
 		map[string]string{"branch": "main", "target": "unit"},
 	)
+	fingerprint, err := graphv2.CompiledRecipeFingerprint(recipe)
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint: %v", err)
+	}
+	payload.CompiledFingerprint = fingerprint
 	if err := writeCLIJSONLine(&stdout, payload); err != nil {
 		t.Fatalf("writeCLIJSONLine: %v", err)
 	}
 	validateJSONAgainstResultSchema(t, []string{"formula", "show"}, stdout.Bytes())
 
 	var got struct {
-		SchemaVersion string `json:"schema_version"`
-		Name          string `json:"name"`
-		Description   string `json:"description"`
-		Metadata      struct {
+		SchemaVersion       string `json:"schema_version"`
+		Name                string `json:"name"`
+		Description         string `json:"description"`
+		CompiledFingerprint string `json:"compiled_fingerprint"`
+		Metadata            struct {
 			GC struct {
 				Methodology struct {
 					InteractionModes []string `json:"interaction_modes"`
@@ -673,6 +680,9 @@ func TestFormulaShowJSONFromRecipe(t *testing.T) {
 	}
 	if got.SchemaVersion != "1" || got.Name != "mol-build" || got.Description != "Build main" {
 		t.Fatalf("payload = %+v", got)
+	}
+	if len(got.CompiledFingerprint) != 64 {
+		t.Fatalf("compiled_fingerprint = %q, want SHA-256", got.CompiledFingerprint)
 	}
 	if want := []string{"headless", "autonomous"}; !reflect.DeepEqual(got.Metadata.GC.Methodology.InteractionModes, want) {
 		t.Fatalf("metadata.gc.methodology.interaction_modes = %+v, want %+v", got.Metadata.GC.Methodology.InteractionModes, want)

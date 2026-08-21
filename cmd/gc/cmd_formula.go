@@ -152,7 +152,13 @@ Examples:
 			}
 
 			if jsonOutput {
-				return writeCLIJSONLine(stdout, formulaShowJSONFromRecipe(recipe, cityPath, scope, rigVars, vars, displayVars))
+				payload := formulaShowJSONFromRecipe(recipe, cityPath, scope, rigVars, vars, displayVars)
+				fingerprint, err := graphv2.CompiledRecipeFingerprint(recipe)
+				if err != nil {
+					return formulaCommandError(stderr, "gc formula show", true, fmt.Errorf("fingerprint compiled recipe: %w", err))
+				}
+				payload.CompiledFingerprint = fingerprint
+				return writeCLIJSONLine(stdout, payload)
 			}
 
 			_, _ = fmt.Fprintf(stdout, "Formula: %s\n", recipe.Name)
@@ -343,21 +349,22 @@ type formulaCatalogEntryJSON struct {
 }
 
 type formulaShowJSON struct {
-	SchemaVersion string                `json:"schema_version"`
-	OK            bool                  `json:"ok"`
-	CityPath      string                `json:"city_path,omitempty"`
-	Name          string                `json:"name"`
-	Description   string                `json:"description,omitempty"`
-	Metadata      map[string]any        `json:"metadata,omitempty"`
-	Phase         string                `json:"phase,omitempty"`
-	Pour          bool                  `json:"pour,omitempty"`
-	RootOnly      bool                  `json:"root_only,omitempty"`
-	SearchPaths   []string              `json:"search_paths"`
-	Vars          []formulaVarJSON      `json:"vars,omitempty"`
-	Steps         []formulaStepJSON     `json:"steps"`
-	Deps          []formulaDepJSON      `json:"deps,omitempty"`
-	ProvidedVars  map[string]string     `json:"provided_vars,omitempty"`
-	Warnings      []jsonContractWarning `json:"warnings,omitempty"`
+	SchemaVersion       string                `json:"schema_version"`
+	OK                  bool                  `json:"ok"`
+	CityPath            string                `json:"city_path,omitempty"`
+	Name                string                `json:"name"`
+	Description         string                `json:"description,omitempty"`
+	CompiledFingerprint string                `json:"compiled_fingerprint,omitempty"`
+	Metadata            map[string]any        `json:"metadata,omitempty"`
+	Phase               string                `json:"phase,omitempty"`
+	Pour                bool                  `json:"pour,omitempty"`
+	RootOnly            bool                  `json:"root_only,omitempty"`
+	SearchPaths         []string              `json:"search_paths"`
+	Vars                []formulaVarJSON      `json:"vars,omitempty"`
+	Steps               []formulaStepJSON     `json:"steps"`
+	Deps                []formulaDepJSON      `json:"deps,omitempty"`
+	ProvidedVars        map[string]string     `json:"provided_vars,omitempty"`
+	Warnings            []jsonContractWarning `json:"warnings,omitempty"`
 }
 
 type formulaVarJSON struct {
@@ -814,7 +821,10 @@ store, copy them into the binding with
 						if err := molecule.ValidateRecipeRuntimeVars(recipe, molecule.Options{Title: title, Vars: cookVars}); err != nil {
 							return fmt.Errorf("validate runtime vars: %w", err)
 						}
-						graphRootKey := stampFormulaCookGraphV2Root(recipe, args[0], inv.InputConvoy, cookVars)
+						graphRootKey, err := stampFormulaCookGraphV2Root(recipe, args[0], inv.InputConvoy, cookVars)
+						if err != nil {
+							return fmt.Errorf("fingerprint formulas v2 recipe: %w", err)
+						}
 						if err := decorateFormulaCookGraphV2Recipe(recipe, cookVars, storeRef, scope.rig, store, loadedCityName(cfg, cityPath), cityPath, cfg); err != nil {
 							return fmt.Errorf("decorate formulas v2 recipe: %w", err)
 						}
@@ -916,7 +926,10 @@ store, copy them into the binding with
 				}
 				graphRootKey := ""
 				if inv.InputConvoy != "" {
-					graphRootKey = stampFormulaCookGraphV2Root(recipe, args[0], inv.InputConvoy, cookVars)
+					graphRootKey, err = stampFormulaCookGraphV2Root(recipe, args[0], inv.InputConvoy, cookVars)
+					if err != nil {
+						return formulaCommandError(stderr, "gc formula cook", jsonOutput, fmt.Errorf("fingerprint formulas v2 recipe: %w", err))
+					}
 				}
 
 				// molecule.Attach reads the attach bead, materializes the
@@ -1003,7 +1016,10 @@ store, copy them into the binding with
 				// the store that will own it, so the root's identity metadata is
 				// written where the root lands.
 				rootStore = moleculeClassStore(recipe, store, graphStore)
-				graphRootKey := stampFormulaCookGraphV2Root(recipe, args[0], inv.InputConvoy, cookVars)
+				graphRootKey, err := stampFormulaCookGraphV2Root(recipe, args[0], inv.InputConvoy, cookVars)
+				if err != nil {
+					return formulaCommandError(stderr, "gc formula cook", jsonOutput, fmt.Errorf("fingerprint formulas v2 recipe: %w", err))
+				}
 				if err := decorateFormulaCookGraphV2Recipe(recipe, cookVars, storeRef, scope.rig, rootStore, loadedCityName(cfg, cityPath), cityPath, cfg); err != nil {
 					return formulaCommandError(stderr, "gc formula cook", jsonOutput, fmt.Errorf("decorate formulas v2 recipe: %w", err))
 				}
@@ -1120,21 +1136,25 @@ type formulaCookJSONResult struct {
 	IDMapping      map[string]string `json:"id_mapping,omitempty"`
 }
 
-func stampFormulaCookGraphV2Root(recipe *formula.Recipe, formulaName, inputConvoyID string, vars map[string]string) string {
+func stampFormulaCookGraphV2Root(recipe *formula.Recipe, formulaName, inputConvoyID string, vars map[string]string) (string, error) {
 	if recipe == nil || len(recipe.Steps) == 0 || strings.TrimSpace(inputConvoyID) == "" {
-		return ""
+		return "", nil
+	}
+	fingerprint, err := graphv2.CompiledRecipeFingerprint(recipe)
+	if err != nil {
+		return "", err
 	}
 	root := &recipe.Steps[0]
 	if root.Metadata == nil {
 		root.Metadata = make(map[string]string)
 	}
-	rootKey := graphv2.RootKey(inputConvoyID, formulaName, vars, "formula-cook", "")
+	rootKey := graphv2.RootKey(inputConvoyID, formulaName, fingerprint, vars, "formula-cook", "")
 	root.Metadata[beadmeta.InputConvoyIDMetadataKey] = inputConvoyID
 	root.Metadata[beadmeta.Graphv2RootKeyMetadataKey] = rootKey
 	if metadata := graphv2.RuntimeVarsMetadata(vars); metadata != "" {
 		root.Metadata[graphv2.RuntimeVarsMetadataKey] = metadata
 	}
-	return rootKey
+	return rootKey, nil
 }
 
 func decorateFormulaCookGraphV2Recipe(recipe *formula.Recipe, vars map[string]string, storeRef, rigContext string, store beads.Store, cityName, cityPath string, cfg *config.City) error {

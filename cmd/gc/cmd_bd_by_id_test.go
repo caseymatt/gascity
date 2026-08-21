@@ -200,6 +200,38 @@ func TestBdByIDServesAClassBeadFromANonBuiltInProviderBinding(t *testing.T) {
 	}
 }
 
+func TestBdMetadataCASUsesClassOwnedFrontDoor(t *testing.T) {
+	cityPath, classStore := foreignProviderCity(t)
+	bead := mustCreateClassBead(t, classStore, beads.Bead{
+		Title:    "class-owned CAS subject",
+		Type:     "task",
+		Metadata: map[string]string{"lease": "old"},
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := doBd([]string{
+		"--city", cityPath,
+		"metadata-cas", bead.ID,
+		"--key", "lease",
+		"--expected", "old",
+		"--value", "new",
+		"--json",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("class-owned metadata CAS exited %d: %s", code, stderr.String())
+	}
+	if got := stdout.String(); got != "{\"swapped\":true}\n" {
+		t.Fatalf("class-owned metadata CAS output = %q", got)
+	}
+	updated, err := classStore.Get(bead.ID)
+	if err != nil {
+		t.Fatalf("re-reading class-owned CAS subject: %v", err)
+	}
+	if got := updated.Metadata["lease"]; got != "new" {
+		t.Fatalf("class-owned metadata CAS stored %q, want %q", got, "new")
+	}
+}
+
 // TestBdByIDServesClaimReleaseAndDepListFromTheClassBinding covers the other
 // three verbs on the same foreign-provider city. They are the cascade-nudge
 // order's reads and the orphan-recovery scripts' writes, and every one of them
@@ -1422,7 +1454,11 @@ func TestBdCloseRigFlagRefusedForClassResident(t *testing.T) {
 	cityPath, classStore := foreignProviderCity(t)
 	relic := classResidentWorkShapedBead(t, classStore, "gc-relic1", "an orphaned patrol root")
 
-	for _, args := range [][]string{{"close", relic.ID}, {"reopen", relic.ID}} {
+	for _, args := range [][]string{
+		{"close", relic.ID},
+		{"reopen", relic.ID},
+		{"metadata-cas", relic.ID, "--key", "lease", "--expected", "", "--value", "owner"},
+	} {
 		t.Run(args[0], func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			code, handled := maybeRouteBdByID(cityPath, "r1", args, &stdout, &stderr)

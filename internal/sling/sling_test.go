@@ -19,8 +19,10 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	convoycore "github.com/gastownhall/gascity/internal/convoy"
 	"github.com/gastownhall/gascity/internal/events"
+	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/formulatest"
 	"github.com/gastownhall/gascity/internal/fsys"
+	"github.com/gastownhall/gascity/internal/graphv2"
 	"github.com/gastownhall/gascity/internal/molecule"
 	"github.com/gastownhall/gascity/internal/pidutil"
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -2714,7 +2716,7 @@ func TestInstantiateGraphFormulaPreservesMaterializationWhenProjectionFails(t *t
 	}
 }
 
-func TestSlingAttachGraphFormulaCreatesFreshRootForBareBeadTarget(t *testing.T) {
+func TestSlingAttachGraphFormulaRetryReusesRootForBareBeadTarget(t *testing.T) {
 	formulaDir := t.TempDir()
 	writeGraphV2ConvoyFormula(t, formulaDir)
 	cfg := graphV2SlingTestConfig(t, formulaDir)
@@ -2736,8 +2738,8 @@ func TestSlingAttachGraphFormulaCreatesFreshRootForBareBeadTarget(t *testing.T) 
 	if err != nil {
 		t.Fatalf("second AttachFormula: %v", err)
 	}
-	if second.WorkflowID == first.WorkflowID {
-		t.Fatalf("WorkflowID = %q, want fresh root for fresh input convoy", second.WorkflowID)
+	if second.WorkflowID != first.WorkflowID {
+		t.Fatalf("retry WorkflowID = %q, want existing root %s", second.WorkflowID, first.WorkflowID)
 	}
 }
 
@@ -2819,6 +2821,273 @@ func TestInstantiateSlingFormulaForceReplacesGraphV2Root(t *testing.T) {
 	}
 	if newRoot.Status == "closed" {
 		t.Fatalf("new root status = %q, want live", newRoot.Status)
+	}
+}
+
+func TestInstantiateSlingFormulaRejectsChangedSealedFingerprint(t *testing.T) {
+	formulaDir := t.TempDir()
+	writeGraphV2ConvoyFormula(t, formulaDir)
+	cfg := graphV2SlingTestConfig(t, formulaDir)
+	deps := testDeps(cfg, runtime.NewFake(), newFakeRunner().run)
+	convoy, err := deps.Store.Create(beads.Bead{Title: "input", Type: "convoy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GC_EXPECTED_FORMULA_FINGERPRINT", strings.Repeat("0", 64))
+	_, err = InstantiateSlingFormula(
+		context.Background(),
+		"graph-work",
+		[]string{formulaDir},
+		molecule.Options{Vars: map[string]string{"convoy_id": convoy.ID}},
+		"",
+		"default",
+		"",
+		config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)},
+		deps,
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not match sealed fingerprint") {
+		t.Fatalf("InstantiateSlingFormula error = %v, want sealed fingerprint mismatch", err)
+	}
+	rows, listErr := deps.Store.List(beads.ListQuery{AllowScan: true, IncludeClosed: true})
+	if listErr != nil {
+		t.Fatalf("List after rejected launch: %v", listErr)
+	}
+	if len(rows) != 1 || rows[0].ID != convoy.ID {
+		t.Fatalf("rejected launch mutated store: %#v", rows)
+	}
+}
+
+func TestInstantiateSlingFormulaForceReplacesChangedCompiledIdentity(t *testing.T) {
+	formulaDir := t.TempDir()
+	writeGraphV2ConvoyFormula(t, formulaDir)
+	cfg := graphV2SlingTestConfig(t, formulaDir)
+	deps := testDeps(cfg, runtime.NewFake(), newFakeRunner().run)
+	convoy, err := deps.Store.Create(beads.Bead{Title: "input", Type: "convoy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := molecule.Options{Vars: map[string]string{"convoy_id": convoy.ID}}
+	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+	first, err := InstantiateSlingFormula(context.Background(), "graph-work", []string{formulaDir}, opts, "", "default", "", a, deps)
+	if err != nil {
+		t.Fatalf("first InstantiateSlingFormula: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(formulaDir, "graph-work.formula.toml"), []byte(`
+formula = "graph-work"
+version = 2
+contract = "graph.v2"
+
+[[steps]]
+id = "step"
+title = "Changed work for {{convoy_id}}"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := InstantiateSlingFormula(context.Background(), "graph-work", []string{formulaDir}, opts, "", "default", "", a, deps, true)
+	if err != nil {
+		t.Fatalf("forced InstantiateSlingFormula after recipe change: %v", err)
+	}
+	if second.RootID == first.RootID {
+		t.Fatalf("forced replacement reused old root %s", first.RootID)
+	}
+	oldRoot, err := deps.Store.Get(first.RootID)
+	if err != nil {
+		t.Fatalf("reading replaced root: %v", err)
+	}
+	if oldRoot.Status != "closed" {
+		t.Fatalf("replaced root status = %q, want closed", oldRoot.Status)
+	}
+}
+
+func TestInstantiateCompiledSlingFormulaUsesStableSyntheticTargetIdentity(t *testing.T) {
+	formulaDir := t.TempDir()
+	writeGraphV2ConvoyFormula(t, formulaDir)
+	cfg := graphV2SlingTestConfig(t, formulaDir)
+	deps := testDeps(cfg, runtime.NewFake(), newFakeRunner().run)
+	source, err := deps.Store.Create(beads.Bead{Title: "input", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+	launch := func(force bool) *molecule.Result {
+		t.Helper()
+		inv, err := graphv2.PrepareInvocation(
+			context.Background(), deps.Store, "graph-work", []string{formulaDir}, source.ID, nil,
+		)
+		if err != nil {
+			t.Fatalf("PrepareInvocation: %v", err)
+		}
+		recipe, err := formula.CompileWithoutRuntimeVarValidation(
+			context.Background(), "graph-work", []string{formulaDir}, inv.Vars,
+		)
+		if err != nil {
+			t.Fatalf("CompileWithoutRuntimeVarValidation: %v", err)
+		}
+		result, err := InstantiateCompiledSlingFormula(
+			context.Background(),
+			recipe,
+			"graph-work",
+			molecule.Options{Vars: inv.Vars},
+			"",
+			"default",
+			"",
+			a,
+			deps,
+			force,
+		)
+		if err != nil {
+			t.Fatalf("InstantiateCompiledSlingFormula: %v", err)
+		}
+		return result
+	}
+
+	first := launch(false)
+	second := launch(false)
+	if second.RootID != first.RootID {
+		t.Fatalf("synthetic retry root = %s, want existing %s", second.RootID, first.RootID)
+	}
+	if err := os.WriteFile(filepath.Join(formulaDir, "graph-work.formula.toml"), []byte(`
+formula = "graph-work"
+version = 2
+contract = "graph.v2"
+
+[[steps]]
+id = "step"
+title = "Changed work for {{convoy_id}}"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	third := launch(true)
+	if third.RootID == first.RootID {
+		t.Fatalf("changed forced launch reused replaced root %s", first.RootID)
+	}
+	replaced, err := deps.Store.Get(first.RootID)
+	if err != nil {
+		t.Fatalf("reading replaced root: %v", err)
+	}
+	if replaced.Status != "closed" {
+		t.Fatalf("replaced root status = %q, want closed", replaced.Status)
+	}
+}
+
+func TestSlingAttachGraphFormulaForceReplacesPriorCompiledIdentity(t *testing.T) {
+	formulaDir := t.TempDir()
+	writeGraphV2ConvoyFormula(t, formulaDir)
+	cfg := graphV2SlingTestConfig(t, formulaDir)
+	deps := testDeps(cfg, runtime.NewFake(), newFakeRunner().run)
+	source, err := deps.Store.Create(beads.Bead{Title: "work", Type: "task", Status: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+	first, err := s.AttachFormula(context.Background(), "graph-work", source.ID, a, FormulaOpts{})
+	if err != nil {
+		t.Fatalf("first AttachFormula: %v", err)
+	}
+	firstRootBeforeReplacement, err := deps.Store.Get(first.WorkflowID)
+	if err != nil {
+		t.Fatalf("reading initial root: %v", err)
+	}
+	firstInputConvoyID := firstRootBeforeReplacement.Metadata[beadmeta.InputConvoyIDMetadataKey]
+	if err := os.WriteFile(filepath.Join(formulaDir, "graph-work.formula.toml"), []byte(`
+formula = "graph-work"
+version = 2
+contract = "graph.v2"
+
+[[steps]]
+id = "step"
+title = "Changed compiled work for {{convoy_id}}"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.AttachFormula(context.Background(), "graph-work", source.ID, a, FormulaOpts{Force: true})
+	if err != nil {
+		t.Fatalf("forced AttachFormula after recipe change: %v", err)
+	}
+	if second.WorkflowID == first.WorkflowID {
+		t.Fatalf("forced replacement reused old root %s", first.WorkflowID)
+	}
+	oldRoot, err := deps.Store.Get(first.WorkflowID)
+	if err != nil {
+		t.Fatalf("reading replaced root: %v", err)
+	}
+	if oldRoot.Status != "closed" {
+		t.Fatalf("replaced root status = %q, want closed", oldRoot.Status)
+	}
+	firstInputConvoy, err := deps.Store.Get(firstInputConvoyID)
+	if err != nil {
+		t.Fatalf("reading replaced synthetic input convoy: %v", err)
+	}
+	if firstInputConvoy.Status != "closed" {
+		t.Fatalf("replaced synthetic input convoy status = %q, want closed", firstInputConvoy.Status)
+	}
+	if err := os.WriteFile(filepath.Join(formulaDir, "graph-work.formula.toml"), []byte(`
+formula = "graph-work"
+version = 2
+contract = "graph.v2"
+
+[[steps]]
+id = "step"
+title = "Changed compiled work again for {{convoy_id}}"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	third, err := s.AttachFormula(context.Background(), "graph-work", source.ID, a, FormulaOpts{Force: true})
+	if err != nil {
+		t.Fatalf("second forced AttachFormula after recipe change: %v", err)
+	}
+	if third.WorkflowID == second.WorkflowID {
+		t.Fatalf("second forced replacement reused prior root %s", second.WorkflowID)
+	}
+	secondRoot, err := deps.Store.Get(second.WorkflowID)
+	if err != nil {
+		t.Fatalf("reading second replaced root: %v", err)
+	}
+	if secondRoot.Status != "closed" {
+		t.Fatalf("second replaced root status = %q, want closed", secondRoot.Status)
+	}
+}
+
+func TestSlingAttachForceFingerprintMismatchLeavesLiveRootUntouched(t *testing.T) {
+	formulaDir := t.TempDir()
+	writeGraphV2ConvoyFormula(t, formulaDir)
+	cfg := graphV2SlingTestConfig(t, formulaDir)
+	deps := testDeps(cfg, runtime.NewFake(), newFakeRunner().run)
+	source, err := deps.Store.Create(beads.Bead{Title: "work", Type: "task", Status: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+	first, err := s.AttachFormula(context.Background(), "graph-work", source.ID, a, FormulaOpts{})
+	if err != nil {
+		t.Fatalf("first AttachFormula: %v", err)
+	}
+	before, err := deps.Store.Get(first.WorkflowID)
+	if err != nil {
+		t.Fatalf("reading root before mismatch: %v", err)
+	}
+	t.Setenv("GC_EXPECTED_FORMULA_FINGERPRINT", strings.Repeat("0", 64))
+
+	_, err = s.AttachFormula(
+		context.Background(), "graph-work", source.ID, a, FormulaOpts{Force: true},
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not match sealed fingerprint") {
+		t.Fatalf("forced AttachFormula error = %v, want sealed fingerprint mismatch", err)
+	}
+	after, err := deps.Store.Get(first.WorkflowID)
+	if err != nil {
+		t.Fatalf("reading root after mismatch: %v", err)
+	}
+	if after.Status != before.Status || after.Metadata[beadmeta.MoleculeFailedMetadataKey] != before.Metadata[beadmeta.MoleculeFailedMetadataKey] {
+		t.Fatalf("sealed mismatch mutated live root: before=%#v after=%#v", before, after)
 	}
 }
 

@@ -227,6 +227,9 @@ const (
 	// it. Only the bare form is served — see parseBdByIDCloseArgs.
 	bdByIDClose  bdByIDVerb = "close"
 	bdByIDReopen bdByIDVerb = "reopen"
+	// bdByIDMetadataCAS is the narrow single-key compare-and-set command used
+	// by durable coordination protocols.
+	bdByIDMetadataCAS bdByIDVerb = "metadata-cas"
 )
 
 // bdByIDDepDirectionUp asks for the beads that depend ON the subject; the
@@ -253,7 +256,10 @@ type bdByIDOp struct {
 	MaxDepth int
 	// Update carries the field and metadata writes of the update verb, already
 	// translated into the object model's own shape.
-	Update beads.UpdateOpts
+	Update   beads.UpdateOpts
+	Key      string
+	Expected string
+	Value    string
 }
 
 // parseBdByIDOp recognizes the by-ID invocations this surface serves. Anything
@@ -286,6 +292,19 @@ func parseBdByIDOp(bdArgs []string) (bdByIDOp, bool) {
 			return bdByIDOp{}, false
 		}
 		return bdByIDOp{Verb: bdByIDRelease, ID: id, Assignee: assignee}, true
+	case "metadata-cas":
+		request, handled, err := parseBdMetadataCASArgs(bdArgs)
+		if !handled || err != nil {
+			return bdByIDOp{}, false
+		}
+		return bdByIDOp{
+			Verb:     bdByIDMetadataCAS,
+			ID:       request.id,
+			JSON:     request.json,
+			Key:      request.key,
+			Expected: request.expected,
+			Value:    request.value,
+		}, true
 	case "dep":
 		if len(bdArgs) < 2 {
 			return bdByIDOp{}, false
@@ -958,6 +977,8 @@ func serveBdByIDResolved(door bdByIDClassDoor, op bdByIDOp, bdArgs []string, rig
 		return doBdByIDClaim(resolution.Graph, op.ID, bdByIDClaimActor(), op.JSON, door.bindingName(), stdout, stderr), true
 	case bdByIDRelease:
 		return doBdByIDReleaseIfCurrent(resolution.Graph, op.ID, op.Assignee, stdout, stderr), true
+	case bdByIDMetadataCAS:
+		return doBdByIDMetadataCAS(resolution.Graph, op, stdout, stderr), true
 	case bdByIDDepList:
 		return doBdByIDDepList(resolution.Graph, op, stdout, stderr), true
 	case bdByIDDepTree:
@@ -1334,6 +1355,29 @@ func doBdByIDReleaseIfCurrent(graph storebinding.GraphStore, id, expectedAssigne
 		return 0
 	}
 	fmt.Fprintln(stdout, "skipped") //nolint:errcheck // best-effort stdout
+	return 0
+}
+
+// doBdByIDMetadataCAS applies the single-key comparison through the owning
+// class front door. The graph contract preserves the backend's atomicity; this
+// projection only preserves the public command's output and exit semantics.
+func doBdByIDMetadataCAS(graph storebinding.GraphStore, op bdByIDOp, stdout, stderr io.Writer) int {
+	swapped, err := graph.CompareAndSetMetadataKey(op.ID, op.Key, op.Expected, op.Value)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc bd metadata-cas: metadata CAS for %q key %q: %v\n", op.ID, op.Key, err) //nolint:errcheck // best-effort stderr
+		if errors.Is(err, beads.ErrBDSilentFallback) {
+			fmt.Fprintln(stderr, bdSilentFallbackUserMessage) //nolint:errcheck // best-effort stderr
+			return bdSilentFallbackExitCode
+		}
+		return 1
+	}
+	if op.JSON {
+		fmt.Fprintf(stdout, "{\"swapped\":%t}\n", swapped) //nolint:errcheck // best-effort stdout
+	} else if swapped {
+		fmt.Fprintln(stdout, "swapped") //nolint:errcheck // best-effort stdout
+	} else {
+		fmt.Fprintln(stdout, "not-swapped") //nolint:errcheck // best-effort stdout
+	}
 	return 0
 }
 

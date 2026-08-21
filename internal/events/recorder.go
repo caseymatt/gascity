@@ -317,6 +317,9 @@ func (r *FileRecorder) AppendBatch(batch []Event) (resultErr error) {
 	if err := writeBatch(r.file, data); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
+	if err := r.file.Sync(); err != nil {
+		return fmt.Errorf("sync: %w", err)
+	}
 	r.seq = lastSeq
 	r.recordCount += uint64(len(batch))
 
