@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,9 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	convoycore "github.com/gastownhall/gascity/internal/convoy"
 	"github.com/gastownhall/gascity/internal/coordclass"
+	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/formulatest"
 )
 
@@ -97,23 +100,157 @@ func TestCreateSingleItemInputConvoyRejectsNilStore(t *testing.T) {
 }
 
 func TestRootKeyIgnoresConvoyIDRuntimeVar(t *testing.T) {
-	base := RootKey("convoy-1", "graph-work", map[string]string{
+	base := RootKey("convoy-1", "graph-work", "compiled-recipe", map[string]string{
 		ConvoyIDVar: "convoy-1",
 		"mode":      "review",
 	}, "", "")
-	same := RootKey("convoy-1", "graph-work", map[string]string{
+	same := RootKey("convoy-1", "graph-work", "compiled-recipe", map[string]string{
 		ConvoyIDVar: "different-preview-value",
 		"mode":      "review",
 	}, "", "")
 	if same != base {
 		t.Fatalf("RootKey changed when only %s changed: %q vs %q", ConvoyIDVar, same, base)
 	}
-	changed := RootKey("convoy-1", "graph-work", map[string]string{
+	changed := RootKey("convoy-1", "graph-work", "compiled-recipe", map[string]string{
 		ConvoyIDVar: "convoy-1",
 		"mode":      "implement",
 	}, "", "")
 	if changed == base {
 		t.Fatalf("RootKey did not change when non-reserved vars changed: %q", changed)
+	}
+	changedRecipe := RootKey("convoy-1", "graph-work", "different-compiled-recipe", map[string]string{
+		ConvoyIDVar: "convoy-1",
+		"mode":      "review",
+	}, "", "")
+	if changedRecipe == base {
+		t.Fatalf("RootKey did not change when compiled recipe fingerprint changed: %q", changedRecipe)
+	}
+}
+
+func TestCompiledRecipeFingerprintUsesCanonicalCompiledContent(t *testing.T) {
+	left := &formula.Recipe{
+		Name:        "graph-work",
+		Description: "compiled workflow",
+		Metadata:    map[string]any{"owner": "ops", "retry": int64(2)},
+		Steps: []formula.RecipeStep{{
+			ID:          "graph-work.step",
+			Title:       "Do work",
+			Description: "Follow the instruction",
+			Metadata:    map[string]string{"z": "last", "a": "first"},
+		}},
+		Deps:          []formula.RecipeDep{{StepID: "graph-work.step", DependsOnID: "graph-work", Type: "parent-child"}},
+		Vars:          map[string]*formula.VarDef{"mode": {Description: "execution mode", Enum: []string{"review", "apply"}}},
+		Phase:         "liquid",
+		Pour:          true,
+		ContentHash:   "source-hash-a",
+		FormulaSource: "/machine-a/formulas/graph-work.toml",
+	}
+	right := &formula.Recipe{
+		Name:        left.Name,
+		Description: left.Description,
+		Metadata:    map[string]any{"retry": int64(2), "owner": "ops"},
+		Steps: []formula.RecipeStep{{
+			ID:          "graph-work.step",
+			Title:       "Do work",
+			Description: "Follow the instruction",
+			Metadata:    map[string]string{"a": "first", "z": "last"},
+		}},
+		Deps:          append([]formula.RecipeDep(nil), left.Deps...),
+		Vars:          map[string]*formula.VarDef{"mode": {Description: "execution mode", Enum: []string{"review", "apply"}}},
+		Phase:         left.Phase,
+		Pour:          left.Pour,
+		ContentHash:   "source-hash-b",
+		FormulaSource: "/machine-b/other/graph-work.toml",
+	}
+
+	leftFingerprint, err := CompiledRecipeFingerprint(left)
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint(left): %v", err)
+	}
+	rightFingerprint, err := CompiledRecipeFingerprint(right)
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint(right): %v", err)
+	}
+	if rightFingerprint != leftFingerprint {
+		t.Fatalf("equivalent compiled content fingerprints differ: %q vs %q", rightFingerprint, leftFingerprint)
+	}
+
+	changed := *right
+	changed.Steps = append([]formula.RecipeStep(nil), right.Steps...)
+	changed.Steps[0].Metadata = maps.Clone(right.Steps[0].Metadata)
+	changed.Steps[0].Metadata["a"] = "changed"
+	changedFingerprint, err := CompiledRecipeFingerprint(&changed)
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint(changed): %v", err)
+	}
+	if changedFingerprint == leftFingerprint {
+		t.Fatalf("compiled step metadata change retained fingerprint %q", leftFingerprint)
+	}
+}
+
+func TestCompiledRecipeFingerprintIgnoresInspectionMetadata(t *testing.T) {
+	left := &formula.Recipe{
+		Name:     "graph-work",
+		Metadata: map[string]any{"diagnostic": float64(1)},
+		Steps:    []formula.RecipeStep{{ID: "graph-work", Title: "Work"}},
+	}
+	right := *left
+	right.Metadata = map[string]any{"diagnostic": math.Inf(1)}
+
+	leftFingerprint, err := CompiledRecipeFingerprint(left)
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint(left): %v", err)
+	}
+	rightFingerprint, err := CompiledRecipeFingerprint(&right)
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint(non-finite inspection metadata): %v", err)
+	}
+	if rightFingerprint != leftFingerprint {
+		t.Fatalf("inspection-only metadata changed fingerprint: %q vs %q", rightFingerprint, leftFingerprint)
+	}
+}
+
+func TestCompiledRecipeFingerprintUsesAbsoluteCheckAssetContent(t *testing.T) {
+	leftDir := t.TempDir()
+	rightDir := t.TempDir()
+	leftPath := filepath.Join(leftDir, "check.sh")
+	rightPath := filepath.Join(rightDir, "renamed-check.sh")
+	for _, path := range []string{leftPath, rightPath} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recipeAt := func(path string) *formula.Recipe {
+		return &formula.Recipe{
+			Name: "graph-work",
+			Steps: []formula.RecipeStep{{
+				ID:       "graph-work",
+				Title:    "Work",
+				Metadata: map[string]string{beadmeta.CheckPathMetadataKey: path},
+			}},
+		}
+	}
+
+	leftFingerprint, err := CompiledRecipeFingerprint(recipeAt(leftPath))
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint(left): %v", err)
+	}
+	rightFingerprint, err := CompiledRecipeFingerprint(recipeAt(rightPath))
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint(right): %v", err)
+	}
+	if rightFingerprint != leftFingerprint {
+		t.Fatalf("identical check assets at different paths differ: %q vs %q", rightFingerprint, leftFingerprint)
+	}
+	if err := os.WriteFile(rightPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	changedFingerprint, err := CompiledRecipeFingerprint(recipeAt(rightPath))
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint(changed): %v", err)
+	}
+	if changedFingerprint == leftFingerprint {
+		t.Fatal("changed check asset content retained the old fingerprint")
 	}
 }
 
@@ -1011,10 +1148,10 @@ title = "Inspect {{issue}}"
 }
 
 func TestRootKeyIgnoresDeprecatedIssueRuntimeVar(t *testing.T) {
-	base := RootKey("convoy-1", "graph-work", map[string]string{
+	base := RootKey("convoy-1", "graph-work", "compiled-recipe", map[string]string{
 		"mode": "review",
 	}, "", "")
-	withAlias := RootKey("convoy-1", "graph-work", map[string]string{
+	withAlias := RootKey("convoy-1", "graph-work", "compiled-recipe", map[string]string{
 		"mode":          "review",
 		LegacyIssueVar:  "gc-member",
 		legacyBeadIDVar: "gc-member",

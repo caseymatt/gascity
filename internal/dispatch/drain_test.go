@@ -1230,7 +1230,15 @@ func TestProcessDrainAppliesItemFormulaDefaultsToRootMetadata(t *testing.T) {
 		t.Fatalf("runtime vars = %#v, want item formula default mode", runtimeVars)
 	}
 	unit := mustGetBead(t, store, row.UnitConvoyID)
-	wantKey := graphv2.RootKey(unit.ID, "drain-item", map[string]string{
+	recipe, err := formula.CompileWithoutRuntimeVarValidation(context.Background(), "drain-item", []string{dir}, runtimeVars)
+	if err != nil {
+		t.Fatalf("CompileWithoutRuntimeVarValidation: %v", err)
+	}
+	fingerprint, err := graphv2.CompiledRecipeFingerprint(recipe)
+	if err != nil {
+		t.Fatalf("CompiledRecipeFingerprint: %v", err)
+	}
+	wantKey := graphv2.RootKey(unit.ID, "drain-item", fingerprint, map[string]string{
 		graphv2.ConvoyIDVar: unit.ID,
 		"mode":              "defaulted",
 	}, "drain", drain.ID+":"+row.MemberID)
@@ -1462,7 +1470,9 @@ bond = "mol-voter"
 	unit := beads.Bead{ID: "unit-1"}
 	member := beads.Bead{ID: "member-1"}
 	row := &drainManifestRow{Index: 0, ItemRootKey: "item-key-1"}
-	stampDrainItemRecipe(recipe, control, unit, member, 1, row, "drain-item", nil)
+	if err := stampDrainItemRecipe(recipe, control, unit, member, 1, row, "drain-item", nil); err != nil {
+		t.Fatalf("stampDrainItemRecipe: %v", err)
+	}
 
 	stepsByKind := make(map[string]*formula.RecipeStep)
 	var workStep *formula.RecipeStep

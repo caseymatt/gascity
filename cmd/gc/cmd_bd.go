@@ -98,12 +98,13 @@ invocation the generated work query builds, not with all of "bd ready" —
 "gc ready --help" lists what it takes. A city that relocates no class is
 unaffected.
 
-All arguments after "gc bd" are forwarded to bd unchanged. "heartbeat
-<issue-id>" forwards to bd's native heartbeat, which refreshes the claim's
-lease and fails loudly when the caller no longer owns it. gc adds one
-subcommand of its own: "release-if-current <issue-id> <assignee>", which
-conditionally resets an in-progress assignment only when the bead still has
-that assignee.
+All arguments after "gc bd" are forwarded to bd unchanged, except for the
+gc-owned commands documented here. "heartbeat <issue-id>" forwards to bd's
+native heartbeat, which refreshes the claim's lease and fails loudly when the
+caller no longer owns it. "metadata-cas <issue-id> --key <key> --expected
+<string> --value <string>" atomically updates one metadata key when its current
+value matches. "release-if-current <issue-id> <assignee>" conditionally resets
+an in-progress assignment only when the bead still has that assignee.
 
 gc bd forces BD_EXPORT_AUTO=false to prevent bd's git auto-export hook
 from wedging the wrapper after printing command output. If you need
@@ -114,6 +115,7 @@ auto-export behavior, invoke bd directly.`,
   gc bd list --rig my-project -s open
   gc bd --city /path/to/city list    # pins the city (HQ) store, no rig auto-detect
   gc bd heartbeat my-project-abc     # refresh the claim lease you hold
+  gc bd metadata-cas my-project-abc --key gc.lease --expected old --value new
   gc bd release-if-current my-project-abc worker-1`,
 		DisableFlagParsing: true,
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -247,6 +249,12 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	metadataCASRequest, metadataCAS, metadataCASParseErr := parseBdMetadataCASArgs(bdArgs)
+	if metadataCAS && metadataCASParseErr != nil {
+		fmt.Fprintf(stderr, "gc bd metadata-cas: %v\n", metadataCASParseErr) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+
 	// `gc bd sql`, `gc bd query` and the selector verbs (`list`, `search`) are
 	// passthroughs to bd, and bd answers about the bd ledger only. On a split
 	// city a read that names a relocated class's beads comes back empty and exit
@@ -281,6 +289,9 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	// travel — see refuseRigScopedClassOwnedTarget.
 	if code, handled := maybeRouteBdByID(cityPath, rigName, bdArgs, stdout, stderr); handled {
 		return code
+	}
+	if metadataCAS {
+		return doBdMetadataCAS(cityPath, cfg, target, metadataCASRequest, stdout, stderr)
 	}
 	if id, expectedAssignee, ok, err := parseBdReleaseIfCurrentArgs(bdArgs); ok || err != nil {
 		if err != nil {
@@ -441,6 +452,139 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 		return bdSilentFallbackExitCode
 	}
 
+	return 0
+}
+
+const bdMetadataCASUsage = "usage: gc bd metadata-cas <bead-id> --key <key> --expected <string> --value <string> [--json]"
+
+type bdMetadataCASRequest struct {
+	id       string
+	key      string
+	expected string
+	value    string
+	json     bool
+}
+
+func parseBdMetadataCASArgs(args []string) (bdMetadataCASRequest, bool, error) {
+	var request bdMetadataCASRequest
+	if len(args) == 0 || args[0] != "metadata-cas" {
+		return request, false, nil
+	}
+	usageError := func(format string, values ...any) (bdMetadataCASRequest, bool, error) {
+		return request, true, fmt.Errorf("%s; %s", fmt.Sprintf(format, values...), bdMetadataCASUsage)
+	}
+	if len(args) < 2 || invalidBdMetadataCASID(args[1]) {
+		return usageError("missing or invalid bead ID")
+	}
+	request.id = args[1]
+
+	var keySet, expectedSet, valueSet, jsonSet bool
+	setValue := func(name, value string) error {
+		var seen *bool
+		switch name {
+		case "--key":
+			seen = &keySet
+		case "--expected":
+			seen = &expectedSet
+		case "--value":
+			seen = &valueSet
+		}
+		if *seen {
+			return fmt.Errorf("%s specified more than once", name)
+		}
+		*seen = true
+		switch name {
+		case "--key":
+			if value == "" {
+				return fmt.Errorf("--key must not be empty")
+			}
+			request.key = value
+		case "--expected":
+			request.expected = value
+		case "--value":
+			request.value = value
+		}
+		return nil
+	}
+
+	for i := 2; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--json" {
+			if jsonSet {
+				return usageError("%s specified more than once", arg)
+			}
+			jsonSet = true
+			request.json = true
+			continue
+		}
+
+		name, value, hasEquals := strings.Cut(arg, "=")
+		switch name {
+		case "--key", "--expected", "--value":
+			if !hasEquals {
+				if i+1 >= len(args) {
+					return usageError("%s requires a value", name)
+				}
+				i++
+				value = args[i]
+			}
+			if err := setValue(name, value); err != nil {
+				return usageError("%v", err)
+			}
+		default:
+			return usageError("unexpected argument %q", arg)
+		}
+	}
+
+	if !keySet {
+		return usageError("missing required flag --key")
+	}
+	if !expectedSet {
+		return usageError("missing required flag --expected")
+	}
+	if !valueSet {
+		return usageError("missing required flag --value")
+	}
+	return request, true, nil
+}
+
+func invalidBdMetadataCASID(value string) bool {
+	return value == "" || strings.HasPrefix(value, "-") || strings.IndexFunc(value, unicode.IsSpace) >= 0
+}
+
+func doBdMetadataCAS(cityPath string, cfg *config.City, target execStoreTarget, request bdMetadataCASRequest, stdout, stderr io.Writer) int {
+	store, err := openStoreAtForCityWithConfig(target.ScopeRoot, cityPath, cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc bd metadata-cas: opening %s store: %v\n", scopeLabel(target), err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+
+	// MetadataCASWriterFor follows every declared wrapper target and asks only
+	// for the narrow value-CAS capability. Native Dolt can soundly implement
+	// that operation without claiming the unrelated revision-fence trio.
+	writer, ok := beads.MetadataCASWriterFor(store)
+	if !ok {
+		fmt.Fprintf(stderr, "gc bd metadata-cas: metadata CAS for %q: %v (resolved store %T)\n", request.id, beads.ErrConditionalWriteUnsupported, store) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+
+	swapped, err := writer.CompareAndSetMetadataKey(request.id, request.key, request.expected, request.value)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc bd metadata-cas: metadata CAS for %q key %q: %v\n", request.id, request.key, err) //nolint:errcheck // best-effort stderr
+		if errors.Is(err, beads.ErrBDSilentFallback) {
+			fmt.Fprintln(stderr, bdSilentFallbackUserMessage) //nolint:errcheck // best-effort stderr
+			return bdSilentFallbackExitCode
+		}
+		return 1
+	}
+
+	if request.json {
+		fmt.Fprintf(stdout, "{\"swapped\":%t}\n", swapped) //nolint:errcheck // best-effort stdout
+	} else if swapped {
+		fmt.Fprintln(stdout, "swapped") //nolint:errcheck // best-effort stdout
+	} else {
+		fmt.Fprintln(stdout, "not-swapped") //nolint:errcheck // best-effort stdout
+	}
 	return 0
 }
 

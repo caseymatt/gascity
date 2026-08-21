@@ -497,10 +497,25 @@ func attachFormulaToBead(opts SlingOpts, deps SlingDeps, querier BeadQuerier, be
 	if isGraph {
 		formulaVars = graphInv.Vars
 		result.Deprecations = append(result.Deprecations, graphInv.Deprecations...)
-		if err := validateSlingFormulaRuntimeVars(context.Background(), formulaName, searchPaths, molecule.Options{
+		recipe, err := formula.CompileWithoutRuntimeVarValidation(context.Background(), formulaName, searchPaths, formulaVars)
+		if err != nil {
+			graphv2.CloseSyntheticInputConvoy(deps.Store, graphInv.InputConvoy, beadID)
+			return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
+		}
+		if err := validateExpectedCompiledRecipeFingerprint(recipe); err != nil {
+			graphv2.CloseSyntheticInputConvoy(deps.Store, graphInv.InputConvoy, beadID)
+			return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
+		}
+		launchOpts := molecule.Options{
 			Title: opts.Title,
 			Vars:  formulaVars,
-		}); err != nil {
+		}
+		if err := molecule.ValidateRecipeRuntimeVars(recipe, launchOpts); err != nil {
+			graphv2.CloseSyntheticInputConvoy(deps.Store, graphInv.InputConvoy, beadID)
+			return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
+		}
+		rootKey, err := compiledGraphV2RootKeyForInput(recipe, formulaName, beadID, formulaVars, opts.ScopeKind, opts.ScopeRef)
+		if err != nil {
 			graphv2.CloseSyntheticInputConvoy(deps.Store, graphInv.InputConvoy, beadID)
 			return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
 		}
@@ -519,17 +534,39 @@ func attachFormulaToBead(opts SlingOpts, deps SlingDeps, querier BeadQuerier, be
 			// second live root beside the first, and the rollback below has no
 			// snapshot to restore. Identity to deps.Store wherever graph is not
 			// relocated, so a single-store sling is byte-identical.
-			replacedSnapshot, err := snapshotGraphV2ReplacementRoot(deps.graphStore(), formulaName, formulaVars, opts.ScopeKind, opts.ScopeRef, opts.Force)
+			replacedSnapshot, err := snapshotGraphV2ReplacementRoot(
+				deps.graphStore(),
+				deps.Store,
+				beadID,
+				formulaName,
+				opts.ScopeKind,
+				opts.ScopeRef,
+				rootKey,
+				opts.Force,
+			)
 			if err != nil {
 				return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
 			}
-			mResult, err := InstantiateSlingFormula(context.Background(), formulaName, searchPaths, molecule.Options{
-				Title:            opts.Title,
-				Vars:             formulaVars,
-				PriorityOverride: BeadPriorityOverride(deps.Store, graphInv.InputConvoy),
-			}, "", opts.ScopeKind, opts.ScopeRef, a, deps, opts.Force)
+			if replacedSnapshot.rootID != "" {
+				if _, err := closeReplacedGraphV2Root(deps.graphStore(), replacedSnapshot.rootID); err != nil {
+					return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
+				}
+			}
+			launchOpts.PriorityOverride = BeadPriorityOverride(deps.Store, graphInv.InputConvoy)
+			mResult, err := instantiateCompiledSlingFormula(context.Background(), recipe, formulaName, launchOpts, "", opts.ScopeKind, opts.ScopeRef, a, deps, rootKey, beadID, opts.Force)
 			if err != nil {
-				return result, fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
+				graphv2.CloseSyntheticInputConvoy(deps.Store, graphInv.InputConvoy, beadID)
+				instantiateErr := fmt.Errorf("instantiating %s %q on %s: %w", errLabel, formulaName, beadID, err)
+				if rollbackErr := rollbackGraphV2ReplacementLaunch(deps.graphStore(), "", replacedSnapshot); rollbackErr != nil {
+					return result, errors.Join(instantiateErr, rollbackErr)
+				}
+				return result, instantiateErr
+			}
+			if mResult.Created == 0 {
+				// A retry can mint a fresh synthetic input convoy before the
+				// stable target-based RootKey finds the already-live workflow.
+				// That convoy was never consumed by this root.
+				graphv2.CloseSyntheticInputConvoy(deps.Store, graphInv.InputConvoy, beadID)
 			}
 			wfResult, wfErr := doStartGraphWorkflow(mResult.RootID, "", a, method, deps)
 			wfResult.FormulaName = formulaName
@@ -542,6 +579,9 @@ func attachFormulaToBead(opts SlingOpts, deps SlingDeps, querier BeadQuerier, be
 					return wfResult, errors.Join(wfErr, rollbackErr)
 				}
 				return wfResult, wfErr
+			}
+			if replacedSnapshot.inputConvoyID != "" {
+				graphv2.CloseSyntheticInputConvoy(deps.Store, replacedSnapshot.inputConvoyID, beadID)
 			}
 			// The convoy-first branch deliberately passes an empty
 			// sourceBeadID (the source is tracked through the input convoy,

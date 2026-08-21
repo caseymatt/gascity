@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"maps"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -202,6 +204,41 @@ func CloseSyntheticInputConvoy(store beads.Store, convoyID, targetID string) {
 		return
 	}
 	_ = store.Close(convoyID) //nolint:errcheck // best-effort cleanup of this invocation's own artifact
+}
+
+// InputTargetIdentity returns the stable target identity represented by an
+// invocation convoy. Caller-provided convoys identify themselves; a synthetic
+// single-item convoy identifies the bead it tracks.
+func InputTargetIdentity(store beads.Store, convoyID string) (string, error) {
+	convoyID = strings.TrimSpace(convoyID)
+	if store == nil || convoyID == "" {
+		return convoyID, nil
+	}
+	convoy, err := store.Get(convoyID)
+	if err != nil {
+		return "", fmt.Errorf("reading input convoy %s: %w", convoyID, err)
+	}
+	if convoy.Type != "convoy" || convoy.Metadata[syntheticMetadataKey] != "true" {
+		return convoyID, nil
+	}
+	deps, err := store.DepList(convoyID, "down")
+	if err != nil {
+		return "", fmt.Errorf("reading synthetic input convoy %s: %w", convoyID, err)
+	}
+	var targetID string
+	for _, dep := range deps {
+		if dep.Type != convoycore.TrackingDepType {
+			continue
+		}
+		if targetID != "" && targetID != dep.DependsOnID {
+			return "", fmt.Errorf("synthetic input convoy %s tracks multiple targets", convoyID)
+		}
+		targetID = dep.DependsOnID
+	}
+	if targetID == "" {
+		return "", fmt.Errorf("synthetic input convoy %s has no tracked target", convoyID)
+	}
+	return targetID, nil
 }
 
 // legacyIssueDeprecations formats deprecation warnings for legacy issue and
@@ -607,10 +644,69 @@ func lockStripe(key string) uint8 {
 	return uint8(h.Sum32())
 }
 
-// RootKey returns the stable graph.v2 workflow root key for an input convoy and
-// invocation variables.
-func RootKey(inputConvoyID, formulaName string, vars map[string]string, scopeKind, scopeRef string) string {
-	return "graphv2-root:" + strings.TrimSpace(inputConvoyID) + ":" + strings.TrimSpace(formulaName) + ":" + varsFingerprint(vars) + ":" + dispatchScope(scopeKind, scopeRef)
+// CompiledRecipeFingerprint returns a deterministic SHA-256 digest of the
+// compiled recipe content that can affect a graph.v2 workflow. Inspection-only
+// formula metadata and source provenance are excluded. Absolute Ralph asset
+// paths are replaced by their content digests so the same compiled workflow has
+// one identity across checkout and mount locations.
+func CompiledRecipeFingerprint(recipe *formula.Recipe) (string, error) {
+	if recipe == nil {
+		return "", errors.New("cannot fingerprint a nil compiled recipe")
+	}
+	steps, err := fingerprintRecipeSteps(recipe.Steps)
+	if err != nil {
+		return "", err
+	}
+	content := struct {
+		Name        string                     `json:"name"`
+		Description string                     `json:"description"`
+		Steps       []formula.RecipeStep       `json:"steps"`
+		Deps        []formula.RecipeDep        `json:"deps"`
+		Vars        map[string]*formula.VarDef `json:"vars"`
+		Phase       string                     `json:"phase"`
+		Pour        bool                       `json:"pour"`
+		RootOnly    bool                       `json:"root_only"`
+	}{
+		Name:        recipe.Name,
+		Description: recipe.Description,
+		Steps:       steps,
+		Deps:        recipe.Deps,
+		Vars:        recipe.Vars,
+		Phase:       recipe.Phase,
+		Pour:        recipe.Pour,
+		RootOnly:    recipe.RootOnly,
+	}
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		return "", fmt.Errorf("serialize compiled recipe content: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func fingerprintRecipeSteps(steps []formula.RecipeStep) ([]formula.RecipeStep, error) {
+	result := append([]formula.RecipeStep(nil), steps...)
+	for i := range result {
+		result[i].Labels = append([]string(nil), result[i].Labels...)
+		result[i].Metadata = maps.Clone(result[i].Metadata)
+		checkPath := strings.TrimSpace(result[i].Metadata[beadmeta.CheckPathMetadataKey])
+		if checkPath == "" || !filepath.IsAbs(checkPath) {
+			continue
+		}
+		content, err := os.ReadFile(checkPath)
+		if err != nil {
+			return nil, fmt.Errorf("fingerprint Ralph check asset %q: %w", checkPath, err)
+		}
+		sum := sha256.Sum256(content)
+		result[i].Metadata[beadmeta.CheckPathMetadataKey] = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return result, nil
+}
+
+// RootKey returns the stable graph.v2 workflow root key for an input convoy,
+// compiled recipe fingerprint, and invocation variables.
+func RootKey(inputConvoyID, formulaName, recipeFingerprint string, vars map[string]string, scopeKind, scopeRef string) string {
+	return "graphv2-root:" + strings.TrimSpace(inputConvoyID) + ":" + strings.TrimSpace(formulaName) + ":" + strings.TrimSpace(recipeFingerprint) + ":" + varsFingerprint(vars) + ":" + dispatchScope(scopeKind, scopeRef)
 }
 
 func varsFingerprint(vars map[string]string) string {

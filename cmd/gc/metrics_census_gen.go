@@ -201,6 +201,10 @@ const (
 	productMetricsGeneratedCommandID200 productMetricsCommandID = 200
 	productMetricsGeneratedCommandID201 productMetricsCommandID = 201
 	productMetricsGeneratedCommandID202 productMetricsCommandID = 202
+	productMetricsGeneratedCommandID203 productMetricsCommandID = 203
+	productMetricsGeneratedCommandID204 productMetricsCommandID = 204
+	productMetricsGeneratedCommandID205 productMetricsCommandID = 205
+	productMetricsGeneratedCommandID206 productMetricsCommandID = 206
 )
 
 var generatedProductMetricsGlobalConditionalModes = []productMetricsConditionalMode{productMetricsConditionalGenericMachineOutput, productMetricsConditionalManagedContext, productMetricsConditionalProviderHook}
@@ -500,6 +504,11 @@ var generatedProductMetricsCommandCensus = []productMetricsCommandCensusEntry{
 	{Path: "gc workflow delete-source", Aliases: []string{}, ConditionalModes: []productMetricsConditionalMode{}, Hidden: false, EffectiveHidden: true, DisableFlagParsing: false, Shape: productMetricsShapeRunnable, Classification: "convoy-delete-source", Mode: productMetricsModeWorkflowCompat, Notice: productMetricsNoticeIneligible, Recording: productMetricsRecordingRecordable, Owner: productMetricsOwnerImmediate, ID: productMetricsGeneratedCommandID38},
 	{Path: "gc workflow poke", Aliases: []string{}, ConditionalModes: []productMetricsConditionalMode{}, Hidden: true, EffectiveHidden: true, DisableFlagParsing: false, Shape: productMetricsShapeRunnable, Classification: "excluded", Mode: productMetricsModeHiddenPrivate, Notice: productMetricsNoticeIneligible, Recording: productMetricsRecordingExcluded, Owner: productMetricsOwnerExcluded, Exclusion: productMetricsExclusionHiddenPrivate},
 	{Path: "gc workflow reopen-source", Aliases: []string{}, ConditionalModes: []productMetricsConditionalMode{}, Hidden: false, EffectiveHidden: true, DisableFlagParsing: false, Shape: productMetricsShapeRunnable, Classification: "convoy-reopen-source", Mode: productMetricsModeWorkflowCompat, Notice: productMetricsNoticeIneligible, Recording: productMetricsRecordingRecordable, Owner: productMetricsOwnerImmediate, ID: productMetricsGeneratedCommandID41},
+	{Path: "gc worktree", Aliases: []string{}, ConditionalModes: []productMetricsConditionalMode{}, Hidden: false, EffectiveHidden: false, DisableFlagParsing: false, Shape: productMetricsShapeRunnableGroup, Classification: "unknown", Mode: productMetricsModeStandard, Notice: productMetricsNoticeEligible, Recording: productMetricsRecordingRecordable, Owner: productMetricsOwnerDeferred, Resolver: productMetricsResolverGroupDispatch, DeferredDefault: productMetricsDeferredUnknown, ID: productMetricsCommandUnknown},
+	{Path: "gc worktree create", Aliases: []string{}, ConditionalModes: []productMetricsConditionalMode{}, Hidden: false, EffectiveHidden: false, DisableFlagParsing: false, Shape: productMetricsShapeRunnable, Classification: "worktree-create", Mode: productMetricsModeStandard, Notice: productMetricsNoticeEligible, Recording: productMetricsRecordingRecordable, Owner: productMetricsOwnerImmediate, ID: productMetricsGeneratedCommandID203},
+	{Path: "gc worktree list", Aliases: []string{}, ConditionalModes: []productMetricsConditionalMode{}, Hidden: false, EffectiveHidden: false, DisableFlagParsing: false, Shape: productMetricsShapeRunnable, Classification: "worktree-list", Mode: productMetricsModeStandard, Notice: productMetricsNoticeEligible, Recording: productMetricsRecordingRecordable, Owner: productMetricsOwnerImmediate, ID: productMetricsGeneratedCommandID204},
+	{Path: "gc worktree publish", Aliases: []string{}, ConditionalModes: []productMetricsConditionalMode{}, Hidden: false, EffectiveHidden: false, DisableFlagParsing: false, Shape: productMetricsShapeRunnable, Classification: "worktree-publish", Mode: productMetricsModeStandard, Notice: productMetricsNoticeEligible, Recording: productMetricsRecordingRecordable, Owner: productMetricsOwnerImmediate, ID: productMetricsGeneratedCommandID205},
+	{Path: "gc worktree reclaim", Aliases: []string{}, ConditionalModes: []productMetricsConditionalMode{}, Hidden: false, EffectiveHidden: false, DisableFlagParsing: false, Shape: productMetricsShapeRunnable, Classification: "worktree-reclaim", Mode: productMetricsModeStandard, Notice: productMetricsNoticeEligible, Recording: productMetricsRecordingRecordable, Owner: productMetricsOwnerImmediate, ID: productMetricsGeneratedCommandID206},
 }
 
 var generatedProductMetricsSyntheticCensus = []productMetricsSyntheticCensusEntry{

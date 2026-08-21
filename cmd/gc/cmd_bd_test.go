@@ -142,6 +142,265 @@ func TestExtractBdScopeFlags(t *testing.T) {
 	}
 }
 
+func TestGcBdMetadataCASSwapsWithoutBdPassthrough(t *testing.T) {
+	cityDir, _, beadID := setupGcBdMetadataCASFileCity(t, false)
+
+	var stdout, stderr bytes.Buffer
+	code := doBd([]string{
+		"--city", cityDir,
+		"metadata-cas", beadID,
+		"--key", "lease",
+		"--expected", "old",
+		"--value", "new",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doBd(metadata-cas) = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "swapped\n" {
+		t.Fatalf("stdout = %q, want %q", got, "swapped\n")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertGcBdMetadataCASValue(t, cityDir, beadID, "new")
+}
+
+func TestGcBdMetadataCASMismatchIsOrdinaryJSONResult(t *testing.T) {
+	cityDir, _, beadID := setupGcBdMetadataCASFileCity(t, false)
+
+	var stdout, stderr bytes.Buffer
+	code := doBd([]string{
+		"--city", cityDir,
+		"metadata-cas", beadID,
+		"--value=rejected",
+		"--json",
+		"--expected=other",
+		"--key=lease",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doBd(metadata-cas mismatch) = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "{\"swapped\":false}\n" {
+		t.Fatalf("stdout = %q, want exact JSON result", got)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertGcBdMetadataCASValue(t, cityDir, beadID, "old")
+}
+
+func TestGcBdMetadataCASUnsupportedStoreFailsClosed(t *testing.T) {
+	cityDir := setupGcBdMetadataCASExecCity(t)
+
+	var stdout, stderr bytes.Buffer
+	code := doBd([]string{
+		"--city", cityDir,
+		"metadata-cas", "demo-1",
+		"--key", "lease",
+		"--expected", "old",
+		"--value", "new",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("doBd(metadata-cas unsupported) = 0, want non-zero")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, beads.ErrConditionalWriteUnsupported.Error()) {
+		t.Fatalf("stderr = %q, want ErrConditionalWriteUnsupported diagnostic", got)
+	}
+}
+
+func TestGcBdMetadataCASRejectsMalformedFlags(t *testing.T) {
+	cityDir, _, beadID := setupGcBdMetadataCASFileCity(t, false)
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing required flag",
+			args: []string{"metadata-cas", beadID, "--expected", "old", "--value", "new"},
+			want: "missing required flag --key",
+		},
+		{
+			name: "duplicate flag",
+			args: []string{"metadata-cas", beadID, "--key", "lease", "--key", "other", "--expected", "old", "--value", "new"},
+			want: "--key specified more than once",
+		},
+		{
+			name: "missing flag value",
+			args: []string{"metadata-cas", beadID, "--key", "lease", "--expected", "old", "--value"},
+			want: "--value requires a value",
+		},
+		{
+			name: "unknown flag",
+			args: []string{"metadata-cas", beadID, "--key", "lease", "--expected", "old", "--value", "new", "--force"},
+			want: `unexpected argument "--force"`,
+		},
+		{
+			name: "extra positional",
+			args: []string{"metadata-cas", beadID, "--key", "lease", "--expected", "old", "--value", "new", "extra"},
+			want: `unexpected argument "extra"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := append([]string{"--city", cityDir}, tt.args...)
+			var stdout, stderr bytes.Buffer
+			if code := doBd(args, &stdout, &stderr); code == 0 {
+				t.Fatalf("doBd(%v) = 0, want non-zero", tt.args)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
+			if got := stderr.String(); !strings.Contains(got, tt.want) || !strings.Contains(got, bdMetadataCASUsage) {
+				t.Fatalf("stderr = %q, want %q and usage", got, tt.want)
+			}
+		})
+	}
+	assertGcBdMetadataCASValue(t, cityDir, beadID, "old")
+}
+
+func TestGcBdMetadataCASUsesExplicitRigScope(t *testing.T) {
+	cityDir, rigDir, rigBeadID := setupGcBdMetadataCASFileCity(t, true)
+
+	var stdout, stderr bytes.Buffer
+	code := doBd([]string{
+		"--city", cityDir,
+		"metadata-cas", rigBeadID,
+		"--key", "lease",
+		"--expected", "old",
+		"--value", "rig-won",
+		"--rig", "repo",
+		"--json",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doBd(metadata-cas --rig repo) = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "{\"swapped\":true}\n" {
+		t.Fatalf("stdout = %q, want exact JSON result", got)
+	}
+	assertGcBdMetadataCASValue(t, rigDir, rigBeadID, "rig-won")
+}
+
+func setupGcBdMetadataCASFileCity(t *testing.T, withRig bool) (cityDir, rigDir, beadID string) {
+	t.Helper()
+	clearInheritedBeadsEnv(t)
+	origCityFlag, origRigFlag := cityFlag, rigFlag
+	cityFlag, rigFlag = "", ""
+	t.Cleanup(func() {
+		cityFlag, rigFlag = origCityFlag, origRigFlag
+	})
+
+	cityDir = t.TempDir()
+	cityTOML := `[workspace]
+
+[beads]
+provider = "file"
+`
+	if withRig {
+		cityTOML += `
+[[rigs]]
+name = "repo"
+prefix = "repo"
+`
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(cityTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	siteTOML := "workspace_name = \"demo\"\n"
+	if withRig {
+		siteTOML += "\n[[rig]]\nname = \"repo\"\npath = \"repo\"\n"
+	}
+	writeCatalogFile(t, cityDir, ".gc/site.toml", siteTOML)
+	writeBuiltinImportsFixture(t, cityDir, "core")
+	if err := ensureScopedFileStoreLayout(cityDir); err != nil {
+		t.Fatalf("ensure scoped file-store layout: %v", err)
+	}
+	setCwd(t, cityDir)
+	t.Setenv("GC_CITY_PATH", cityDir)
+
+	scope := cityDir
+	if withRig {
+		rigDir = filepath.Join(cityDir, "repo")
+		scope = rigDir
+	}
+	if err := os.MkdirAll(filepath.Join(scope, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := beads.OpenFileStore(fsys.OSFS{}, filepath.Join(scope, ".gc", "beads.json"))
+	if err != nil {
+		t.Fatalf("open fixture file store: %v", err)
+	}
+	created, err := store.Create(beads.Bead{
+		Title:    "metadata CAS fixture",
+		Metadata: map[string]string{"lease": "old"},
+	})
+	if err != nil {
+		t.Fatalf("seed fixture bead: %v", err)
+	}
+	installGcBdMetadataCASExecTrap(t)
+	return cityDir, rigDir, created.ID
+}
+
+func setupGcBdMetadataCASExecCity(t *testing.T) string {
+	t.Helper()
+	clearInheritedBeadsEnv(t)
+	origCityFlag, origRigFlag := cityFlag, rigFlag
+	cityFlag, rigFlag = "", ""
+	t.Cleanup(func() {
+		cityFlag, rigFlag = origCityFlag, origRigFlag
+	})
+
+	cityDir := t.TempDir()
+	execPath := filepath.Join(t.TempDir(), "custom-beads")
+	if err := os.WriteFile(execPath, []byte("#!/bin/sh\nprintf launched > \"$GC_BD_CAS_MARKER\"\nexit 99\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cityTOML := "[workspace]\nname = \"demo\"\n\n[beads]\nprovider = " + strconv.Quote("exec:"+execPath) + "\n"
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(cityTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setCwd(t, cityDir)
+	t.Setenv("GC_CITY_PATH", cityDir)
+	installGcBdMetadataCASExecTrap(t)
+	return cityDir
+}
+
+func installGcBdMetadataCASExecTrap(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "launched")
+	bdPath := filepath.Join(binDir, "bd")
+	if err := os.WriteFile(bdPath, []byte("#!/bin/sh\nprintf launched > \"$GC_BD_CAS_MARKER\"\nexit 99\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GC_BD_CAS_MARKER", marker)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Errorf("metadata-cas launched an external command; marker stat error = %v", err)
+		}
+	})
+}
+
+func assertGcBdMetadataCASValue(t *testing.T, scope, beadID, want string) {
+	t.Helper()
+	store, err := beads.OpenFileStore(fsys.OSFS{}, filepath.Join(scope, ".gc", "beads.json"))
+	if err != nil {
+		t.Fatalf("reopen fixture file store: %v", err)
+	}
+	bead, err := store.Get(beadID)
+	if err != nil {
+		t.Fatalf("get fixture bead: %v", err)
+	}
+	if got := bead.Metadata["lease"]; got != want {
+		t.Fatalf("metadata lease = %q, want %q", got, want)
+	}
+}
+
 func TestExtractBdDirectoryFlag(t *testing.T) {
 	tests := []struct {
 		name string

@@ -5,6 +5,7 @@
   "x-gc-raw-json": true,
   "type": "object",
   "required": [
+    "ok",
     "id",
     "owner",
     "rig",
@@ -26,6 +27,7 @@
     "reason"
   ],
   "properties": {
+    "ok": { "const": true },
     "id": { "type": "string" },
     "owner": { "type": "string" },
     "rig": { "type": "string" },

@@ -1399,7 +1399,9 @@ func ensureDrainItemRoot(store beads.Store, control, unit, member beads.Bead, co
 		return "", false, fmt.Errorf("%w: %s: validating drain item formula %q: %w", errDrainInvalidItemFormula, control.ID, itemFormula, err)
 	}
 	runtimeVars := drainItemRuntimeVars(recipe, vars)
-	stampDrainItemRecipe(recipe, control, unit, member, count, row, itemFormula, runtimeVars)
+	if err := stampDrainItemRecipe(recipe, control, unit, member, count, row, itemFormula, runtimeVars); err != nil {
+		return "", false, fmt.Errorf("%w: %s: fingerprinting drain item formula %q: %w", errDrainInvalidItemFormula, control.ID, itemFormula, err)
+	}
 	if opts.PrepareRecipe != nil {
 		if err := opts.PrepareRecipe(recipe, control); err != nil {
 			return "", false, fmt.Errorf("%w: %s: preparing drain item formula %q: %w", errDrainInvalidItemFormula, control.ID, itemFormula, err)
@@ -1499,9 +1501,13 @@ func isGraphV2WorkflowRecipe(recipe *formula.Recipe) bool {
 	return root != nil && root.Metadata[beadmeta.KindMetadataKey] == beadmeta.KindWorkflow && root.Metadata[beadmeta.FormulaContractMetadataKey] == beadmeta.FormulaContractGraphV2
 }
 
-func stampDrainItemRecipe(recipe *formula.Recipe, control, unit, member beads.Bead, count int, row *drainManifestRow, itemFormula string, vars map[string]string) {
+func stampDrainItemRecipe(recipe *formula.Recipe, control, unit, member beads.Bead, count int, row *drainManifestRow, itemFormula string, vars map[string]string) error {
 	if recipe == nil || len(recipe.Steps) == 0 {
-		return
+		return nil
+	}
+	fingerprint, err := graphv2.CompiledRecipeFingerprint(recipe)
+	if err != nil {
+		return err
 	}
 	root := &recipe.Steps[0]
 	if root.Metadata == nil {
@@ -1514,7 +1520,7 @@ func stampDrainItemRecipe(recipe *formula.Recipe, control, unit, member beads.Be
 	root.Metadata[beadmeta.DrainMemberIDMetadataKey] = member.ID
 	root.Metadata[beadmeta.DrainMemberAccessMetadataKey] = drainMemberAccess(control)
 	root.Metadata[beadmeta.ItemRootKeyMetadataKey] = row.ItemRootKey
-	root.Metadata[beadmeta.Graphv2RootKeyMetadataKey] = graphv2.RootKey(unit.ID, itemFormula, vars, "drain", control.ID+":"+member.ID)
+	root.Metadata[beadmeta.Graphv2RootKeyMetadataKey] = graphv2.RootKey(unit.ID, itemFormula, fingerprint, vars, "drain", control.ID+":"+member.ID)
 	if metadata := graphv2.RuntimeVarsMetadata(vars); metadata != "" {
 		root.Metadata[graphv2.RuntimeVarsMetadataKey] = metadata
 	}
@@ -1532,6 +1538,7 @@ func stampDrainItemRecipe(recipe *formula.Recipe, control, unit, member beads.Be
 			step.Metadata[beadmeta.SessionAffinityMetadataKey] = "require"
 		}
 	}
+	return nil
 }
 
 // isSharedDrainExecutableStep reports whether a drain item recipe step is

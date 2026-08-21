@@ -1,6 +1,8 @@
 package sling
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
@@ -160,11 +162,21 @@ func TestGraphV2ReplacementSnapshotAndRollbackUseTheGraphStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("materializing the root to be replaced: %v", err)
 	}
-	if _, err := graph.Get(replaced.RootID); err != nil {
+	replacedRoot, err := graph.Get(replaced.RootID)
+	if err != nil {
 		t.Fatalf("the first root is not graph resident (%v); the fixture cannot distinguish the two stores", err)
 	}
 
-	snapshot, err := snapshotGraphV2ReplacementRoot(deps.graphStore(), "graph-work", vars, "default", "", true)
+	snapshot, err := snapshotGraphV2ReplacementRoot(
+		deps.graphStore(),
+		deps.Store,
+		convoy.ID,
+		"graph-work",
+		"default",
+		"",
+		replacedRoot.Metadata[beadmeta.Graphv2RootKeyMetadataKey],
+		true,
+	)
 	if err != nil {
 		t.Fatalf("snapshotGraphV2ReplacementRoot: %v", err)
 	}
@@ -273,6 +285,20 @@ func (s *promoteFailingStore) Update(id string, opts beads.UpdateOpts) error {
 	return s.Store.Update(id, opts)
 }
 
+type createFailingStore struct {
+	beads.Store
+	armed bool
+}
+
+func (s *createFailingStore) Create(b beads.Bead) (beads.Bead, error) {
+	if s.armed {
+		return beads.Bead{}, errRefusedCreation
+	}
+	return s.Store.Create(b)
+}
+
+var errRefusedCreation = errorString("refusing replacement root creation")
+
 var errRefusedPromotion = errorString("refusing the workflow promotion")
 
 type errorString string
@@ -323,5 +349,48 @@ func TestForcedGraphV2ReplacementRollbackRestoresInTheGraphStore(t *testing.T) {
 	}
 	if restored.Status == "closed" {
 		t.Errorf("displaced root %s is still closed after the failed replacement rolled back; the restore ran against a store that does not hold it, so the city lost both workflows", first.WorkflowID)
+	}
+}
+
+func TestForcedGraphV2ReplacementRollbackRestoresAfterMaterializationFailure(t *testing.T) {
+	formulaDir := t.TempDir()
+	writeGraphV2ConvoyFormula(t, formulaDir)
+	cfg := graphV2SlingTestConfig(t, formulaDir)
+	deps, work, graph := splitSlingDeps(t, cfg)
+	deps.CityPath = t.TempDir()
+	createGuard := &createFailingStore{Store: graph}
+	deps.GraphStore = createGuard
+
+	source, err := work.Create(beads.Bead{Title: "source", Type: "task"})
+	if err != nil {
+		t.Fatalf("creating source bead: %v", err)
+	}
+	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+	first, err := DoSling(SlingOpts{Target: a, BeadOrFormula: source.ID, OnFormula: "graph-work"}, deps, deps.Store)
+	if err != nil {
+		t.Fatalf("first sling: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(formulaDir, "graph-work.formula.toml"), []byte(`
+formula = "graph-work"
+version = 2
+contract = "graph.v2"
+
+[[steps]]
+id = "step"
+title = "Changed work for {{convoy_id}}"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	createGuard.armed = true
+
+	if _, err := DoSling(SlingOpts{Target: a, BeadOrFormula: source.ID, OnFormula: "graph-work", Force: true}, deps, deps.Store); err == nil {
+		t.Fatal("forced replacement succeeded despite injected root creation failure")
+	}
+	restored, err := graph.Get(first.WorkflowID)
+	if err != nil {
+		t.Fatalf("reading restored root: %v", err)
+	}
+	if restored.Status == "closed" {
+		t.Fatalf("restored root status = %q, want live", restored.Status)
 	}
 }

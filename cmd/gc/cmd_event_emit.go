@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,7 +45,7 @@ type eventEmitJSONResult struct {
 
 func newEventEmitCmd(stdout, stderr io.Writer) *cobra.Command {
 	var subject, message, actor, payload, beadPayload string
-	var jsonOut bool
+	var jsonOut, requireAck bool
 
 	cmd := &cobra.Command{
 		Use:   "emit <type>",
@@ -62,6 +63,24 @@ durable persistence.`,
 				effectiveActor = eventActor()
 			}
 			finalPayload := eventPayloadForEmit(payload, beadPayload, stderr)
+			if requireAck {
+				if err := cmdEventEmitAcknowledged(args[0], subject, message, effectiveActor, finalPayload, stderr); err != nil {
+					return fmt.Errorf("gc event emit: acknowledged append: %w", err)
+				}
+				if jsonOut {
+					return writeCLIJSONLineOrErr(stdout, stderr, "gc event emit", eventEmitJSONResult{
+						SchemaVersion: "1",
+						OK:            true,
+						EventType:     args[0],
+						Actor:         effectiveActor,
+						Subject:       subject,
+						Message:       message,
+						HasPayload:    finalPayload != "",
+						Submitted:     true,
+					})
+				}
+				return nil
+			}
 			submitted := false
 			if jsonOut {
 				submitted = cmdEventEmitSubmitted(args[0], subject, message, effectiveActor, finalPayload, stderr)
@@ -88,6 +107,7 @@ durable persistence.`,
 	cmd.Flags().StringVar(&payload, "payload", "", "JSON payload to attach to the event")
 	cmd.Flags().StringVar(&beadPayload, "bead-payload", "", "Best-effort bead ID fallback for hook payloads")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON summary")
+	cmd.Flags().BoolVar(&requireAck, "require-ack", false, "fail unless the built-in event log durably accepts the event")
 	return cmd
 }
 
@@ -171,6 +191,49 @@ func cmdEventEmitSubmitted(eventType, subject, message, actor, payload string, s
 	}
 	defer ep.Close() //nolint:errcheck // best-effort
 	return doEventEmit(ep, eventType, subject, message, actor, payload, stderr)
+}
+
+type acknowledgedEventAppender interface {
+	AppendBatch([]events.Event) error
+}
+
+func cmdEventEmitAcknowledged(eventType, subject, message, actor, payload string, stderr io.Writer) (resultErr error) {
+	ep, code := openCityEventEmitProvider(stderr, "gc event emit")
+	if ep == nil {
+		return fmt.Errorf("opening event provider failed with exit code %d", code)
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, ep.Close())
+	}()
+	appender, ok := ep.(acknowledgedEventAppender)
+	if !ok {
+		return fmt.Errorf("configured event provider does not support acknowledged appends")
+	}
+	event, err := eventForEmit(eventType, subject, message, actor, payload)
+	if err != nil {
+		return err
+	}
+	return appender.AppendBatch([]events.Event{event})
+}
+
+func eventForEmit(eventType, subject, message, actor, payload string) (events.Event, error) {
+	if actor == "" {
+		actor = eventActor()
+	}
+	event := events.Event{
+		Type:    eventType,
+		Actor:   actor,
+		Subject: subject,
+		Message: message,
+	}
+	if payload == "" {
+		return event, nil
+	}
+	if !json.Valid([]byte(payload)) {
+		return events.Event{}, fmt.Errorf("--payload is not valid JSON")
+	}
+	event.Payload = json.RawMessage(payload)
+	return event, nil
 }
 
 // doEventEmit is the pure logic for "gc event emit". Accepts the provider

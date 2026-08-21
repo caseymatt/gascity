@@ -62,12 +62,14 @@ type worktreeRegistryEntry struct {
 
 type worktreeListEntry struct {
 	worktreeRegistryEntry
+	OK          bool   `json:"ok"`
 	SizeBytes   int64  `json:"size_bytes"`
 	Reclaimable bool   `json:"reclaimable"`
 	Reason      string `json:"reason"`
 }
 
 type worktreeReclaimResult struct {
+	OK           bool   `json:"ok"`
 	ID           string `json:"id"`
 	Owner        string `json:"owner"`
 	Rig          string `json:"rig"`
@@ -916,7 +918,7 @@ func reclaimRegisteredWorktree(ctx context.Context, cityPath string, cfg *config
 		}
 		entry := registry.Entries[index]
 		result = worktreeReclaimResult{
-			ID: entry.ID, Owner: entry.Owner, Rig: entry.Rig, Path: entry.Path,
+			OK: true, ID: entry.ID, Owner: entry.Owner, Rig: entry.Rig, Path: entry.Path,
 			DryRun: dryRun, PublishedRef: entry.PublishedRef, PublishedSHA: entry.PublishedSHA,
 		}
 		live := collectLiveWorktreeStateFn()
@@ -1006,6 +1008,7 @@ func listRegisteredWorktrees(ctx context.Context, cityPath string, cfg *config.C
 			reason = fmt.Sprintf("size probe failed: %v", sizeErr)
 		}
 		result = append(result, worktreeListEntry{
+			OK:                    true,
 			worktreeRegistryEntry: entry,
 			SizeBytes:             size,
 			Reclaimable:           reason == "",
@@ -1045,6 +1048,7 @@ func describeWorktreeEntryForOutput(ctx context.Context, cityPath string, cfg *c
 		reason += ": " + err.Error()
 	}
 	return worktreeListEntry{
+		OK:                    true,
 		worktreeRegistryEntry: entry,
 		SizeBytes:             size,
 		Reason:                reason,

@@ -88,6 +88,7 @@ gc [flags]
 | [gc version](#gc-version) | Print gc version |
 | [gc wait](#gc-wait) | Inspect and manage durable session waits |
 | [gc whoami](#gc-whoami) | Show the authenticated hosted Gas City account |
+| [gc worktree](#gc-worktree) | Create, publish, inspect, and safely reclaim managed worktrees |
 
 ## gc agent
 
@@ -291,12 +292,13 @@ invocation the generated work query builds, not with all of "bd ready" —
 "gc ready --help" lists what it takes. A city that relocates no class is
 unaffected.
 
-All arguments after "gc bd" are forwarded to bd unchanged. "heartbeat
-&lt;issue-id&gt;" forwards to bd's native heartbeat, which refreshes the claim's
-lease and fails loudly when the caller no longer owns it. gc adds one
-subcommand of its own: "release-if-current &lt;issue-id&gt; &lt;assignee&gt;", which
-conditionally resets an in-progress assignment only when the bead still has
-that assignee.
+All arguments after "gc bd" are forwarded to bd unchanged, except for the
+gc-owned commands documented here. "heartbeat &lt;issue-id&gt;" forwards to bd's
+native heartbeat, which refreshes the claim's lease and fails loudly when the
+caller no longer owns it. "metadata-cas &lt;issue-id&gt; --key &lt;key&gt; --expected
+&lt;string&gt; --value &lt;string&gt;" atomically updates one metadata key when its current
+value matches. "release-if-current &lt;issue-id&gt; &lt;assignee&gt;" conditionally resets
+an in-progress assignment only when the bead still has that assignee.
 
 gc bd forces BD_EXPORT_AUTO=false to prevent bd's git auto-export hook
 from wedging the wrapper after printing command output. If you need
@@ -315,6 +317,7 @@ gc bd show my-project-abc          # auto-detects rig from bead prefix
 gc bd list --rig my-project -s open
 gc bd --city /path/to/city list    # pins the city (HQ) store, no rig auto-detect
 gc bd heartbeat my-project-abc     # refresh the claim lease you hold
+gc bd metadata-cas my-project-abc --key gc.lease --expected old --value new
 gc bd release-if-current my-project-abc worker-1
 ```
 
@@ -1478,6 +1481,7 @@ gc event emit <type> [flags]
 | `--json` | bool |  | emit JSON summary |
 | `--message` | string |  | Event message |
 | `--payload` | string |  | JSON payload to attach to the event |
+| `--require-ack` | bool |  | fail unless the built-in event log durably accepts the event |
 | `--subject` | string |  | Event subject (e.g. bead ID) |
 
 ## gc events
@@ -5027,3 +5031,73 @@ gc whoami [flags]
 |------|------|---------|-------------|
 | `--at` | string |  | service base URL; defaults to GC_SERVICE_URL, the stored default, then https://gascity.com |
 | `--token` | string |  | API token to check; defaults to GC_SERVICE_TOKEN or the stored login |
+
+## gc worktree
+
+Create, publish, inspect, and safely reclaim managed worktrees
+
+```
+gc worktree
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| [gc worktree create](#gc-worktree-create) | Create and register a managed worktree |
+| [gc worktree list](#gc-worktree-list) | List managed worktrees and their reclaim status |
+| [gc worktree publish](#gc-worktree-publish) | Publish the current worktree HEAD through Code Storage |
+| [gc worktree reclaim](#gc-worktree-reclaim) | Safely remove a published or promoted managed worktree |
+
+## gc worktree create
+
+Create and register a managed worktree
+
+```
+gc worktree create <id> [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--attempt` | int | `1` | positive lifecycle attempt number |
+| `--base` | string |  | base revision for the checkout |
+| `--branch` | string |  | new branch name (default: detached HEAD) |
+| `--json` | bool |  | output JSON |
+| `--owner` | string |  | logical lifecycle owner |
+| `--path` | string |  | checkout path beneath the rig worktrees directory |
+
+## gc worktree list
+
+List managed worktrees and their reclaim status
+
+```
+gc worktree list [id-or-path] [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | output JSON |
+
+## gc worktree publish
+
+Publish the current worktree HEAD through Code Storage
+
+```
+gc worktree publish <id-or-path> [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | output JSON |
+
+## gc worktree reclaim
+
+Safely remove a published or promoted managed worktree
+
+```
+gc worktree reclaim <id-or-path> [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--dry-run` | bool |  | report an eligible reclaim without removing anything |
+| `--json` | bool |  | output JSON |
+| `--promoted-sha` | string |  | trusted promoted commit that must descend from the worktree HEAD |
