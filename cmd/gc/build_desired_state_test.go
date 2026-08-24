@@ -1118,6 +1118,65 @@ func TestDefaultScaleCheckCountsUsesLiveReadyWhenCachedRowWasRerouted(t *testing
 	}
 }
 
+func TestDefaultScaleCheckCountsDoesNotScheduleFailedDependencyWork(t *testing.T) {
+	const template = "fixture/ordinary-worker"
+	store := beads.NewMemStore()
+	root := mustCreateReadyBead(t, store, beads.Bead{
+		Title: "workflow", Type: "epic", Status: "open",
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+			beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+		},
+	})
+	failed := mustCreateReadyBead(t, store, beads.Bead{
+		Title: "failed prerequisite", Type: "task", Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey:    root.ID,
+			beadmeta.OutcomeMetadataKey:       beadmeta.OutcomeFail,
+			beadmeta.FailureReasonMetadataKey: "upstream_failed",
+		},
+	})
+	if err := store.Close(failed.ID); err != nil {
+		t.Fatalf("close failed prerequisite: %v", err)
+	}
+	downstream := mustCreateReadyBead(t, store, beads.Bead{
+		Title: "futile downstream", Type: "task", Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: root.ID,
+			beadmeta.RoutedToMetadataKey:   template,
+		},
+	})
+	sibling := mustCreateReadyBead(t, store, beads.Bead{
+		Title: "independent sibling", Type: "task", Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: root.ID,
+			beadmeta.RoutedToMetadataKey:   template,
+		},
+	})
+	if err := store.DepAdd(downstream.ID, failed.ID, "blocks"); err != nil {
+		t.Fatalf("add downstream dependency: %v", err)
+	}
+
+	counts, _, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{{
+		template: template,
+		storeKey: "rig:fixture",
+		store:    store,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errors = %v", errs)
+	}
+	if got := counts[template]; got != 1 {
+		t.Fatalf("defaultScaleCheckCounts[%q] = %d, want only sibling %s", template, got, sibling.ID)
+	}
+	downstream, err := store.Get(downstream.ID)
+	if err != nil {
+		t.Fatalf("get downstream: %v", err)
+	}
+	if downstream.Status != "closed" || downstream.Metadata[beadmeta.OutcomeMetadataKey] != beadmeta.OutcomeFail {
+		t.Fatalf("downstream = status %q outcome %q, want closed/fail", downstream.Status, downstream.Metadata[beadmeta.OutcomeMetadataKey])
+	}
+}
+
 func TestDefaultScaleCheckCountsTreatsCompleteLiveReadyAsAuthoritative(t *testing.T) {
 	const (
 		staleTemplate = "gascity/workflows.codex-min"

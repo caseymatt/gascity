@@ -2478,11 +2478,11 @@ func fixtureGraphLeg(e splitEnv) beads.Store {
 //     closed instead.
 //  2. The claim escalates past it and lands in the binding.
 //  3. The fail-soft behavior SURVIVES. An id NEITHER store holds is still
-//     skipped, not fatal: claimsErrored carries it to the shared drain, the
-//     worker reports action=drain reason=claims_errored (distinguishable from a
-//     healthy no_work), and the federated loop still reaches claimable work in
-//     another store. That property is what kept ga-bvdha shippable alone, and
-//     closing the gap must not spend it — a routed claim removes the common
+//     skipped for the federated search: claimsErrored carries the failure while
+//     the loop continues to claimable work in another store. If no later store
+//     serves work, that signal becomes a retryable no-ack failure rather than a
+//     false no_work drain. That property is what kept ga-bvdha shippable alone,
+//     and closing the gap must not spend it — a routed claim removes the common
 //     cause of the skip, not the skip.
 //
 // The RELEASE tier follows the claim, and is asserted on I5 rather than assumed

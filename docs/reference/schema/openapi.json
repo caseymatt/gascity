@@ -2609,6 +2609,18 @@
           },
           {
             "$ref": "#/components/schemas/WorkerOperationEventPayload"
+          },
+          {
+            "$ref": "#/components/schemas/WorktreeCreatedPayload"
+          },
+          {
+            "$ref": "#/components/schemas/WorktreePublishedPayload"
+          },
+          {
+            "$ref": "#/components/schemas/WorktreeReclaimSkippedPayload"
+          },
+          {
+            "$ref": "#/components/schemas/WorktreeReclaimedPayload"
           }
         ]
       },
@@ -12169,7 +12181,11 @@
             "supervisor.started": "#/components/schemas/TypedEventStreamEnvelopeSupervisorStarted",
             "webhook.received": "#/components/schemas/TypedEventStreamEnvelopeWebhookReceived",
             "webhook.rejected": "#/components/schemas/TypedEventStreamEnvelopeWebhookRejected",
-            "worker.operation": "#/components/schemas/TypedEventStreamEnvelopeWorkerOperation"
+            "worker.operation": "#/components/schemas/TypedEventStreamEnvelopeWorkerOperation",
+            "worktree.created": "#/components/schemas/TypedEventStreamEnvelopeWorktreeCreated",
+            "worktree.published": "#/components/schemas/TypedEventStreamEnvelopeWorktreePublished",
+            "worktree.reclaim_skipped": "#/components/schemas/TypedEventStreamEnvelopeWorktreeReclaimSkipped",
+            "worktree.reclaimed": "#/components/schemas/TypedEventStreamEnvelopeWorktreeReclaimed"
           },
           "propertyName": "type"
         },
@@ -12446,6 +12462,18 @@
           },
           {
             "$ref": "#/components/schemas/TypedEventStreamEnvelopeWorkerOperation"
+          },
+          {
+            "$ref": "#/components/schemas/TypedEventStreamEnvelopeWorktreeCreated"
+          },
+          {
+            "$ref": "#/components/schemas/TypedEventStreamEnvelopeWorktreePublished"
+          },
+          {
+            "$ref": "#/components/schemas/TypedEventStreamEnvelopeWorktreeReclaimSkipped"
+          },
+          {
+            "$ref": "#/components/schemas/TypedEventStreamEnvelopeWorktreeReclaimed"
           },
           {
             "$ref": "#/components/schemas/TypedEventStreamEnvelopeCustom"
@@ -13656,6 +13684,10 @@
                 "bead.updated",
                 "bead.worktree.reaped",
                 "bead.worktree.reap_skipped",
+                "worktree.created",
+                "worktree.published",
+                "worktree.reclaim_skipped",
+                "worktree.reclaimed",
                 "bead.claim_rejected",
                 "bead.claim_released",
                 "bead.dead_assignee_reopened",
@@ -17789,6 +17821,234 @@
         "title": "TypedEventStreamEnvelope worker.operation",
         "type": "object"
       },
+      "TypedEventStreamEnvelopeWorktreeCreated": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "depends_on_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/WorktreeCreatedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "worktree.created",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload"
+        ],
+        "title": "TypedEventStreamEnvelope worktree.created",
+        "type": "object"
+      },
+      "TypedEventStreamEnvelopeWorktreePublished": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "depends_on_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/WorktreePublishedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "worktree.published",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload"
+        ],
+        "title": "TypedEventStreamEnvelope worktree.published",
+        "type": "object"
+      },
+      "TypedEventStreamEnvelopeWorktreeReclaimSkipped": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "depends_on_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/WorktreeReclaimSkippedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "worktree.reclaim_skipped",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload"
+        ],
+        "title": "TypedEventStreamEnvelope worktree.reclaim_skipped",
+        "type": "object"
+      },
+      "TypedEventStreamEnvelopeWorktreeReclaimed": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "depends_on_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/WorktreeReclaimedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "worktree.reclaimed",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload"
+        ],
+        "title": "TypedEventStreamEnvelope worktree.reclaimed",
+        "type": "object"
+      },
       "TypedTaggedEventStreamEnvelope": {
         "description": "Discriminated union of supervisor event stream envelopes. Each variant constrains the envelope type and payload schema together and includes the source city.",
         "discriminator": {
@@ -17883,7 +18143,11 @@
             "supervisor.started": "#/components/schemas/TypedTaggedEventStreamEnvelopeSupervisorStarted",
             "webhook.received": "#/components/schemas/TypedTaggedEventStreamEnvelopeWebhookReceived",
             "webhook.rejected": "#/components/schemas/TypedTaggedEventStreamEnvelopeWebhookRejected",
-            "worker.operation": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorkerOperation"
+            "worker.operation": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorkerOperation",
+            "worktree.created": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorktreeCreated",
+            "worktree.published": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorktreePublished",
+            "worktree.reclaim_skipped": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped",
+            "worktree.reclaimed": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorktreeReclaimed"
           },
           "propertyName": "type"
         },
@@ -18160,6 +18424,18 @@
           },
           {
             "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorkerOperation"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorktreeCreated"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorktreePublished"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeWorktreeReclaimed"
           },
           {
             "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeCustom"
@@ -19453,6 +19729,10 @@
                 "bead.updated",
                 "bead.worktree.reaped",
                 "bead.worktree.reap_skipped",
+                "worktree.created",
+                "worktree.published",
+                "worktree.reclaim_skipped",
+                "worktree.reclaimed",
                 "bead.claim_rejected",
                 "bead.claim_released",
                 "bead.dead_assignee_reopened",
@@ -23871,6 +24151,250 @@
         "title": "TypedTaggedEventStreamEnvelope worker.operation",
         "type": "object"
       },
+      "TypedTaggedEventStreamEnvelopeWorktreeCreated": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "depends_on_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/WorktreeCreatedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "worktree.created",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload",
+          "city"
+        ],
+        "title": "TypedTaggedEventStreamEnvelope worktree.created",
+        "type": "object"
+      },
+      "TypedTaggedEventStreamEnvelopeWorktreePublished": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "depends_on_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/WorktreePublishedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "worktree.published",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload",
+          "city"
+        ],
+        "title": "TypedTaggedEventStreamEnvelope worktree.published",
+        "type": "object"
+      },
+      "TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "depends_on_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/WorktreeReclaimSkippedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "worktree.reclaim_skipped",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload",
+          "city"
+        ],
+        "title": "TypedTaggedEventStreamEnvelope worktree.reclaim_skipped",
+        "type": "object"
+      },
+      "TypedTaggedEventStreamEnvelopeWorktreeReclaimed": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "depends_on_step_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/WorktreeReclaimedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "worktree.reclaimed",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload",
+          "city"
+        ],
+        "title": "TypedTaggedEventStreamEnvelope worktree.reclaimed",
+        "type": "object"
+      },
       "UnboundEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -24777,6 +25301,134 @@
         "required": [
           "name",
           "suspended"
+        ],
+        "type": "object"
+      },
+      "WorktreeCreatedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "head_sha": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "rig": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner",
+          "rig",
+          "path",
+          "head_sha"
+        ],
+        "type": "object"
+      },
+      "WorktreePublishedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "head_sha": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "rig": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner",
+          "rig",
+          "path",
+          "ref",
+          "head_sha"
+        ],
+        "type": "object"
+      },
+      "WorktreeReclaimSkippedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "head_sha": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "rig": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner",
+          "rig",
+          "path",
+          "head_sha",
+          "reason",
+          "dry_run"
+        ],
+        "type": "object"
+      },
+      "WorktreeReclaimedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "head_sha": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "rig": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner",
+          "rig",
+          "path",
+          "head_sha",
+          "dry_run"
         ],
         "type": "object"
       }

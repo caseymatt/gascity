@@ -882,7 +882,7 @@ export type EventEmitRequest = {
     type: string;
 };
 
-export type EventPayload = AdapterEventPayload | BackendCredentialResolvedPayload | BeadClaimRejectedPayload | BeadClaimReleasedPayload | BeadDeadAssigneeReopenedPayload | BeadEventPayload | BeadWorktreeReapSkippedPayload | BeadWorktreeReapedPayload | BoundEventPayload | CityCreateSucceededPayload | CityLifecyclePayload | CityUnregisterSucceededPayload | ConditionalWritesDegradedPayload | ControlStalledPayload | ExecutionClaimWindowExpiredPayload | ExecutionStepStalledPayload | GroupCreatedEventPayload | InboundEventPayload | MailEventPayload | MoleculeResolvedPayload | NoPayload | OutboundChannelMismatchPayload | OutboundEventPayload | ProjectIdentityStampedPayload | Record | RequestFailedPayload | RigCreateSucceededPayload | RigProvisionProgressPayload | RotatedPayload | SessionCreateSucceededPayload | SessionDemandClaimDivergencePayload | SessionDrainAckedWithAssignedWorkPayload | SessionLifecyclePayload | SessionMessageSucceededPayload | SessionResetStalledPayload | SessionStrandedPayload | SessionSubmitSucceededPayload | SessionUnknownStatePayload | StorageBindingOutcomePayload | StoreDiskCriticalPayload | StoreDiskWarnPayload | StoreMaintenanceDonePayload | StoreMaintenanceFailedPayload | SupervisorFsPressureSkippedTickPayload | SupervisorRequestPayload | SupervisorShutdownPayload | SupervisorStartedPayload | UnboundEventPayload | WebhookReceivedPayload | WebhookRejectedPayload | WorkerOperationEventPayload;
+export type EventPayload = AdapterEventPayload | BackendCredentialResolvedPayload | BeadClaimRejectedPayload | BeadClaimReleasedPayload | BeadDeadAssigneeReopenedPayload | BeadEventPayload | BeadWorktreeReapSkippedPayload | BeadWorktreeReapedPayload | BoundEventPayload | CityCreateSucceededPayload | CityLifecyclePayload | CityUnregisterSucceededPayload | ConditionalWritesDegradedPayload | ControlStalledPayload | ExecutionClaimWindowExpiredPayload | ExecutionStepStalledPayload | GroupCreatedEventPayload | InboundEventPayload | MailEventPayload | MoleculeResolvedPayload | NoPayload | OutboundChannelMismatchPayload | OutboundEventPayload | ProjectIdentityStampedPayload | Record | RequestFailedPayload | RigCreateSucceededPayload | RigProvisionProgressPayload | RotatedPayload | SessionCreateSucceededPayload | SessionDemandClaimDivergencePayload | SessionDrainAckedWithAssignedWorkPayload | SessionLifecyclePayload | SessionMessageSucceededPayload | SessionResetStalledPayload | SessionStrandedPayload | SessionSubmitSucceededPayload | SessionUnknownStatePayload | StorageBindingOutcomePayload | StoreDiskCriticalPayload | StoreDiskWarnPayload | StoreMaintenanceDonePayload | StoreMaintenanceFailedPayload | SupervisorFsPressureSkippedTickPayload | SupervisorRequestPayload | SupervisorShutdownPayload | SupervisorStartedPayload | UnboundEventPayload | WebhookReceivedPayload | WebhookRejectedPayload | WorkerOperationEventPayload | WorktreeCreatedPayload | WorktreePublishedPayload | WorktreeReclaimSkippedPayload | WorktreeReclaimedPayload;
 
 export type EventRotateAnchor = {
     /**
@@ -5350,6 +5350,14 @@ export type TypedEventStreamEnvelope = ({
 } & TypedEventStreamEnvelopeWebhookRejected) | ({
     type: 'worker.operation';
 } & TypedEventStreamEnvelopeWorkerOperation) | ({
+    type: 'worktree.created';
+} & TypedEventStreamEnvelopeWorktreeCreated) | ({
+    type: 'worktree.published';
+} & TypedEventStreamEnvelopeWorktreePublished) | ({
+    type: 'worktree.reclaim_skipped';
+} & TypedEventStreamEnvelopeWorktreeReclaimSkipped) | ({
+    type: 'worktree.reclaimed';
+} & TypedEventStreamEnvelopeWorktreeReclaimed) | ({
     type: 'TypedEventStreamEnvelopeCustom';
 } & TypedEventStreamEnvelopeCustom);
 
@@ -7010,6 +7018,78 @@ export type TypedEventStreamEnvelopeWorkerOperation = {
 };
 
 /**
+ * TypedEventStreamEnvelope worktree.created
+ */
+export type TypedEventStreamEnvelopeWorktreeCreated = {
+    actor: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: WorktreeCreatedPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'worktree.created';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
+ * TypedEventStreamEnvelope worktree.published
+ */
+export type TypedEventStreamEnvelopeWorktreePublished = {
+    actor: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: WorktreePublishedPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'worktree.published';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
+ * TypedEventStreamEnvelope worktree.reclaim_skipped
+ */
+export type TypedEventStreamEnvelopeWorktreeReclaimSkipped = {
+    actor: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: WorktreeReclaimSkippedPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'worktree.reclaim_skipped';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
+ * TypedEventStreamEnvelope worktree.reclaimed
+ */
+export type TypedEventStreamEnvelopeWorktreeReclaimed = {
+    actor: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: WorktreeReclaimedPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'worktree.reclaimed';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
  * Typed supervisor event stream envelope
  *
  * Discriminated union of supervisor event stream envelopes. Each variant constrains the envelope type and payload schema together and includes the source city.
@@ -7197,6 +7277,14 @@ export type TypedTaggedEventStreamEnvelope = ({
 } & TypedTaggedEventStreamEnvelopeWebhookRejected) | ({
     type: 'worker.operation';
 } & TypedTaggedEventStreamEnvelopeWorkerOperation) | ({
+    type: 'worktree.created';
+} & TypedTaggedEventStreamEnvelopeWorktreeCreated) | ({
+    type: 'worktree.published';
+} & TypedTaggedEventStreamEnvelopeWorktreePublished) | ({
+    type: 'worktree.reclaim_skipped';
+} & TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped) | ({
+    type: 'worktree.reclaimed';
+} & TypedTaggedEventStreamEnvelopeWorktreeReclaimed) | ({
     type: 'TypedTaggedEventStreamEnvelopeCustom';
 } & TypedTaggedEventStreamEnvelopeCustom);
 
@@ -8948,6 +9036,82 @@ export type TypedTaggedEventStreamEnvelopeWorkerOperation = {
     workflow?: WorkflowEventProjection;
 };
 
+/**
+ * TypedTaggedEventStreamEnvelope worktree.created
+ */
+export type TypedTaggedEventStreamEnvelopeWorktreeCreated = {
+    actor: string;
+    city: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: WorktreeCreatedPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'worktree.created';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
+ * TypedTaggedEventStreamEnvelope worktree.published
+ */
+export type TypedTaggedEventStreamEnvelopeWorktreePublished = {
+    actor: string;
+    city: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: WorktreePublishedPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'worktree.published';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
+ * TypedTaggedEventStreamEnvelope worktree.reclaim_skipped
+ */
+export type TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped = {
+    actor: string;
+    city: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: WorktreeReclaimSkippedPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'worktree.reclaim_skipped';
+    workflow?: WorkflowEventProjection;
+};
+
+/**
+ * TypedTaggedEventStreamEnvelope worktree.reclaimed
+ */
+export type TypedTaggedEventStreamEnvelopeWorktreeReclaimed = {
+    actor: string;
+    city: string;
+    depends_on_step_ids?: Array<string>;
+    message?: string;
+    payload: WorktreeReclaimedPayload;
+    run_id?: string;
+    seq: number;
+    session_id?: string;
+    step_id?: string;
+    subject?: string;
+    ts: string;
+    type: 'worktree.reclaimed';
+    workflow?: WorkflowEventProjection;
+};
+
 export type UnboundEventPayload = {
     count: number;
     session_id: string;
@@ -9411,6 +9575,42 @@ export type WorkspaceResponse = {
     provider?: string;
     session_template?: string;
     suspended: boolean;
+};
+
+export type WorktreeCreatedPayload = {
+    head_sha: string;
+    id: string;
+    owner: string;
+    path: string;
+    rig: string;
+};
+
+export type WorktreePublishedPayload = {
+    head_sha: string;
+    id: string;
+    owner: string;
+    path: string;
+    ref: string;
+    rig: string;
+};
+
+export type WorktreeReclaimSkippedPayload = {
+    dry_run: boolean;
+    head_sha: string;
+    id: string;
+    owner: string;
+    path: string;
+    reason: string;
+    rig: string;
+};
+
+export type WorktreeReclaimedPayload = {
+    dry_run: boolean;
+    head_sha: string;
+    id: string;
+    owner: string;
+    path: string;
+    rig: string;
 };
 
 export type GetHealthData = {

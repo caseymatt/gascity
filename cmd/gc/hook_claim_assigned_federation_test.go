@@ -97,11 +97,10 @@ func TestClaimHookWorkAssignedTierUnresolvableBeadDoesNotStrandLaterStore(t *tes
 	}
 }
 
-// TestClaimHookWorkAssignedTierUnresolvableBeadDrainsClaimsErrored pins the
-// contract the KNOWN GAP paragraph promises for this tier when there is nothing
-// else to do: a structured drain whose reason names the write failure, not a
-// bare exit 1 with an empty stdout that a --json caller cannot read.
-func TestClaimHookWorkAssignedTierUnresolvableBeadDrainsClaimsErrored(t *testing.T) {
+// TestClaimHookWorkAssignedTierUnresolvableBeadFailsRetryably pins the
+// contract for an assigned row that this store cannot mutate and no later store
+// serves: fail without acknowledging drain so a later invocation can retry it.
+func TestClaimHookWorkAssignedTierUnresolvableBeadFailsRetryably(t *testing.T) {
 	stores := []hookStore{{dir: "city", env: []string{"GC_STORE=city"}}}
 	run := func(_, dir string, _ []string) (string, error) {
 		if dir != "city" {
@@ -125,21 +124,20 @@ func TestClaimHookWorkAssignedTierUnresolvableBeadDrainsClaimsErrored(t *testing
 	emitted := false
 	var stdout, stderr bytes.Buffer
 	code := claimHookWorkWithRunner("gc ready --json", "city", stores[0].env, stores, assignedFederationClaimOpts(), ops, run, func(string, error) { emitted = true }, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("claimHookWorkWithRunner = %d, want 0 (structured drain); stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	if code != 1 {
+		t.Fatalf("claimHookWorkWithRunner = %d, want retryable exit 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !drained {
-		t.Fatal("drain ack was not called: the assigned tier exited without completing the drain contract")
+	if drained {
+		t.Fatal("drain ack was called after the assigned claim mutation failed")
 	}
 	if emitted {
 		t.Fatal("a skipped claim error is not a work-query failure and must not emit one")
 	}
-	var result hookClaimJSONResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not JSON: %v\nraw: %q", err, stdout.String())
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no successful drain result", stdout.String())
 	}
-	if result.Action != "drain" || result.Reason != hookClaimReasonClaimsErrored {
-		t.Fatalf("claim result = %+v, want drain/claims_errored", result)
+	if !strings.Contains(stderr.String(), "retryable") {
+		t.Fatalf("stderr = %q, want explicit retryable failure", stderr.String())
 	}
 }
 

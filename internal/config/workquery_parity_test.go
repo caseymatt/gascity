@@ -35,7 +35,7 @@ func oldEffectiveWorkQuery(a *Agent, topo QueryTopology) string {
 			poolDemandOriginGateScript() +
 			poolDemandFirstRowFunctionScript(topo) +
 			`probe_pool_demand "$1"; ` +
-			`printf "[]"`
+			emptyWorkQueryResultScript()
 		return shellquote.Join([]string{"sh", "-c", script, "--", target})
 	}
 	script := legacyControlAssignedWorkQueryScript(topo) +
@@ -43,7 +43,7 @@ func oldEffectiveWorkQuery(a *Agent, topo QueryTopology) string {
 		poolDemandFirstRowFunctionScript(topo) +
 		`probe_pool_demand "$1"; ` +
 		`probe_pool_demand "$2"; ` +
-		`printf "[]"`
+		emptyWorkQueryResultScript()
 	return shellquote.Join([]string{"sh", "-c", script, "--", target, legacyTarget})
 }
 
@@ -64,9 +64,9 @@ func oldEffectiveAssignedReadyQuery(a *Agent, topo QueryTopology) string {
 	}
 	target := a.poolDemandTarget()
 	if legacyWorkflowControlQualifiedName(target) != "" {
-		return shellquote.Join([]string{"sh", "-c", legacyControlAssignedReadyWorkQueryScript(topo) + `printf "[]"`})
+		return shellquote.Join([]string{"sh", "-c", legacyControlAssignedReadyWorkQueryScript(topo) + emptyWorkQueryResultScript()})
 	}
-	return shellquote.Join([]string{"sh", "-c", standardAssignedReadyWorkQueryScript(topo) + `printf "[]"`})
+	return shellquote.Join([]string{"sh", "-c", standardAssignedReadyWorkQueryScript(topo) + emptyWorkQueryResultScript()})
 }
 
 func oldEffectiveRoutedPoolQuery(a *Agent, topo QueryTopology) string {
@@ -387,6 +387,13 @@ func renormalizeFederatedCommand(federated string) string {
 	return federated
 }
 
+func normalizeSingleStoreReadyReaderFailures(command string) string {
+	command = strings.ReplaceAll(command,
+		` && gc_ready_reader_failed= || { gc_ready_reader_failed=1; r=; }`, ``)
+	return strings.ReplaceAll(command,
+		` && gc_ready_reader_failed= || { gc_ready_reader_failed=1; legacy_candidates=; }`, ``)
+}
+
 func TestFederatedSwapChangesOnlyTheReader(t *testing.T) {
 	for _, shape := range parityAgentShapes() {
 		for _, v := range parityVariants() {
@@ -410,8 +417,9 @@ func TestFederatedSwapChangesOnlyTheReader(t *testing.T) {
 			// Everything outside the reader words, their failure handling, and the
 			// crash-recovery presence key must be untouched. Normalizing the
 			// federated form back onto the single-store one is what proves it.
-			if renormalized := renormalizeFederatedCommand(federated); renormalized != single {
-				t.Errorf("%s/%s: the federated command differs from the single-store one by more than the reader, its failure clause, and the crash-recovery presence key\n federated(normalized)=%q\n      single-store=%q", shape.name, v.name, renormalized, single)
+			singleNormalized := normalizeSingleStoreReadyReaderFailures(single)
+			if renormalized := renormalizeFederatedCommand(federated); renormalized != singleNormalized {
+				t.Errorf("%s/%s: the federated command differs from the single-store one by more than the reader, its failure clause, and the crash-recovery presence key\nfederated(normalized)=%q\n     single-store=%q", shape.name, v.name, renormalized, singleNormalized)
 			}
 		}
 	}

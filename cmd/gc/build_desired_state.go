@@ -16,6 +16,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/dispatch"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/hooks"
 	"github.com/gastownhall/gascity/internal/poolplan"
@@ -2081,12 +2082,13 @@ func readyForControllerDemandQuery(store beads.Store, query beads.ReadyQuery) ([
 	handles := beads.HandlesFor(store)
 	rows, err := handles.Cached.Ready(query)
 	if errors.Is(err, beads.ErrCacheUnavailable) {
-		return handles.Live.Ready(query)
+		rows, err = handles.Live.Ready(query)
+		return gateFailedDependencyControllerReady(store, rows, err)
 	}
 	if _, hasExplicitHandles := store.(interface {
 		Handles() beads.StoreHandles
 	}); !hasExplicitHandles {
-		return rows, err
+		return gateFailedDependencyControllerReady(store, rows, err)
 	}
 	if err != nil && !beads.IsPartialResult(err) {
 		rows = nil
@@ -2099,34 +2101,44 @@ func readyForControllerDemandQuery(store beads.Store, query beads.ReadyQuery) ([
 	if liveErr == nil {
 		// A complete live read is authoritative; cached rows only preserve
 		// demand when the live freshness read is partial or unavailable.
-		return liveRows, nil
+		return gateFailedDependencyControllerReady(store, liveRows, nil)
 	}
-	if liveErr != nil && !beads.IsPartialResult(liveErr) {
+	if !beads.IsPartialResult(liveErr) {
 		liveRows = nil
 	}
 	rows = mergeReadyRowsByID(rows, liveRows)
-	if joined := errors.Join(err, liveErr); joined != nil && len(rows) > 0 && !beads.IsPartialResult(joined) {
-		return rows, &beads.PartialResultError{Op: "controller ready demand", Err: joined}
-	} else if joined != nil {
-		return rows, joined
+	joined := errors.Join(err, liveErr)
+	if joined != nil && len(rows) > 0 && !beads.IsPartialResult(joined) {
+		joined = &beads.PartialResultError{Op: "controller ready demand", Err: joined}
 	}
-	return rows, nil
+	return gateFailedDependencyControllerReady(store, rows, joined)
 }
 
 func liveReadyForControllerDemandQuery(store beads.Store, query beads.ReadyQuery) ([]beads.Bead, error) {
 	query.TierMode = beads.TierBoth
-	handles := beads.HandlesFor(store)
-	return handles.Live.Ready(query)
+	rows, err := beads.HandlesFor(store).Live.Ready(query)
+	return gateFailedDependencyControllerReady(store, rows, err)
 }
 
-// readyDemandCache memoizes the unfiltered ready reads for a single reconcile
-// pass so every pool and demand probe filters one shared in-memory snapshot
+func gateFailedDependencyControllerReady(store beads.Store, rows []beads.Bead, readyErr error) ([]beads.Bead, error) {
+	if len(rows) == 0 {
+		return rows, readyErr
+	}
+	filtered, gateErr := dispatch.FilterFailedDependencyCandidates(store, rows)
+	if gateErr != nil {
+		return nil, errors.Join(readyErr, gateErr)
+	}
+	return filtered, readyErr
+}
+
+// readyDemandCache memoizes the dependency-gated ready reads for a single
+// reconcile pass so every pool and demand probe filters one shared snapshot
 // instead of issuing its own /beads/ready fetch. Each backing store is read at
 // most once on the live tier and at most once on the cached tier; consumers
 // then apply their Assignee/Limit selectors in memory. This is exact for the
 // stores that filter client-side over a stable, filter-independent result order
 // (MemStore.Ready, BdStore.Ready): the assignee-matching prefix of the
-// unfiltered set is exactly the assignee-filtered set, and taking the first
+// gated set is exactly the assignee-filtered set, and taking the first
 // Limit of it matches a per-assignee fetch. NativeDoltStore.Ready filters the
 // assignee server-side, and its wisp sub-query is assignee-aware too: the
 // pinned beads@v1.1.0 readyWorkWispIssueFilter carries filter.Assignee into the
@@ -2198,24 +2210,26 @@ func (c *readyDemandCache) entry(m map[beads.Store]*readyDemandEntry, store bead
 	return e
 }
 
-// liveSnapshot returns the memoized full live ready set (TierBoth, unfiltered)
-// for store, fetching it once. Mirrors the read liveReadyForControllerDemandQuery
-// performs before its own assignee/limit filtering.
+// liveSnapshot returns the memoized full live ready set (TierBoth), after the
+// failed-dependency gate, for store, fetching it once. Mirrors the read
+// liveReadyForControllerDemandQuery performs before assignee/limit filtering.
 func (c *readyDemandCache) liveSnapshot(store beads.Store) ([]beads.Bead, error) {
 	e := c.entry(c.live, store)
 	e.once.Do(func() {
 		e.rows, e.err = beads.HandlesFor(store).Live.Ready(beads.ReadyQuery{TierMode: beads.TierBoth})
+		e.rows, e.err = gateFailedDependencyControllerReady(store, e.rows, e.err)
 	})
 	return e.rows, e.err
 }
 
-// cachedSnapshot returns the memoized full cached ready set (TierBoth,
-// unfiltered) for store, fetching it once. Mirrors the read
+// cachedSnapshot returns the memoized full cached ready set (TierBoth), after
+// the failed-dependency gate, for store, fetching it once. Mirrors the read
 // readyForControllerDemandQuery performs against the cached tier.
 func (c *readyDemandCache) cachedSnapshot(store beads.Store) ([]beads.Bead, error) {
 	e := c.entry(c.cached, store)
 	e.once.Do(func() {
 		e.rows, e.err = beads.HandlesFor(store).Cached.Ready(beads.ReadyQuery{TierMode: beads.TierBoth})
+		e.rows, e.err = gateFailedDependencyControllerReady(store, e.rows, e.err)
 	})
 	return e.rows, e.err
 }

@@ -108,43 +108,37 @@ func TestFederatedPoolDemandPropagatesADeadLeg(t *testing.T) {
 	}
 }
 
-// fakeBDFails is a `bd` stand-in that fails every subcommand the way an
-// unreadable store makes the real one fail. A single-store city shells `bd`, not
-// `gc`, so this — not fakeGCReadyFails — is what actually exercises its tiers.
-//
-// It appends each invocation to $FAKE_BD_LOG because the single-store tiers
-// redirect bd's stderr to /dev/null: without the log there is no evidence the
-// failure injection was reached at all, which is how the case used to pass
-// vacuously.
-const fakeBDFails = `#!/bin/sh
+// fakeBDFirstReadyFails fails one ready read, then answers every later read
+// successfully with an empty array. It proves a single-store probe still falls
+// through without permitting a terminal failed read to become false no-work.
+const fakeBDFirstReadyFails = `#!/bin/sh
 [ -n "$FAKE_BD_LOG" ] && printf '%s\n' "$*" >> "$FAKE_BD_LOG"
-printf 'bd: store unreadable\n' >&2
-exit 1
+if [ "$1" = "ready" ] && [ ! -e "$FAKE_BD_FAILED_ONCE" ]; then
+  printf 'failed\n' > "$FAKE_BD_FAILED_ONCE"
+  printf 'bd: store unreadable\n' >&2
+  exit 1
+fi
+printf '[]'
 `
 
-// TestSingleStoreWorkQueryKeepsItsFallThrough is the other half of the byte
-// identity claim, stated as behavior rather than as bytes: a non-relocated city
-// still swallows `bd ready`'s failure and falls through to the next tier. This
-// is not an oversight being pinned — the tiers have somewhere to fall through
-// TO, and changing it would alter what every deployed city does on a flaky
-// store.
-//
-// The failing binary is `bd`, and it has to be: a single-store work query never
-// invokes `gc`, so installing the failure as `gc` would leave every tier reading
-// a healthy stub and the case would pass no matter what the tiers did.
+// TestSingleStoreWorkQueryKeepsItsFallThrough pins the legitimate fallthrough:
+// the first bd ready failure is not terminal because the later compatibility
+// reader succeeds and authoritatively reports an empty queue.
 func TestSingleStoreWorkQueryKeepsItsFallThrough(t *testing.T) {
 	a := &Agent{Name: "worker"}
 	command := a.EffectiveWorkQueryFor(singleStoreTopology())
 	if strings.Contains(command, "gc ready") {
 		t.Fatalf("the single-store work_query shells the federated reader, so a failing `bd` no longer exercises it: %q", command)
 	}
-	bdLog := filepath.Join(t.TempDir(), "bd-invocations")
+	tmp := t.TempDir()
+	bdLog := filepath.Join(tmp, "bd-invocations")
 	res := runGeneratedQueryWithBD(t, command, map[string]string{
-		"GC_SESSION_ORIGIN": "ephemeral",
-		"FAKE_BD_LOG":       bdLog,
-	}, fakeGCReadyFails, fakeBDFails)
+		"GC_SESSION_ORIGIN":   "ephemeral",
+		"FAKE_BD_LOG":         bdLog,
+		"FAKE_BD_FAILED_ONCE": filepath.Join(tmp, "failed-once"),
+	}, fakeGCReadyFails, fakeBDFirstReadyFails)
 	if res.exit != 0 {
-		t.Fatalf("the single-store work_query exited %d over a failing bd; a non-relocated city must behave exactly as it does today (stderr=%q)", res.exit, res.stderr)
+		t.Fatalf("the single-store work_query exited %d after a later ready reader succeeded empty (stderr=%q)", res.exit, res.stderr)
 	}
 	if strings.TrimSpace(res.stdout) != "[]" {
 		t.Errorf("single-store work_query stdout = %q, want %q", res.stdout, "[]")

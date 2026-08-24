@@ -294,8 +294,8 @@ func cmdReady(opts readyOpts, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// readyBeadsForOpts is the whole reader as a pure function of the legs and the
-// flags: federate, filter, order, bound, project.
+// readyBeadsForOpts is the whole reader pipeline over the supplied legs and
+// flags: gate failed dependencies, federate, filter, order, bound, project.
 //
 // The bound is applied LAST, after the merge and after the order, and it is
 // never pushed into a leg. A limit pushed down truncates each store to N and

@@ -20,6 +20,8 @@ import (
 	"github.com/gastownhall/gascity/internal/beads/splittest"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/storeref"
+
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/spf13/pflag"
 )
 
@@ -103,6 +105,73 @@ func readyWireIDs(rows []readyBead) []string {
 		out = append(out, r.ID)
 	}
 	return out
+}
+
+func TestReadyBeadsForOptsSuppressesOrdinaryGraphStepAfterFailedDependency(t *testing.T) {
+	store := beads.NewMemStore()
+	root := mustCreateReadyBead(t, store, beads.Bead{
+		Title:  "workflow",
+		Type:   "epic",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:            beadmeta.KindWorkflow,
+			beadmeta.FormulaContractMetadataKey: beadmeta.FormulaContractGraphV2,
+		},
+	})
+	failed := mustCreateReadyBead(t, store, beads.Bead{
+		Title:  "failed prerequisite",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey:    root.ID,
+			beadmeta.OutcomeMetadataKey:       beadmeta.OutcomeFail,
+			beadmeta.FailureClassMetadataKey:  beadmeta.FailureClassHard,
+			beadmeta.FailureReasonMetadataKey: "invalid_spec",
+		},
+	})
+	if err := store.Close(failed.ID); err != nil {
+		t.Fatalf("close failed prerequisite: %v", err)
+	}
+	downstream := mustCreateReadyBead(t, store, beads.Bead{
+		Title:  "futile review",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: root.ID,
+		},
+	})
+	sibling := mustCreateReadyBead(t, store, beads.Bead{
+		Title:  "independent work",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RootBeadIDMetadataKey: root.ID,
+		},
+	})
+	if err := store.DepAdd(downstream.ID, failed.ID, "blocks"); err != nil {
+		t.Fatalf("add downstream dependency: %v", err)
+	}
+
+	rows, err := readyBeadsForOpts([]readyLeg{readyTestLeg("graph", store)}, readyOpts{excludeTypes: []string{"epic"}})
+	if err != nil {
+		t.Fatalf("readyBeadsForOpts: %v", err)
+	}
+	if got := readyWireIDs(rows); !reflect.DeepEqual(got, []string{sibling.ID}) {
+		t.Fatalf("ready ids = %v, want only independent sibling %s", got, sibling.ID)
+	}
+	closed, err := store.Get(downstream.ID)
+	if err != nil {
+		t.Fatalf("get downstream: %v", err)
+	}
+	if closed.Status != "closed" || closed.Metadata[beadmeta.OutcomeMetadataKey] != beadmeta.OutcomeFail {
+		t.Fatalf("downstream = status %q outcome %q, want closed/fail", closed.Status, closed.Metadata[beadmeta.OutcomeMetadataKey])
+	}
+	if got := closed.Metadata[beadmeta.FailureSubjectMetadataKey]; got != failed.ID {
+		t.Fatalf("downstream failure subject = %q, want %q", got, failed.ID)
+	}
+	if got := closed.Metadata[beadmeta.FailureReasonMetadataKey]; got != "invalid_spec" {
+		t.Fatalf("downstream failure reason = %q, want preserved invalid_spec", got)
+	}
 }
 
 // TestReadyBareMetadataFieldMatchesBeadsThatCarryTheKey forbids DEFECT 1, the

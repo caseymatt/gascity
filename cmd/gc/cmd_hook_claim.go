@@ -233,17 +233,14 @@ type hookClaimJSONResult struct {
 // claimable work (it was empty/unready, every claimable candidate was lost to
 // another claimant, or every claimable candidate's claim mutation errored and was
 // skipped) and NO terminal output was written, so a federated caller may try a
-// later store before writing the single no-work drain.
+// later store before deciding the invocation's final outcome.
 type hookClaimResult struct {
 	terminal bool
 	code     int
 	// claimsErrored is set on a NON-terminal result when one or more eligible
 	// candidates' claim mutations errored and nothing was ultimately claimed. It
-	// lets the shared no-work drain report a distinct "claims_errored" reason
-	// instead of a healthy "no_work", so an operational write failure (store
-	// contention or a controller-socket flap in the read→write window) — or an
-	// assigned candidate this store cannot resolve at all, the split-city
-	// see-but-cannot-claim shape — is not laundered into an idle signal.
+	// lets a federated caller continue to later stores without losing the fact
+	// that the invocation must fail retryably if no later store serves work.
 	// Meaningless on a terminal result.
 	claimsErrored bool
 }
@@ -324,8 +321,8 @@ func tryHookClaim(workQuery, dir string, opts *hookClaimOptions, ops *hookClaimO
 	}
 	eligibleResult := claimFirstEligibleHookCandidate(candidates, *opts, *ops, dir, stdout, stderr)
 	// A skipped assigned-tier claim error must survive the handoff to the routed
-	// tier: both tiers feed ONE shared drain, and dropping the flag here would
-	// launder an assigned-tier write failure into a healthy no_work.
+	// tier: dropping the flag here would let the final outcome launder an
+	// assigned-tier write failure into a healthy no_work drain.
 	if !eligibleResult.terminal && readyResult.claimsErrored {
 		eligibleResult.claimsErrored = true
 	}
@@ -483,9 +480,10 @@ func refuseExpiredHookClaimWindow(candidateID string, ops hookClaimOps, stderr i
 // A candidate whose claim errors because THIS store cannot resolve the id is
 // skipped rather than fatal (see hookClaimBeadIsElsewhere), so the federated
 // caller can try the store that actually holds it; the returned result's
-// claimsErrored flag carries the skip to the shared drain. Every other claim
-// error still fails closed: ownership is unresolved on a bead this session
-// already owns, and claiming unrelated fresh work would strand it.
+// claimsErrored flag makes the final outcome retryable if no later store serves
+// work. Every other claim error still fails closed: ownership is unresolved on
+// a bead this session already owns, and claiming unrelated fresh work would
+// strand it.
 func claimFirstReadyHookAssignment(candidates []beads.Bead, opts hookClaimOptions, ops hookClaimOps, dir string, stdout, stderr io.Writer) hookClaimResult {
 	ctx, cancel := ops.claimMutationContext()
 	defer cancel()
@@ -608,8 +606,8 @@ func hookClaimBeadIsElsewhere(err error) bool {
 // no candidate can be claimed — none match this session, every claimable one was
 // lost to another claimant, or every claimable one errored — it returns a
 // non-terminal result (no output written) so a federated caller can try a later
-// store before the shared no-work drain; the result's claimsErrored flag records
-// whether any skip was an error so that drain stays distinguishable from idle.
+// store. The result's claimsErrored flag makes the final outcome a retryable
+// failure instead of a no-work drain if no later store serves work.
 func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOptions, ops hookClaimOps, dir string, stdout, stderr io.Writer) hookClaimResult {
 	ctx, cancel := ops.claimMutationContext()
 	defer cancel()
@@ -642,10 +640,10 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 			}
 			// A single unclaimable candidate (a routed id whose bead was deleted,
 			// one that no longer resolves in the store this context can reach, or a
-			// transient write failure) must not wedge the whole hook. Record it and
-			// try the next candidate. If none claim, claimsErrored makes the shared
-			// drain report claims_errored instead of a healthy no_work so the write
-			// failure stays visible; the work is reclaimed next tick (NDI) either way.
+			// transient write failure) must not wedge the whole federated search.
+			// Record it and try the next candidate. If none claim, claimsErrored
+			// makes the final outcome a retryable failure rather than a healthy
+			// no_work drain.
 			fmt.Fprintf(stderr, "gc hook --claim: skipping %s: %v\n", candidate.ID, err) //nolint:errcheck
 			claimsErrored = true
 			continue
@@ -881,27 +879,24 @@ func unwindUndeliveredHookClaim(reason, cause string, bead beads.Bead, opts hook
 	return 1
 }
 
-// writeHookClaimNoWork writes the single drain result for a hook that claimed
-// nothing. The reason is "no_work" for a genuinely idle store; it is
-// "claims_errored" when claimsErrored is set — ready work existed but every
-// eligible claim mutation errored — so an operational write failure stays
-// distinguishable from idle even though both still drain and reclaim next tick.
+// writeHookClaimNoWork writes the final outcome for a hook that claimed
+// nothing. A genuine empty read drains normally. If an eligible claim mutation
+// errored, the invocation instead exits nonzero without writing a drain result
+// or consuming --drain-ack: the available work must remain retryable rather than
+// being laundered into a successful session drain.
 //
-// dir is the store context the diagnostics classification reads through; it is
-// used ONLY after the drain has been written. See recordDemandClaimDivergence:
-// a demand-spawned seat draining empty is either correct pull or a broken
-// agreement invariant, and the drain itself cannot tell an operator which.
+// Demand divergence is recorded only after a genuine no-work drain succeeds.
+// Mutation failures are not evidence of an empty read and never reach that
+// diagnostic.
 func writeHookClaimNoWork(opts hookClaimOptions, ops hookClaimOps, claimsErrored bool, dir string, stdout, stderr io.Writer) int {
-	reason := hookClaimReasonNoWork
 	if claimsErrored {
-		reason = hookClaimReasonClaimsErrored
+		fmt.Fprintf(stderr, "gc hook --claim: eligible work could not be claimed (%s); retryable claim failure\n", hookClaimReasonClaimsErrored) //nolint:errcheck
+		return 1
 	}
-	code := writeHookClaimDrain(reason, opts.JSON, opts.DrainAck, ops.DrainAck, stdout, stderr)
+	code := writeHookClaimDrain(hookClaimReasonNoWork, opts.JSON, opts.DrainAck, ops.DrainAck, stdout, stderr)
 	// Strictly after the result: the drain is already written and its exit code
 	// is already decided, so nothing below can influence either.
-	if reason == hookClaimReasonNoWork {
-		hookRecordDemandClaimDivergence(reason, dir, opts, ops, stderr)
-	}
+	hookRecordDemandClaimDivergence(hookClaimReasonNoWork, dir, opts, ops, stderr)
 	return code
 }
 
@@ -944,13 +939,13 @@ func writeHookClaimStaleSessionDrain(opts hookCommandOptions, stdout, stderr io.
 	return writeHookClaimDrain(hookClaimReasonStaleSession, opts.JSON, opts.DrainAck, hookRuntimeDrainAck, stdout, stderr)
 }
 
-// writeHookClaimDrain writes the single structured drain result shared by every
-// terminal no-claim outcome: an idle no-work store, a claims-errored store, and a
-// refused stale session. For a --json caller it emits the schema-backed drain
-// line; when drainAck is set it first runs drainAckFn and marks the result
-// acknowledged. The exit code mirrors the historical contract — 0 once drain is
-// acknowledged, else 1 — so a non-drain-ack caller still reports action=drain
-// (a completed drain) rather than a bare failure.
+// writeHookClaimDrain writes the structured drain result for a completed
+// no-claim outcome: an idle no-work store or a refused stale session. For a
+// --json caller it emits the schema-backed drain line; when drainAck is set it
+// first runs drainAckFn and marks the result acknowledged. The exit code mirrors
+// the historical contract — 0 once drain is acknowledged, else 1 — so a
+// non-drain-ack caller still reports action=drain (a completed drain) rather than
+// a bare failure.
 func writeHookClaimDrain(reason string, jsonOut, drainAck bool, drainAckFn hookDrainAckFunc, stdout, stderr io.Writer) int {
 	result := hookClaimJSONResult{
 		SchemaVersion: "1",

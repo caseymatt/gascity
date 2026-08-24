@@ -91,18 +91,57 @@ func TestDivergenceIsRecordedOnlyAfterTheDrainResult(t *testing.T) {
 	}
 }
 
-// Control: a claims_errored drain is a write failure, not a demand/claim
-// disagreement, so the counter must not fire for it.
-func TestDivergenceIsNotRecordedForAClaimsErroredDrain(t *testing.T) {
+// Control: a claim mutation failure is not a successful empty read, so it must
+// fail without draining, acknowledging drain, or recording divergence.
+func TestDivergenceIsNotRecordedForAClaimsErroredFailure(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	capture := captureDivergenceEmitter(t, &stdout)
 	opts := divergenceOptions(demandSpawnEnv()...)
+	drainCalls := 0
 
-	writeHookClaimNoWork(opts, hookClaimOps{DrainAck: func(io.Writer) error { return nil }},
-		true, "/rig", &stdout, &stderr)
+	code := writeHookClaimNoWork(opts, hookClaimOps{DrainAck: func(io.Writer) error {
+		drainCalls++
+		return nil
+	}}, true, "/rig", &stdout, &stderr)
 
+	if code != 1 {
+		t.Fatalf("claim failure exit = %d, want 1", code)
+	}
+	if drainCalls != 0 {
+		t.Fatalf("drain callback calls = %d, want 0", drainCalls)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no drain result", stdout.String())
+	}
 	if capture.calls != 0 {
-		t.Fatalf("divergence emitter calls = %d, want 0 for a claims_errored drain", capture.calls)
+		t.Fatalf("divergence emitter calls = %d, want 0 for a claim mutation failure", capture.calls)
+	}
+}
+
+func TestDivergenceIsNotRecordedForAQueryFailure(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	capture := captureDivergenceEmitter(t, &stdout)
+	opts := divergenceOptions(demandSpawnEnv()...)
+	drainCalls := 0
+
+	code := doHookClaim("query", "/rig", opts, hookClaimOps{
+		Runner: func(string, string) (string, error) {
+			return "", errors.New("query unavailable")
+		},
+		DrainAck: func(io.Writer) error {
+			drainCalls++
+			return nil
+		},
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("query failure exit = %d, want 1", code)
+	}
+	if drainCalls != 0 {
+		t.Fatalf("drain callback calls = %d, want 0", drainCalls)
+	}
+	if capture.calls != 0 {
+		t.Fatalf("divergence emitter calls = %d, want 0 for a query failure", capture.calls)
 	}
 }
 

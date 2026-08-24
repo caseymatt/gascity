@@ -89,6 +89,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/dispatch"
 	"github.com/gastownhall/gascity/internal/storeref"
 )
 
@@ -260,14 +261,20 @@ func relocatedGraphLegFrom(binding beads.Store, relocated bool, cityStore beads.
 	return binding
 }
 
-// federateReadyBeads reads the ready set from every leg and merges it.
+// federateReadyBeads reads the ready set from every leg, terminally suppresses
+// ordinary graph work whose prerequisite failed, and merges the survivors.
 //
-// The per-leg read goes through the LIVE handle, which is what the API's ready
-// arm does, so a caching-wrapped leg answers from its backing store rather than
-// from a cache the CLI process never primed.
+// Each read goes through the LIVE handle, which is what the API's ready arm
+// does, so a caching-wrapped leg answers from its backing store. The gate runs
+// before any row is exposed and fails the whole frontier if it cannot inspect or
+// conditionally close a failed-dependent candidate.
 func federateReadyBeads(legs []readyLeg, q beads.ReadyQuery) ([]beads.Bead, error) {
 	return federateBeadLegs(legs, func(store beads.Store) ([]beads.Bead, error) {
-		return beads.HandlesFor(store).Live.Ready(q)
+		rows, err := beads.HandlesFor(store).Live.Ready(q)
+		if err != nil {
+			return nil, err
+		}
+		return dispatch.FilterFailedDependencyCandidates(store, rows)
 	})
 }
 

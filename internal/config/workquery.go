@@ -83,30 +83,32 @@ func readyReaderStderrSink(federated bool) string {
 	return ` 2>/dev/null`
 }
 
-// readyReaderFailurePropagation returns the failure clause a probe tier appends
-// to a federated ready read.
+// readyReaderFailurePropagation returns the status clause a probe tier appends
+// to a ready read.
 //
-// This is the load-bearing half of the swap. `gc ready` fails LOUD by design —
-// a leg it could not open or read is a non-zero exit naming the rig, never a
-// short array, because a short array is indistinguishable from "no work"
-// (cmd/gc/ready_federation.go's header). A probe tier that captured that exit
-// into an empty $r and fell through to the next tier would re-create the exact
-// fail-open one layer up, and the whole federation would buy nothing: the query
-// would still answer "no work" while claimable beads sat in the graph store.
+// Federated reads fail immediately because their stderr already carries the
+// failing rig. Single-store reads still fall through: one work-directory read
+// can fail while a later identity or compatibility tier succeeds. A failed
+// capture is cleared so partial stdout cannot be served. The pending failure
+// marker is cleared by every later successful read, so only a failure with no
+// later successful ready reader reaches the terminal fallback.
 //
-// So the federated tiers exit with the reader's own status. `gc hook` turns a
-// non-zero work query into an error (doHook / claimHookWork), and the
-// reconciler's count-form already did (poolDemandCountShell's && chain), so the
-// failure reaches a human instead of being spent as an idle signal.
-//
-// The single-store tiers keep their fall-through: `bd ready` failing in one work
-// directory says nothing about the tiers after it, and changing that would not
-// be byte-identical.
-func readyReaderFailurePropagation(federated bool) string {
+// Single-store stderr remains suppressed at the probe because bd may include
+// store details. The terminal fallback emits one bounded, role-neutral message
+// instead.
+func readyReaderFailurePropagation(federated bool, resultVar string) string {
 	if federated {
 		return ` || exit $?`
 	}
-	return ""
+	return ` && gc_ready_reader_failed= || { gc_ready_reader_failed=1; ` + resultVar + `=; }`
+}
+
+func failedReadyReaderResultScript() string {
+	return `if [ -n "$gc_ready_reader_failed" ]; then printf "%s\n" "work query: ready reader failed" >&2; exit 1; fi; `
+}
+
+func emptyWorkQueryResultScript() string {
+	return failedReadyReaderResultScript() + `printf "[]"`
 }
 
 // bdReadyPoolDemandShell returns the canonical bd ready predicate for
@@ -301,9 +303,9 @@ func poolDemandFirstRowFunctionScript(topo QueryTopology) string {
 	return `probe_pool_demand() { ` +
 		`target="$1"; ` +
 		`[ -z "$target" ] && return 1; ` +
-		`r=$(` + routedReadyTierCommand(topo) + `)` + readyReaderFailurePropagation(fed) + `; ` +
+		`r=$(` + routedReadyTierCommand(topo) + `)` + readyReaderFailurePropagation(fed, "r") + `; ` +
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
-		`legacy_candidates=$(` + bdReadyPoolDemandMigrationShell("--limit=20", topo) + readyReaderStderrSink(fed) + `)` + readyReaderFailurePropagation(fed) + `; ` +
+		`legacy_candidates=$(` + bdReadyPoolDemandMigrationShell("--limit=20", topo) + readyReaderStderrSink(fed) + `)` + readyReaderFailurePropagation(fed, "legacy_candidates") + `; ` +
 		`r=$(printf "%s" "$legacy_candidates" | ` + poolDemandMigrationFilterJQ(1) + ` 2>/dev/null); ` +
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 		`legacy_ephemeral_candidates=$(` + legacyEphemeralPoolDemandShell(20, topo, true) + `); ` +
@@ -386,11 +388,13 @@ func standardAssignedWorkQueryScript(topo QueryTopology) string {
 func assignedInProgressTierCommand(shellVar string, topo QueryTopology) string {
 	fed := topo.FederatedReady
 	reader := bdListInProgressCommand
+	failureClause := ""
 	if fed {
 		reader = gcReadyCommand + ` --status in_progress`
+		failureClause = readyReaderFailurePropagation(true, "r")
 	}
 	return `r=$(` + reader + ` --assignee="$` + shellVar + `" --json --limit=1` +
-		readyReaderStderrSink(fed) + `)` + readyReaderFailurePropagation(fed) + `; `
+		readyReaderStderrSink(fed) + `)` + failureClause + `; `
 }
 
 // standardAssignedInProgressWorkQueryScript is the crash-recovery tier.
@@ -516,7 +520,7 @@ func assignedReadyTierCommand(shellVar string, topo QueryTopology) string {
 	fed := topo.FederatedReady
 	return `r=$(` + readyReaderCommand(fed) + bdReadyIncludeEphemeralArg(topo.includeEphemeralReady()) +
 		` --assignee="$` + shellVar + `" --json --limit=1` + readyReaderStderrSink(fed) + `)` +
-		readyReaderFailurePropagation(fed) + `; `
+		readyReaderFailurePropagation(fed, "r") + `; `
 }
 
 func standardAssignedReadyWorkQueryScript(topo QueryTopology) string {
@@ -605,7 +609,7 @@ func ephemeralAssignedReadyProbeScript(shellVar string, topo QueryTopology) stri
 func poolDemandOriginGateScript() string {
 	return `case "$GC_SESSION_ORIGIN" in ` +
 		`ephemeral|"") ;; ` +
-		`*) exit 0 ;; ` +
+		`*) ` + failedReadyReaderResultScript() + `exit 0 ;; ` +
 		`esac; `
 }
 
@@ -614,7 +618,7 @@ func routedPoolWorkQueryProbeScript(topo QueryTopology, targetCount int) string 
 	for i := 1; i <= targetCount; i++ {
 		script += fmt.Sprintf(`probe_pool_demand "$%d"; `, i)
 	}
-	return script + `printf "[]"`
+	return script + emptyWorkQueryResultScript()
 }
 
 func routedPoolWorkQueryCommand(topo QueryTopology, targets ...string) string {
@@ -717,7 +721,8 @@ func (a *Agent) EffectiveWorkQuery() string {
 // topology: the configured bd semantics, and — on a city that serves a
 // coordination class from a store `bd` in the work directory cannot reach — the
 // federated ready reader in place of `bd ready`. A zero QueryTopology is the
-// single-store city, and its command is byte-for-byte the one already deployed.
+// single-store city and retains tier fallthrough while reporting a terminal
+// reader failure instead of false no-work.
 func (a *Agent) EffectiveWorkQueryFor(topo QueryTopology) string {
 	return a.effectiveQuery(queryWork, topo)
 }
@@ -730,7 +735,7 @@ func buildWorkQuery(a *Agent, topo QueryTopology) string {
 			poolDemandOriginGateScript() +
 			poolDemandFirstRowFunctionScript(topo) +
 			`probe_pool_demand "$1"; ` +
-			`printf "[]"`
+			emptyWorkQueryResultScript()
 		return shellquote.Join([]string{"sh", "-c", script, "--", target})
 	}
 	script := legacyControlAssignedWorkQueryScript(topo) +
@@ -738,7 +743,7 @@ func buildWorkQuery(a *Agent, topo QueryTopology) string {
 		poolDemandFirstRowFunctionScript(topo) +
 		`probe_pool_demand "$1"; ` +
 		`probe_pool_demand "$2"; ` +
-		`printf "[]"`
+		emptyWorkQueryResultScript()
 	return shellquote.Join([]string{"sh", "-c", script, "--", target, legacyTarget})
 }
 
@@ -784,9 +789,9 @@ func (a *Agent) EffectiveAssignedReadyQueryFor(topo QueryTopology) string {
 func buildAssignedReadyQuery(a *Agent, topo QueryTopology) string {
 	target := a.poolDemandTarget()
 	if legacyWorkflowControlQualifiedName(target) != "" {
-		return shellquote.Join([]string{"sh", "-c", legacyControlAssignedReadyWorkQueryScript(topo) + `printf "[]"`})
+		return shellquote.Join([]string{"sh", "-c", legacyControlAssignedReadyWorkQueryScript(topo) + emptyWorkQueryResultScript()})
 	}
-	return shellquote.Join([]string{"sh", "-c", standardAssignedReadyWorkQueryScript(topo) + `printf "[]"`})
+	return shellquote.Join([]string{"sh", "-c", standardAssignedReadyWorkQueryScript(topo) + emptyWorkQueryResultScript()})
 }
 
 // EffectiveRoutedPoolQuery returns the routed-pool-only command for prompt

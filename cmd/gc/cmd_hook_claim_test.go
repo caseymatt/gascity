@@ -217,3 +217,142 @@ func TestDoHookClaimSkipsBlockedRoutedHeadAndClaimsReadyBehindIt(t *testing.T) {
 		t.Fatalf("claimedBead = %q, want ready-behind (blocked-head must be skipped)", claimedBead)
 	}
 }
+
+func TestDoHookClaimMutationFailureIsRetryableAndDoesNotDrain(t *testing.T) {
+	candidate := `[{"id":"work-1","status":"open","metadata":{"gc.routed_to":"worker"}}]`
+	claimCalls := 0
+	drainCalls := 0
+	ops := hookClaimOps{
+		Runner: func(string, string) (string, error) { return candidate, nil },
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			claimCalls++
+			if claimCalls == 1 {
+				return beads.Bead{}, false, errors.New("temporary claim failure")
+			}
+			return beads.Bead{ID: beadID, Status: "in_progress", Assignee: assignee}, true, nil
+		},
+		ResolveWorkBranch: func(string) string { return "" },
+		DrainAck: func(io.Writer) error {
+			drainCalls++
+			return nil
+		},
+	}
+	opts := hookClaimOptions{
+		Assignee:     "worker-1",
+		RouteTargets: []string{"worker"},
+		DrainAck:     true,
+		JSON:         true,
+	}
+
+	var firstStdout, firstStderr bytes.Buffer
+	if code := doHookClaim("query", ".", opts, ops, &firstStdout, &firstStderr); code != 1 {
+		t.Fatalf("first doHookClaim() = %d, want retryable failure exit 1", code)
+	}
+	if drainCalls != 0 {
+		t.Fatalf("drain callback calls after claim failure = %d, want 0", drainCalls)
+	}
+	if firstStdout.Len() != 0 {
+		t.Fatalf("first stdout = %q, want no successful drain result", firstStdout.String())
+	}
+	if !strings.Contains(firstStderr.String(), "retryable") {
+		t.Fatalf("first stderr = %q, want explicit retryable failure", firstStderr.String())
+	}
+
+	var secondStdout, secondStderr bytes.Buffer
+	if code := doHookClaim("query", ".", opts, ops, &secondStdout, &secondStderr); code != 0 {
+		t.Fatalf("second doHookClaim() = %d, want work on retry; stderr=%s", code, secondStderr.String())
+	}
+	if drainCalls != 0 {
+		t.Fatalf("drain callback calls after later successful claim = %d, want 0", drainCalls)
+	}
+	var result hookClaimJSONResult
+	if err := json.Unmarshal(secondStdout.Bytes(), &result); err != nil {
+		t.Fatalf("second stdout is not JSON: %v\nraw: %s", err, secondStdout.String())
+	}
+	if !result.OK || result.Action != "work" || result.BeadID != "work-1" {
+		t.Fatalf("second result = %+v, want available work claimed on retry", result)
+	}
+}
+
+func TestDoHookClaimQueryErrorDoesNotDrain(t *testing.T) {
+	drainCalls := 0
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("query", ".", hookClaimOptions{
+		Assignee: "worker-1",
+		DrainAck: true,
+		JSON:     true,
+	}, hookClaimOps{
+		Runner: func(string, string) (string, error) {
+			return "", errors.New("work query unavailable")
+		},
+		DrainAck: func(io.Writer) error {
+			drainCalls++
+			return nil
+		},
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("doHookClaim() = %d, want 1 for query failure", code)
+	}
+	if drainCalls != 0 {
+		t.Fatalf("drain callback calls = %d, want 0 for query failure", drainCalls)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no successful drain result", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "work query unavailable") {
+		t.Fatalf("stderr = %q, want query failure", stderr.String())
+	}
+}
+
+func TestDoHookClaimNoWorkAndLostCASStillDrain(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		output string
+		claim  hookClaimFunc
+	}{
+		{
+			name:   "empty read",
+			output: "[]",
+		},
+		{
+			name:   "lost CAS without error",
+			output: `[{"id":"work-1","status":"open","metadata":{"gc.routed_to":"worker"}}]`,
+			claim: func(context.Context, string, []string, string, string) (beads.Bead, bool, error) {
+				return beads.Bead{}, false, nil
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			drainCalls := 0
+			var stdout, stderr bytes.Buffer
+			code := doHookClaim("query", ".", hookClaimOptions{
+				Assignee:     "worker-1",
+				RouteTargets: []string{"worker"},
+				DrainAck:     true,
+				JSON:         true,
+			}, hookClaimOps{
+				Runner: func(string, string) (string, error) { return tt.output, nil },
+				Claim:  tt.claim,
+				DrainAck: func(io.Writer) error {
+					drainCalls++
+					return nil
+				},
+			}, &stdout, &stderr)
+
+			if code != 0 {
+				t.Fatalf("doHookClaim() = %d, want acknowledged drain; stderr=%s", code, stderr.String())
+			}
+			if drainCalls != 1 {
+				t.Fatalf("drain callback calls = %d, want 1", drainCalls)
+			}
+			var result hookClaimJSONResult
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+				t.Fatalf("stdout is not JSON: %v\nraw: %s", err, stdout.String())
+			}
+			if !result.OK || result.Action != "drain" || result.Reason != hookClaimReasonNoWork || !result.DrainAcknowledged {
+				t.Fatalf("result = %+v, want acknowledged no_work drain", result)
+			}
+		})
+	}
+}

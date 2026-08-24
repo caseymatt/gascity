@@ -3023,14 +3023,12 @@ func TestDoHookClaimSkipsUnclaimableCandidateError(t *testing.T) {
 	}
 }
 
-func TestDoHookClaimDrainsClaimsErroredWhenEveryCandidateErrors(t *testing.T) {
+func TestDoHookClaimFailsRetryablyWhenEveryCandidateErrors(t *testing.T) {
 	// When a store reports ready work but EVERY eligible candidate's claim
 	// mutation errors — the can-read-but-can't-write window of store contention
 	// or a controller-socket flap between the work query and the claim — the hook
-	// must still drain (the work is reclaimed next tick via NDI) but must surface
-	// a distinct claims_errored reason. Laundering an operational write failure
-	// into a healthy no_work idle would hide sustained contention from any monitor
-	// keying on the drain reason.
+	// must fail retryably without draining or acknowledging the session. Treating
+	// an operational write failure as idle would hide the work and reap its seat.
 	var attempts []string
 	runner := func(string, string) (string, error) {
 		return `[
@@ -3060,29 +3058,27 @@ func TestDoHookClaimDrainsClaimsErroredWhenEveryCandidateErrors(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := doHookClaim("bd ready --json", "/tmp/work", opts, ops, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("doHookClaim(all candidates error) = %d, want 0; stderr=%s", code, stderr.String())
+	if code != 1 {
+		t.Fatalf("doHookClaim(all candidates error) = %d, want retryable exit 1; stderr=%s", code, stderr.String())
 	}
-	if !drained {
-		t.Fatal("drain ack was not called")
+	if drained {
+		t.Fatal("drain ack was called after claim mutation errors")
 	}
 	if got := strings.Join(attempts, ","); got != "hw-a,hw-b" {
-		t.Fatalf("claim attempts = %q, want hw-a,hw-b (every eligible candidate attempted before drain)", got)
+		t.Fatalf("claim attempts = %q, want hw-a,hw-b (every eligible candidate attempted before failure)", got)
 	}
-	var result hookClaimJSONResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not JSON: %v\nraw: %s", err, stdout.String())
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no successful drain result", stdout.String())
 	}
-	if result.Action != "drain" || result.Reason != "claims_errored" {
-		t.Fatalf("claim result = %+v, want drain/claims_errored (operational write failure kept visible)", result)
+	if !strings.Contains(stderr.String(), "retryable") {
+		t.Fatalf("stderr = %q, want explicit retryable failure", stderr.String())
 	}
 }
 
-func TestClaimHookWorkDrainsClaimsErroredWhenEveryCandidateErrors(t *testing.T) {
-	// The federated drain must carry the claims_errored signal too: a store
-	// reports ready work, but every claim against its captured rows errors, so the
-	// store is exhausted and the shared drain fires. The reason must distinguish
-	// the write-path failure from an ordinary idle no_work.
+func TestClaimHookWorkFailsRetryablyWhenEveryCandidateErrors(t *testing.T) {
+	// The federated path carries the mutation-error signal across stores, but if
+	// no later store serves work it must return a retryable failure rather than
+	// publishing a successful drain.
 	stores := []hookStore{
 		{dir: "city", env: []string{"GC_STORE=city"}},
 	}
@@ -3092,13 +3088,14 @@ func TestClaimHookWorkDrainsClaimsErroredWhenEveryCandidateErrors(t *testing.T) 
 		}
 		return `[{"id":"hw-city","status":"open","metadata":{"gc.routed_to":"worker"}}]`, nil
 	}
+	drained := false
 	ops := hookClaimOps{
 		Claim: func(_ context.Context, _ string, _ []string, beadID, _ string) (beads.Bead, bool, error) {
 			return beads.Bead{}, false, fmt.Errorf("claiming %s: store write timeout", beadID)
 		},
 		EmitClaimRejected: func(string, string, string) {},
 		ResolveWorkBranch: func(string) string { return "" },
-		DrainAck:          func(io.Writer) error { return nil },
+		DrainAck:          func(io.Writer) error { drained = true; return nil },
 	}
 	opts := hookClaimOptions{
 		Assignee:           "worker-1",
@@ -3111,18 +3108,20 @@ func TestClaimHookWorkDrainsClaimsErroredWhenEveryCandidateErrors(t *testing.T) 
 	emitted := false
 	var stdout, stderr bytes.Buffer
 	code := claimHookWorkWithRunner("bd ready --json", "city", stores[0].env, stores, opts, ops, run, func(string, error) { emitted = true }, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("claimHookWorkWithRunner(all candidates error) = %d, want 0; stderr=%s", code, stderr.String())
+	if code != 1 {
+		t.Fatalf("claimHookWorkWithRunner(all candidates error) = %d, want retryable exit 1; stderr=%s", code, stderr.String())
 	}
 	if emitted {
 		t.Fatal("a skipped claim error is not a work-query failure and must not emit one")
 	}
-	var result hookClaimJSONResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not JSON: %v\nraw: %s", err, stdout.String())
+	if drained {
+		t.Fatal("drain ack was called after claim mutation errors")
 	}
-	if result.Action != "drain" || result.Reason != "claims_errored" {
-		t.Fatalf("claim result = %+v, want drain/claims_errored", result)
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no successful drain result", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "retryable") {
+		t.Fatalf("stderr = %q, want explicit retryable failure", stderr.String())
 	}
 }
 

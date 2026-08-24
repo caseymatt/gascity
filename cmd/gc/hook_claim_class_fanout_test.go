@@ -259,10 +259,10 @@ func TestBindingClaimRefusalIsPerBeadNotPerTick(t *testing.T) {
 	}
 }
 
-// TestBindingClaimRefusalAloneStillDrains pins the drain contract for the same
-// refusal with no other work behind it: a structured claims_errored drain a
-// --json caller can read, not a bare exit 1 with empty stdout.
-func TestBindingClaimRefusalAloneStillDrains(t *testing.T) {
+// TestBindingClaimRefusalAloneFailsRetryably pins the contract for the same
+// refusal with no other work behind it: the mutation failure remains retryable
+// and cannot acknowledge or publish a successful drain.
+func TestBindingClaimRefusalAloneFailsRetryably(t *testing.T) {
 	row := `[{"id":"gcg-6","status":"open","assignee":"worker-1","metadata":{"gc.kind":"wisp"}}]`
 	run := func(_, _ string, _ []string) (string, error) { return row, nil }
 	base := hookFanoutBaseOps(func(_ context.Context, _ string, _ []string, beadID, _ string) (beads.Bead, bool, error) {
@@ -278,17 +278,16 @@ func TestBindingClaimRefusalAloneStillDrains(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := claimHookWorkWithRunner("gc ready --json", "city", stores[0].env, stores, hookFanoutClaimOpts(),
 		classRoutedHookClaimOps(base, newCapabilityRefusingRoute(t, "gcg-6")), run, func(string, error) {}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("claimHookWorkWithRunner = %d, want 0 (structured drain); stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	if code != 1 {
+		t.Fatalf("claimHookWorkWithRunner = %d, want retryable exit 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !drained {
-		t.Fatal("drain ack was not called; the tick exited without completing the drain contract")
+	if drained {
+		t.Fatal("drain ack was called after the binding refused the claim")
 	}
-	var result hookClaimJSONResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not JSON: %v\nraw: %q", err, stdout.String())
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no successful drain result", stdout.String())
 	}
-	if result.Reason != "claims_errored" {
-		t.Fatalf("drain reason = %q, want claims_errored: a refused claim must not be laundered into a healthy no_work", result.Reason)
+	if !strings.Contains(stderr.String(), "retryable") {
+		t.Fatalf("stderr = %q, want explicit retryable failure", stderr.String())
 	}
 }

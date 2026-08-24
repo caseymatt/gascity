@@ -639,10 +639,11 @@ func claimHookWork(cityPath, workQuery, workDir string, queryEnv []string, store
 // to another claimant before the mutation, the single-store claim drains without
 // work. That would strand routed work waiting in a LATER federated store behind
 // the lost race, so this loop drops the exhausted store and reselects across the
-// remaining stores. It writes the shared drain exactly once, after every store
-// has been exhausted; the drain reason is claims_errored when any exhausted
-// store's eligible claims errored rather than merely lost the race, else no_work.
-// emitFailure surfaces a work-query timeout on the event bus when eligible.
+// remaining stores. It writes the shared no-work drain exactly once after every
+// store has been exhausted, but only when every attempted claim mutation either
+// succeeded or lost a race. Any eligible mutation error exits retryably without
+// writing or acknowledging a drain. emitFailure surfaces work-query and claim
+// failures on the event bus when eligible.
 //
 // The store set is also what the claim-time class escalation is measured
 // against: only the PRIMARY leg runs the city-wide reader, so it is the only leg
@@ -665,8 +666,8 @@ func claimHookWorkWithRunner(workQuery, workDir string, queryEnv []string, store
 	}
 	remaining := stores
 	// claimsErrored aggregates the per-store signal that a store reported ready
-	// work but every eligible claim mutation errored, so the shared drain below can
-	// report claims_errored instead of laundering a write failure into no_work.
+	// work but every eligible claim mutation errored. If no later store yields a
+	// claim, this suppresses the shared drain and leaves the session retryable.
 	claimsErrored := false
 	for len(remaining) > 0 {
 		discovered, selected, err := selectStoreWithWorkRetrying(workQuery, remaining, primary, run)
@@ -713,10 +714,9 @@ func claimHookWorkWithRunner(workQuery, workDir string, queryEnv []string, store
 		}
 		// This store reported ready work but the claim acquired nothing — every
 		// claimable row was lost to another claimant, none matched this session, or
-		// every claimable row's claim mutation errored and was skipped. Drop it and
-		// reselect from the remaining stores so routed work in a later federated
-		// store is not stranded behind it; claimsErrored carries any write-failure
-		// signal to the shared drain.
+		// every claimable row's mutation errored. Drop it and reselect from the
+		// remaining stores so routed work in a later federated store is not stranded;
+		// claimsErrored preserves any write failure for the final retryable exit.
 		remaining = removeHookStore(remaining, claimStore)
 	}
 	return writeHookClaimNoWork(claimOpts, ops, claimsErrored, workDir, stdout, stderr)
