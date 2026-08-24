@@ -39,6 +39,13 @@ const (
 	// exists to be a good citizen against the data plane rather than to
 	// protect the check — the wall time it saves is the whole point.
 	orderFiringLastRunConcurrency = 8
+	// orderFiringConfirmationTailLimit and
+	// orderFiringConfirmationMaxScanBytes bound both dimensions of the per-order
+	// snapshot confirmation. A subject/type filter can be rare, so limiting only
+	// matching rows still permits a full-file scan; the byte window makes this a
+	// true tail lookup while remaining ample for events appended during this run.
+	orderFiringConfirmationTailLimit    = 1
+	orderFiringConfirmationMaxScanBytes = 4 << 20
 )
 
 // OrderFiringCurrentLastRunFunc reports the newest persisted run time for an
@@ -203,6 +210,7 @@ func (c *OrderFiringCurrentCheck) run(ctx *CheckContext) *CheckResult {
 			blockingErrors++
 			continue
 		}
+		initialEventFired := latestOrderFiredAt(firedEvents, order.ScopedName())
 		lastFired, err := c.latestOrderFiredAtUsing(lastRunFor, firedEvents, order, expected, now)
 		if err != nil {
 			worst = worseStatus(worst, StatusError)
@@ -214,6 +222,23 @@ func (c *OrderFiringCurrentCheck) run(ctx *CheckContext) *CheckResult {
 			continue
 		}
 		status, severity, detail := classifyOrderFiring(order, now, expected, lastFired, startedAt)
+		initialEventStatus, _, _ := classifyOrderFiring(order, now, expected, initialEventFired, startedAt)
+		if initialEventStatus != StatusOK {
+			confirmed, err := c.confirmOrderFiringCurrent(eventPath, order, initialEventFired, lastFired)
+			if err != nil {
+				worst = worseStatus(worst, StatusError)
+				result.Details = append(result.Details, fmt.Sprintf("%s: cannot confirm order freshness: %v", orderDisplayName(order), err))
+				if firstNonOK == "" {
+					firstNonOK = orderHistoryHintTarget(order)
+				}
+				blockingErrors++
+				continue
+			}
+			status, severity, detail = classifyOrderFiring(order, now, expected, confirmed.lastFired, startedAt)
+			if confirmed.failed != nil {
+				status, detail = classifyFailedOrderFiring(now, status, detail, *confirmed.failed)
+			}
+		}
 		worst = worseStatus(worst, status)
 		result.Details = append(result.Details, detail)
 		if status != StatusOK {
@@ -755,6 +780,80 @@ func latestOrderFiredAt(evts []events.Event, subject string) time.Time {
 		}
 	}
 	return latest
+}
+
+// orderFiringConfirmation is the second snapshot taken immediately before a
+// stale diagnosis is emitted. failed is set only when the newest observed
+// terminal failure has not been superseded by a newer persisted run or firing.
+type orderFiringConfirmation struct {
+	lastFired time.Time
+	failed    *events.Event
+}
+
+// confirmOrderFiringCurrent closes the race between the check's initial event
+// snapshot / prefetched history and classification. It reads the newest failure
+// first, then the newest firing, then the authoritative bounded LastRun source.
+// That ordering is a small snapshot fence: a firing that starts while the check
+// is running is visible either to the final event read or to the later persisted
+// run lookup. A failure timestamp is diagnostic only; it never advances the
+// freshness clock.
+func (c *OrderFiringCurrentCheck) confirmOrderFiringCurrent(eventPath string, order orders.Order, initialEventFired, initialLatest time.Time) (orderFiringConfirmation, error) {
+	subject := order.ScopedName()
+	failedEvents, err := c.readEventTail(eventPath, events.Filter{Type: events.OrderFailed, Subject: subject, MaxScanBytes: orderFiringConfirmationMaxScanBytes}, orderFiringConfirmationTailLimit)
+	if err != nil {
+		return orderFiringConfirmation{}, fmt.Errorf("read latest order failure: %w", err)
+	}
+	firedEvents, err := c.readEventTail(eventPath, events.Filter{Type: events.OrderFired, Subject: subject, MaxScanBytes: orderFiringConfirmationMaxScanBytes}, orderFiringConfirmationTailLimit)
+	if err != nil {
+		return orderFiringConfirmation{}, fmt.Errorf("read latest order firing: %w", err)
+	}
+
+	confirmedFired := initialEventFired
+	if at := latestOrderFiredAt(firedEvents, subject); at.After(confirmedFired) {
+		confirmedFired = at
+	}
+	confirmedLatest := initialLatest
+	if confirmedFired.After(confirmedLatest) {
+		confirmedLatest = confirmedFired
+	}
+	if c.lastRun != nil {
+		runAt, err := c.lastRun(order)
+		if err != nil {
+			return orderFiringConfirmation{}, fmt.Errorf("read latest persisted order run: %w", err)
+		}
+		if runAt.After(confirmedLatest) {
+			confirmedLatest = runAt
+		}
+	}
+
+	var latestFailed *events.Event
+	for i := range failedEvents {
+		event := &failedEvents[i]
+		if latestFailed == nil || event.Ts.After(latestFailed.Ts) {
+			latestFailed = event
+		}
+	}
+	if latestFailed != nil && latestFailed.Ts.After(confirmedLatest) {
+		// A tracking row is created before its terminal failure is recorded.
+		// Do not mistake that row's CreatedAt for a successful firing.
+		return orderFiringConfirmation{lastFired: confirmedFired, failed: latestFailed}, nil
+	}
+	return orderFiringConfirmation{lastFired: confirmedLatest}, nil
+}
+
+// classifyFailedOrderFiring preserves the ordinary overdue/stale thresholds and
+// adds the terminal failure that explains them. A failure after an otherwise
+// recent order.fired record is still actionable, so it is at least a warning;
+// a genuinely stale result keeps its existing warning/error classification.
+func classifyFailedOrderFiring(now time.Time, status CheckStatus, detail string, failed events.Event) (CheckStatus, string) {
+	failure := fmt.Sprintf("latest firing failed %s ago", formatOrderFiringDuration(nonNegativeDuration(now.Sub(failed.Ts))))
+	if message := strings.TrimSpace(failed.Message); message != "" {
+		failure += ": " + message
+	}
+	if status == StatusOK {
+		status = StatusWarning
+	}
+	return status, detail + "; " + failure
 }
 
 func classifyOrderFiring(order orders.Order, now time.Time, expected time.Duration, lastFired, controllerStarted time.Time) (CheckStatus, CheckSeverity, string) {
