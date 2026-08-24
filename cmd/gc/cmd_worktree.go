@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/git"
 	"github.com/gastownhall/gascity/internal/pathutil"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -497,11 +499,7 @@ func createRegisteredWorktree(ctx context.Context, cityPath string, rig worktree
 	if rig.Name == "" || rig.Root == "" {
 		return result, errors.New("selected rig is incomplete")
 	}
-	worktreesRoot := filepath.Join(rig.Root, "worktrees")
-	if err := os.MkdirAll(worktreesRoot, 0o755); err != nil {
-		return result, fmt.Errorf("creating rig worktrees directory: %w", err)
-	}
-	worktreesRoot = pathutil.NormalizePathForCompare(worktreesRoot)
+	worktreesRoot := pathutil.NormalizePathForCompare(filepath.Join(rig.Root, "worktrees"))
 	requestedPath := opts.Path
 	if !filepath.IsAbs(requestedPath) {
 		requestedPath = filepath.Join(worktreesRoot, requestedPath)
@@ -565,35 +563,47 @@ func createRegisteredWorktree(ctx context.Context, cityPath string, rig worktree
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("inspecting worktree path: %w", err)
 		}
-
+		worktreesRootExisted := pathExists(worktreesRoot)
 		targetExisted := pathExists(result.CargoTargetDir)
+		cargoHomeExisted := pathExists(result.CargoHome)
+		cleanupCreatedDirectories := func() {
+			if !targetExisted {
+				_ = os.Remove(result.CargoTargetDir)
+				_ = os.Remove(filepath.Dir(result.CargoTargetDir))
+				_ = os.Remove(filepath.Dir(filepath.Dir(result.CargoTargetDir)))
+			}
+			if !cargoHomeExisted {
+				_ = os.Remove(result.CargoHome)
+				_ = os.Remove(filepath.Dir(result.CargoHome))
+				_ = os.Remove(filepath.Dir(filepath.Dir(result.CargoHome)))
+			}
+			if !worktreesRootExisted {
+				_ = os.Remove(worktreesRoot)
+			}
+		}
+		if err := os.MkdirAll(worktreesRoot, 0o755); err != nil {
+			return fmt.Errorf("creating rig worktrees directory: %w", err)
+		}
 		if err := os.MkdirAll(result.CargoTargetDir, 0o755); err != nil {
+			cleanupCreatedDirectories()
 			return fmt.Errorf("creating cargo target directory: %w", err)
 		}
 		if err := os.MkdirAll(result.CargoHome, 0o755); err != nil {
-			if !targetExisted {
-				_ = os.Remove(result.CargoTargetDir)
-			}
+			cleanupCreatedDirectories()
 			return fmt.Errorf("creating cargo home: %w", err)
 		}
 		if err := os.MkdirAll(filepath.Dir(result.Path), 0o755); err != nil {
-			if !targetExisted {
-				_ = os.Remove(result.CargoTargetDir)
-			}
+			cleanupCreatedDirectories()
 			return fmt.Errorf("creating worktree parent: %w", err)
 		}
 		addBranch := strings.TrimSpace(opts.Branch)
 		if err := git.New(rig.Root).WorktreeAddCtx(ctx, result.Path, result.Base, addBranch); err != nil {
-			if !targetExisted {
-				_ = os.Remove(result.CargoTargetDir)
-			}
+			cleanupCreatedDirectories()
 			return err
 		}
 		compensate := func(cause error) error {
 			removeErr := git.New(rig.Root).WorktreeRemove(result.Path, false)
-			if !targetExisted {
-				_ = os.Remove(result.CargoTargetDir)
-			}
+			cleanupCreatedDirectories()
 			if removeErr != nil {
 				return errors.Join(cause, fmt.Errorf("compensating worktree removal: %w", removeErr))
 			}
@@ -612,7 +622,7 @@ func createRegisteredWorktree(ctx context.Context, cityPath string, rig worktree
 		}
 		result.HeadSHA = head
 		result.CreatedAt = worktreeNow().UTC().Format(time.RFC3339Nano)
-		if err := invokeCodeStorageAttach(ctx, cityPath, result); err != nil {
+		if err := invokeCodeStorageRegister(ctx, cityPath, result); err != nil {
 			return compensate(err)
 		}
 		registry.Entries = append(registry.Entries, result)
@@ -670,12 +680,49 @@ func rigOwnsWorktreePath(rigRoot, path string) (bool, error) {
 	return false, nil
 }
 
+const (
+	codeStorageRequestLifetime    = 20 * time.Second
+	codeStorageProtocolFrameLimit = 32 << 10
+	codeStorageDiagnosticLimit    = 8 << 10
+)
+
+type codeStorageRequest struct {
+	Version      int    `json:"version"`
+	Operation    string `json:"operation"`
+	RequestID    string `json:"requestId"`
+	ExpiresAt    string `json:"expiresAt"`
+	LifecycleID  string `json:"lifecycleId"`
+	Owner        string `json:"owner"`
+	Rig          string `json:"rig"`
+	RigRoot      string `json:"rigRoot"`
+	WorktreePath string `json:"worktreePath"`
+	Attempt      int    `json:"attempt"`
+	Base         string `json:"base"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"headSha"`
+}
+type codeStorageRegisterReply struct {
+	Version      int    `json:"version"`
+	RequestID    string `json:"requestId"`
+	OK           bool   `json:"ok"`
+	Operation    string `json:"operation"`
+	LifecycleID  string `json:"lifecycleId"`
+	Owner        string `json:"owner"`
+	Rig          string `json:"rig"`
+	RigRoot      string `json:"rigRoot"`
+	WorktreePath string `json:"worktreePath"`
+	Attempt      int    `json:"attempt"`
+	Base         string `json:"base"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"headSha"`
+}
+
 type codeStoragePublishReply struct {
 	Worktree        string `json:"worktree"`
 	Ref             string `json:"ref"`
-	HeadSHA         string `json:"headSha"`
+	HeadSHA         string `json:"head_sha"`
 	Pushed          bool   `json:"pushed"`
-	AlreadyUpToDate bool   `json:"alreadyUpToDate"`
+	AlreadyUpToDate bool   `json:"already_up_to_date"`
 }
 
 func codeStorageHelperPath(cityPath string) string {
@@ -685,25 +732,46 @@ func codeStorageHelperPath(cityPath string) string {
 	return filepath.Join(cityPath, "tools", "code-storage", "gc-code-storage")
 }
 
-func invokeCodeStorageAttach(ctx context.Context, cityPath string, entry worktreeRegistryEntry) error {
-	cmd := exec.CommandContext(ctx, codeStorageHelperPath(cityPath), "attach", entry.Rig, entry.ID, strconv.Itoa(entry.Attempt), entry.Path)
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
-		return redactedHelperError("attach", err)
+func invokeCodeStorageRegister(ctx context.Context, cityPath string, entry worktreeRegistryEntry) error {
+	stdout := boundedCodeStorageOutput{limit: codeStorageProtocolFrameLimit}
+	request, err := invokeCodeStorageHelper(ctx, cityPath, "register", entry, entry.HeadSHA, &stdout)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	decoder.DisallowUnknownFields()
+	var reply codeStorageRegisterReply
+	if err := decoder.Decode(&reply); err != nil {
+		return errors.New("code storage helper register returned invalid JSON (output redacted)")
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return errors.New("code storage helper register returned trailing data (output redacted)")
+	}
+	if reply.Version != request.Version ||
+		reply.RequestID != request.RequestID ||
+		!reply.OK ||
+		reply.Operation != "registerAttempt" ||
+		reply.LifecycleID != request.LifecycleID ||
+		reply.Owner != request.Owner ||
+		reply.Rig != request.Rig ||
+		reply.RigRoot != request.RigRoot ||
+		reply.WorktreePath != request.WorktreePath ||
+		reply.Attempt != request.Attempt ||
+		reply.Base != request.Base ||
+		reply.Branch != request.Branch ||
+		reply.HeadSHA != request.HeadSHA {
+		return errors.New("code storage helper register returned a mismatched acknowledgment (output redacted)")
 	}
 	return nil
 }
 
-func invokeCodeStoragePublish(ctx context.Context, cityPath string, entry worktreeRegistryEntry) (codeStoragePublishReply, error) {
-	var stdout bytes.Buffer
-	cmd := exec.CommandContext(ctx, codeStorageHelperPath(cityPath), "publish", entry.Rig, entry.ID, strconv.Itoa(entry.Attempt), entry.Path)
-	cmd.Stdout = &stdout
-	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
-		return codeStoragePublishReply{}, redactedHelperError("publish", err)
+func invokeCodeStoragePublish(ctx context.Context, cityPath string, entry worktreeRegistryEntry, headSHA string) (codeStoragePublishReply, error) {
+	stdout := boundedCodeStorageOutput{limit: codeStorageProtocolFrameLimit}
+	expectedRef := fmt.Sprintf("sessions/%s/attempt/%d", entry.ID, entry.Attempt)
+	if _, err := invokeCodeStorageHelper(ctx, cityPath, "publish", entry, headSHA, &stdout); err != nil {
+		return codeStoragePublishReply{}, err
 	}
-	dec := json.NewDecoder(&stdout)
+	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
 	dec.DisallowUnknownFields()
 	var reply codeStoragePublishReply
 	if err := dec.Decode(&reply); err != nil {
@@ -712,26 +780,221 @@ func invokeCodeStoragePublish(ctx context.Context, cityPath string, entry worktr
 	if dec.Decode(&struct{}{}) != io.EOF {
 		return codeStoragePublishReply{}, errors.New("code storage helper publish returned trailing data (output redacted)")
 	}
-	reply.Ref = strings.TrimSpace(reply.Ref)
-	reply.HeadSHA = strings.TrimSpace(reply.HeadSHA)
 	if reply.Worktree != entry.Path {
 		return codeStoragePublishReply{}, errors.New("code storage helper publish returned a mismatched worktree (output redacted)")
+	}
+	if reply.Ref != expectedRef {
+		return codeStoragePublishReply{}, errors.New("code storage helper publish returned a mismatched ref (output redacted)")
+	}
+	if reply.HeadSHA != headSHA {
+		return codeStoragePublishReply{}, errors.New("code storage helper publish returned a mismatched SHA (output redacted)")
 	}
 	if !reply.Pushed {
 		return codeStoragePublishReply{}, errors.New("code storage helper publish refused to push (output redacted)")
 	}
-	if reply.Ref == "" || reply.HeadSHA == "" {
-		return codeStoragePublishReply{}, errors.New("code storage helper publish returned an incomplete result (output redacted)")
-	}
 	return reply, nil
 }
 
-func redactedHelperError(verb string, err error) error {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return fmt.Errorf("code storage helper %s failed with exit code %d (output redacted)", verb, exitErr.ExitCode())
+func invokeCodeStorageHelper(
+	ctx context.Context,
+	cityPath string,
+	operation string,
+	entry worktreeRegistryEntry,
+	headSHA string,
+	stdout *boundedCodeStorageOutput,
+) (codeStorageRequest, error) {
+	expiresAt := worktreeNow().UTC().Add(codeStorageRequestLifetime)
+	request := codeStorageRequest{
+		Version:      1,
+		Operation:    operation + "Attempt",
+		RequestID:    uuid.NewString(),
+		ExpiresAt:    expiresAt.Format(time.RFC3339Nano),
+		LifecycleID:  entry.ID,
+		Owner:        entry.Owner,
+		Rig:          entry.Rig,
+		RigRoot:      entry.RigRoot,
+		WorktreePath: entry.Path,
+		Attempt:      entry.Attempt,
+		Base:         entry.Base,
+		Branch:       entry.Branch,
+		HeadSHA:      headSHA,
 	}
-	return fmt.Errorf("code storage helper %s could not start (details redacted)", verb)
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return codeStorageRequest{}, fmt.Errorf("encoding code storage %s request: %w", operation, err)
+	}
+	payload = append(payload, '\n')
+	requestCtx, cancel := context.WithDeadline(ctx, expiresAt)
+	defer cancel()
+	stderr := boundedCodeStorageOutput{limit: codeStorageDiagnosticLimit}
+	cmd := exec.CommandContext(requestCtx, codeStorageHelperPath(cityPath), operation, "--json-request")
+	cmd.Stdin = bytes.NewReader(payload)
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderr
+	cmd.Env = codeStorageHelperEnvironment()
+	if err := cmd.Run(); err != nil {
+		return request, redactedHelperError(operation, err, stderr.String(), stderr.Overflowed())
+	}
+	if stdout.Overflowed() {
+		return request, fmt.Errorf("code storage helper %s returned an oversized response (output redacted)", operation)
+	}
+	return request, nil
+}
+
+type boundedCodeStorageOutput struct {
+	data       []byte
+	limit      int
+	overflowed bool
+}
+
+func (output *boundedCodeStorageOutput) Write(data []byte) (int, error) {
+	remaining := output.limit - len(output.data)
+	if remaining < len(data) {
+		output.overflowed = true
+	}
+	if remaining > 0 {
+		if remaining > len(data) {
+			remaining = len(data)
+		}
+		output.data = append(output.data, data[:remaining]...)
+	}
+	return len(data), nil
+}
+
+func (output *boundedCodeStorageOutput) String() string {
+	return string(output.data)
+}
+
+func (output *boundedCodeStorageOutput) Bytes() []byte {
+	return output.data
+}
+
+func (output *boundedCodeStorageOutput) Overflowed() bool {
+	return output.overflowed
+}
+
+func codeStorageHelperEnvironment() []string {
+	environment := os.Environ()
+	filtered := environment[:0]
+	for _, item := range environment {
+		if strings.HasPrefix(item, "PIERRE_PRIVATE_KEY=") {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+var (
+	codeStoragePEMPattern         = regexp.MustCompile(`(?s)-----BEGIN [^\r\n-]+-----.*?-----END [^\r\n-]+-----`)
+	codeStorageUnclosedPEMPattern = regexp.MustCompile(`(?s)-----BEGIN [^\r\n-]+-----.*\z`)
+	codeStorageJWTPattern         = regexp.MustCompile(`\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.(?:[A-Za-z0-9_-]+(?:\b|\z)|[^A-Za-z0-9_-]|\z)`)
+	codeStorageURLPattern         = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s]+`)
+	codeStorageAuthHeaderPattern  = regexp.MustCompile(`(?im)\b(proxy-authorization|authorization|auth)\s*[:=][^\r\n]*`)
+	codeStorageBearerTokenPattern = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;]+`)
+	codeStorageCredentialPattern  = regexp.MustCompile(`(?i)\b(token|secret|password|passwd|credential|private[_-]?key|api[_-]?key|access[_-]?key)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)`)
+)
+
+func redactedHelperError(operation string, err error, stderr string, overflowed bool) error {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return fmt.Errorf("code storage helper %s could not start (details redacted)", operation)
+	}
+	diagnostic := sanitizeCodeStorageDiagnostic(stderr, overflowed)
+	if diagnostic == "" {
+		return fmt.Errorf("code storage helper %s failed with exit code %d (output redacted)", operation, exitErr.ExitCode())
+	}
+	return fmt.Errorf("code storage helper %s failed with exit code %d: %s", operation, exitErr.ExitCode(), diagnostic)
+}
+
+func sanitizeCodeStorageDiagnostic(diagnostic string, overflowed bool) string {
+	if overflowed {
+		lastCompleteLine := strings.LastIndexAny(diagnostic, "\r\n")
+		if lastCompleteLine < 0 {
+			return ""
+		}
+		diagnostic = diagnostic[:lastCompleteLine]
+	}
+	diagnostic = codeStoragePEMPattern.ReplaceAllString(diagnostic, "[REDACTED_PEM]")
+	diagnostic = codeStorageUnclosedPEMPattern.ReplaceAllString(diagnostic, "[REDACTED_PEM]")
+	diagnostic = codeStorageJWTPattern.ReplaceAllString(diagnostic, "[REDACTED_JWT]")
+	diagnostic = codeStorageURLPattern.ReplaceAllStringFunc(diagnostic, redactCodeStorageCredentialURL)
+	diagnostic = codeStorageAuthHeaderPattern.ReplaceAllString(diagnostic, "$1: [REDACTED]")
+	diagnostic = codeStorageBearerTokenPattern.ReplaceAllString(diagnostic, "Bearer [REDACTED]")
+	diagnostic = codeStorageCredentialPattern.ReplaceAllString(diagnostic, "$1=[REDACTED]")
+	for _, secret := range codeStorageSecretEnvironmentValues() {
+		diagnostic = strings.ReplaceAll(diagnostic, secret, "[REDACTED_ENV]")
+	}
+	diagnostic = strings.Join(strings.Fields(strings.ToValidUTF8(diagnostic, "\uFFFD")), " ")
+	if len(diagnostic) > codeStorageDiagnosticLimit {
+		diagnostic = diagnostic[:codeStorageDiagnosticLimit]
+	}
+	return diagnostic
+}
+
+func redactCodeStorageCredentialURL(rawURL string) string {
+	lower := strings.ToLower(rawURL)
+	remainder := lower[strings.Index(lower, "://")+3:]
+	authority := remainder
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+	if strings.Contains(authority, "@") {
+		return "[REDACTED_URL]"
+	}
+	for _, marker := range []string{
+		"access_key=",
+		"api_key=",
+		"auth=",
+		"authorization=",
+		"credential=",
+		"password=",
+		"secret=",
+		"signature=",
+		"token=",
+		"x-amz-",
+	} {
+		if strings.Contains(lower, marker) {
+			return "[REDACTED_URL]"
+		}
+	}
+	return rawURL
+}
+
+func codeStorageSecretEnvironmentValues() []string {
+	var values []string
+	for _, item := range os.Environ() {
+		name, value, ok := strings.Cut(item, "=")
+		if !ok || value == "" || !codeStorageSecretEnvironmentName(name) {
+			continue
+		}
+		values = append(values, value)
+	}
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	return values
+}
+
+func codeStorageSecretEnvironmentName(name string) bool {
+	name = strings.ToUpper(name)
+	for _, marker := range []string{
+		"SECRET",
+		"TOKEN",
+		"PASSWORD",
+		"PASSWD",
+		"CREDENTIAL",
+		"PRIVATE_KEY",
+		"API_KEY",
+		"ACCESS_KEY",
+		"SIGNING_KEY",
+		"SSH_KEY",
+		"BEARER",
+		"AUTH",
+	} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func publishRegisteredWorktree(ctx context.Context, cityPath, selector string, rec events.Recorder) (worktreeRegistryEntry, error) {
@@ -749,18 +1012,22 @@ func publishRegisteredWorktree(ctx context.Context, cityPath, selector string, r
 		if !owned {
 			return fmt.Errorf("registered path %q is not owned by rig %q", entry.Path, entry.Rig)
 		}
-		reply, err := invokeCodeStoragePublish(ctx, cityPath, entry)
+		headBeforePublish, err := git.New(entry.Path).HeadCtx(ctx)
 		if err != nil {
 			return err
 		}
-		currentHead, err := git.New(entry.Path).HeadCtx(ctx)
+		reply, err := invokeCodeStoragePublish(ctx, cityPath, entry, headBeforePublish)
 		if err != nil {
 			return err
 		}
-		if !strings.EqualFold(reply.HeadSHA, currentHead) {
-			return errors.New("code storage helper published SHA does not match current HEAD (helper output redacted)")
+		headAfterPublish, err := git.New(entry.Path).HeadCtx(ctx)
+		if err != nil {
+			return err
 		}
-		entry.HeadSHA = currentHead
+		if headAfterPublish != headBeforePublish {
+			return errors.New("worktree HEAD changed while code storage helper was publishing")
+		}
+		entry.HeadSHA = headAfterPublish
 		entry.Published = true
 		entry.PublishedRef = reply.Ref
 		entry.PublishedSHA = reply.HeadSHA
@@ -951,9 +1218,6 @@ func reclaimRegisteredWorktree(ctx context.Context, cityPath string, cfg *config
 		registry.Entries = append(registry.Entries[:index], registry.Entries[index+1:]...)
 		if err := writeWorktreeRegistry(paths.Registry, registry); err != nil {
 			recoveryErr := git.New(entry.RigRoot).WorktreeAddCtx(ctx, entry.Path, head, "")
-			if recoveryErr == nil {
-				recoveryErr = invokeCodeStorageAttach(ctx, cityPath, entry)
-			}
 			result.Reclaimable = false
 			result.Reason = "registry update failed after git removal; checkout recovery attempted"
 			if recoveryErr != nil {

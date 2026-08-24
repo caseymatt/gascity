@@ -11,10 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/git"
+	"github.com/google/uuid"
 )
 
 func TestWorktreeCommandSurfaceHasFourVerbsAndNoForce(t *testing.T) {
@@ -187,6 +189,8 @@ func TestWorktreeCreateRejectsDuplicateIDAndPath(t *testing.T) {
 func TestWorktreeCreateIsIdempotentOnlyForExactRegisteredRequest(t *testing.T) {
 	cityPath, rig, _ := newWorktreeTestRig(t)
 	installWorktreeTestHelper(t, false)
+	requestLog := filepath.Join(t.TempDir(), "requests.jsonl")
+	t.Setenv("GC_WORKTREE_TEST_REQUEST_LOG", requestLog)
 	opts := worktreeCreateOptions{ID: "same", Owner: "owner", Path: "same", Base: "HEAD", Attempt: 1}
 	first, err := createRegisteredWorktree(context.Background(), cityPath, rig, opts, events.Discard)
 	if err != nil {
@@ -199,12 +203,27 @@ func TestWorktreeCreateIsIdempotentOnlyForExactRegisteredRequest(t *testing.T) {
 	if first != second {
 		t.Fatalf("idempotent retry changed entry:\nfirst=%+v\nsecond=%+v", first, second)
 	}
+	data, err := os.ReadFile(requestLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registerCalls int
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.Contains(line, `"registerAttempt"`) {
+			registerCalls++
+		}
+	}
+	if registerCalls != 1 {
+		t.Fatalf("helper register calls = %d, want exactly one; requests=%s", registerCalls, data)
+	}
 }
 
-func TestWorktreeCreateHelperFailureCompensatesAndRedacts(t *testing.T) {
+func TestWorktreeCreateRegisterFailureCompensatesAndSanitizesDiagnostic(t *testing.T) {
 	cityPath, rig, _ := newWorktreeTestRig(t)
 	installWorktreeTestHelper(t, true)
+	t.Setenv("GC_WORKTREE_TEST_SECRET", "known-secret-value")
 	path := filepath.Join(rig.Root, "worktrees", "failed")
+	cargoTarget := filepath.Join(rig.Root, "worktrees", ".cargo-targets", "failed", "attempt-1")
 
 	_, err := createRegisteredWorktree(context.Background(), cityPath, rig, worktreeCreateOptions{
 		ID: "failed", Owner: "owner", Path: path, Base: "HEAD", Attempt: 1,
@@ -212,11 +231,36 @@ func TestWorktreeCreateHelperFailureCompensatesAndRedacts(t *testing.T) {
 	if err == nil {
 		t.Fatal("create unexpectedly succeeded")
 	}
-	if strings.Contains(err.Error(), "super-secret-token") {
-		t.Fatalf("helper error leaked credential: %v", err)
+	if !strings.Contains(err.Error(), "register failed with exit code 23") ||
+		!strings.Contains(err.Error(), "remote rejected lifecycle") {
+		t.Fatalf("register error lost actionable diagnostic: %v", err)
+	}
+	for _, secret := range []string{
+		"known-secret-value",
+		"super-secret-token",
+		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signature123",
+		"abcdefgh.ijklmnop.",
+		"private-key-material",
+		"authorization-secret",
+		"opaque-authorization-secret",
+		"github-authorization-secret",
+		"proxy-secret",
+		"https://user:stdout-secret@example.invalid/attached",
+		"https://user:password@example.invalid/repository",
+		"https://example.invalid/archive?X-Amz-Credential=credential-value&X-Amz-Signature=signature-value",
+	} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("helper error leaked %q: %v", secret, err)
+		}
+	}
+	if len(err.Error()) > codeStorageDiagnosticLimit+200 {
+		t.Fatalf("helper error length = %d, want bounded diagnostic", len(err.Error()))
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("compensated path stat error = %v, want not exist", statErr)
+	}
+	if _, statErr := os.Stat(cargoTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("compensated cargo target stat error = %v, want not exist", statErr)
 	}
 	owned, listErr := rigOwnsWorktreePath(rig.Root, path)
 	if listErr != nil {
@@ -225,13 +269,166 @@ func TestWorktreeCreateHelperFailureCompensatesAndRedacts(t *testing.T) {
 	if owned {
 		t.Fatal("failed checkout remains in git worktree registry")
 	}
-	registry, loadErr := loadWorktreeRegistry(worktreeRegistryFilePaths(cityPath).Registry)
+	registryPath := worktreeRegistryFilePaths(cityPath).Registry
+	registry, loadErr := loadWorktreeRegistry(registryPath)
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
 	if len(registry.Entries) != 0 {
 		t.Fatalf("registry entries = %+v, want empty", registry.Entries)
 	}
+	if _, statErr := os.Stat(registryPath); !os.IsNotExist(statErr) {
+		t.Fatalf("registry metadata stat error = %v, want not exist", statErr)
+	}
+}
+
+func TestWorktreeCreateRejectsInvalidRegisterAcknowledgement(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		env  string
+	}{
+		{name: "unknown field", env: "GC_WORKTREE_TEST_REGISTER_EXTRA"},
+		{name: "mismatched request", env: "GC_WORKTREE_TEST_REGISTER_MISMATCH"},
+		{name: "trailing output", env: "GC_WORKTREE_TEST_REGISTER_TRAILING"},
+		{name: "overflowed output", env: "GC_WORKTREE_TEST_REGISTER_OVERFLOW"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cityPath, rig, _ := newWorktreeTestRig(t)
+			installWorktreeTestHelper(t, false)
+			t.Setenv(test.env, "true")
+			path := filepath.Join(rig.Root, "worktrees", "invalid-register")
+
+			_, err := createRegisteredWorktree(context.Background(), cityPath, rig, worktreeCreateOptions{
+				ID: "invalid-register", Owner: "owner", Path: path, Base: "HEAD", Attempt: 1,
+			}, events.Discard)
+			if err == nil || !strings.Contains(err.Error(), "register returned") ||
+				!strings.Contains(err.Error(), "output redacted") {
+				t.Fatalf("invalid register acknowledgment error = %v", err)
+			}
+			if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+				t.Fatalf("compensated path stat error = %v, want not exist", statErr)
+			}
+			assertWorktreeTestRegistered(t, cityPath, "invalid-register", false)
+		})
+	}
+}
+
+func TestWorktreeCreateAcceptsCompleteRegisterFrameAboveDiagnosticLimit(t *testing.T) {
+	cityPath, rig, _ := newWorktreeTestRig(t)
+	installWorktreeTestHelper(t, false)
+	t.Setenv("GC_WORKTREE_TEST_REGISTER_PADDING", "true")
+	path := filepath.Join(rig.Root, "worktrees", "large-register-frame")
+
+	if _, err := createRegisteredWorktree(context.Background(), cityPath, rig, worktreeCreateOptions{
+		ID: "large-register-frame", Owner: "owner", Path: path, Base: "HEAD", Attempt: 1,
+	}, events.Discard); err != nil {
+		t.Fatal(err)
+	}
+	assertWorktreeTestRegistered(t, cityPath, "large-register-frame", true)
+}
+
+func TestWorktreeSignerRequestsContainCanonicalLifecycleIdentity(t *testing.T) {
+	cityPath, rig, _ := newWorktreeTestRig(t)
+	installWorktreeTestHelper(t, false)
+	requestLog := filepath.Join(t.TempDir(), "requests.jsonl")
+	t.Setenv("GC_WORKTREE_TEST_REQUEST_LOG", requestLog)
+	t.Setenv("PIERRE_PRIVATE_KEY", "must-not-reach-helper")
+	startedAt := time.Now().UTC()
+
+	created := createWorktreeTestEntry(t, cityPath, rig, "request-fields", "request-fields")
+	if _, err := publishRegisteredWorktree(context.Background(), cityPath, created.ID, events.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(requestLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("helper requests = %d, want register and publish: %s", len(lines), data)
+	}
+	for i, operation := range []string{"registerAttempt", "publishAttempt"} {
+		var record struct {
+			Argv                []string        `json:"argv"`
+			Request             json.RawMessage `json:"request"`
+			HasPierrePrivateKey bool            `json:"has_pierre_private_key"`
+		}
+		if err := json.Unmarshal([]byte(lines[i]), &record); err != nil {
+			t.Fatalf("decode helper request %d: %v", i, err)
+		}
+		if record.HasPierrePrivateKey {
+			t.Fatalf("%s helper inherited PIERRE_PRIVATE_KEY", operation)
+		}
+		var request codeStorageRequest
+		if err := json.Unmarshal(record.Request, &request); err != nil {
+			t.Fatalf("decode %s request: %v", operation, err)
+		}
+		var requestFields map[string]json.RawMessage
+		if err := json.Unmarshal(record.Request, &requestFields); err != nil {
+			t.Fatalf("decode %s request fields: %v", operation, err)
+		}
+		wantFields := []string{
+			"version", "operation", "requestId", "expiresAt", "lifecycleId", "owner",
+			"rig", "rigRoot", "worktreePath", "attempt", "base", "branch", "headSha",
+		}
+		if len(requestFields) != len(wantFields) {
+			t.Fatalf("%s request fields = %v, want exactly %v", operation, requestFields, wantFields)
+		}
+		for _, field := range wantFields {
+			if _, ok := requestFields[field]; !ok {
+				t.Fatalf("%s request missing field %q: %s", operation, field, record.Request)
+			}
+		}
+		wantVerb := strings.TrimSuffix(operation, "Attempt")
+		if got := strings.Join(record.Argv, " "); got != wantVerb+" --json-request" {
+			t.Fatalf("%s argv = %q", operation, got)
+		}
+		if request.Version != 1 || request.Operation != operation ||
+			request.LifecycleID != created.ID || request.Owner != created.Owner ||
+			request.Rig != created.Rig || request.RigRoot != created.RigRoot ||
+			request.Attempt != created.Attempt || request.Base != created.Base ||
+			request.Branch != created.Branch || request.WorktreePath != created.Path ||
+			request.HeadSHA != created.HeadSHA {
+			t.Fatalf("%s request = %+v, want canonical entry %+v", operation, request, created)
+		}
+		requestID, err := uuid.Parse(request.RequestID)
+		if err != nil || requestID.Version() != 4 {
+			t.Fatalf("%s requestId = %q, want UUIDv4", operation, request.RequestID)
+		}
+		expiresAt, err := time.Parse(time.RFC3339Nano, request.ExpiresAt)
+		if err != nil {
+			t.Fatalf("%s expiresAt = %q: %v", operation, request.ExpiresAt, err)
+		}
+		if !expiresAt.After(startedAt) || expiresAt.After(time.Now().UTC().Add(30*time.Second)) {
+			t.Fatalf("%s expiresAt = %s, want a future expiry no more than 30s ahead", operation, expiresAt)
+		}
+	}
+}
+
+func TestWorktreeCreateUnavailableHelperCompensatesFilesystemMutation(t *testing.T) {
+	cityPath, rig, _ := newWorktreeTestRig(t)
+	t.Setenv("GC_CODE_STORAGE_HELPER", filepath.Join(t.TempDir(), "super-secret-helper-path"))
+	path := filepath.Join(rig.Root, "worktrees", "unavailable")
+	worktreesRoot := filepath.Join(rig.Root, "worktrees")
+	cargoTarget := filepath.Join(worktreesRoot, ".cargo-targets", "unavailable", "attempt-1")
+	cargoHome := filepath.Join(rig.Root, ".gc", "cache", "cargo-home")
+
+	_, err := createRegisteredWorktree(context.Background(), cityPath, rig, worktreeCreateOptions{
+		ID: "unavailable", Owner: "owner", Path: path, Base: "HEAD", Attempt: 1,
+	}, events.Discard)
+	if err == nil || !strings.Contains(err.Error(), "register could not start (details redacted)") {
+		t.Fatalf("unavailable helper error = %v", err)
+	}
+	if strings.Contains(err.Error(), "super-secret-helper-path") {
+		t.Fatalf("unavailable helper leaked path: %v", err)
+	}
+	for _, provisional := range []string{worktreesRoot, filepath.Join(rig.Root, ".gc"), path, cargoTarget, cargoHome} {
+		if _, statErr := os.Stat(provisional); !os.IsNotExist(statErr) {
+			t.Fatalf("unavailable preflight created %s: %v", provisional, statErr)
+		}
+	}
+	assertWorktreeTestRegistered(t, cityPath, "unavailable", false)
 }
 
 func TestWorktreePublishRecordsExactHelperSHA(t *testing.T) {
@@ -250,7 +447,7 @@ func TestWorktreePublishRecordsExactHelperSHA(t *testing.T) {
 	if !published.Published || published.HeadSHA != wantHead || published.PublishedSHA != wantHead {
 		t.Fatalf("published entry = %+v, want exact HEAD %s", published, wantHead)
 	}
-	if published.PublishedRef != "refs/gc-storage/publish/attempt-1" || published.PublishedAt == "" {
+	if published.PublishedRef != "sessions/publish/attempt/1" || published.PublishedAt == "" {
 		t.Fatalf("publication metadata = %+v", published)
 	}
 	registry, err := loadWorktreeRegistry(worktreeRegistryFilePaths(cityPath).Registry)
@@ -277,6 +474,25 @@ func TestWorktreePublishAcceptsAlreadyUpToDateReply(t *testing.T) {
 	}
 }
 
+func TestWorktreePublishRejectsHeadChangeDuringRPC(t *testing.T) {
+	cityPath, rig, _ := newWorktreeTestRig(t)
+	installWorktreeTestHelper(t, false)
+	created := createWorktreeTestEntry(t, cityPath, rig, "head-race", "head-race")
+	t.Setenv("GC_WORKTREE_TEST_ADVANCE_HEAD", "true")
+
+	_, err := publishRegisteredWorktree(context.Background(), cityPath, created.ID, events.Discard)
+	if err == nil || !strings.Contains(err.Error(), "HEAD changed while") {
+		t.Fatalf("publish error = %v, want concurrent HEAD change rejection", err)
+	}
+	registry, loadErr := loadWorktreeRegistry(worktreeRegistryFilePaths(cityPath).Registry)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(registry.Entries) != 1 || registry.Entries[0] != created {
+		t.Fatalf("registry entries = %+v, want unchanged unpublished entry %+v", registry.Entries, created)
+	}
+}
+
 func TestWorktreePublishRejectsInvalidHelperReplyWithoutPublishing(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -291,34 +507,34 @@ func TestWorktreePublishRejectsInvalidHelperReplyWithoutPublishing(t *testing.T)
 			wantError: "mismatched worktree",
 		},
 		{
+			name:      "mismatched ref",
+			env:       "GC_WORKTREE_TEST_REPLY_REF",
+			value:     "sessions/someone-else/attempt/1",
+			wantError: "mismatched ref",
+		},
+		{
+			name:      "mismatched head SHA",
+			env:       "GC_WORKTREE_TEST_REPLY_HEAD_SHA",
+			value:     "0000000000000000000000000000000000000000",
+			wantError: "mismatched SHA",
+		},
+		{
 			name:      "push refused",
 			env:       "GC_WORKTREE_TEST_REPLY_PUSHED",
 			value:     "false",
 			wantError: "refused to push",
 		},
 		{
-			name:      "empty ref",
-			env:       "GC_WORKTREE_TEST_REPLY_REF",
-			value:     "",
-			wantError: "incomplete result",
-		},
-		{
-			name:      "empty head SHA",
-			env:       "GC_WORKTREE_TEST_REPLY_HEAD_SHA",
-			value:     "",
-			wantError: "incomplete result",
-		},
-		{
-			name:      "mismatched head SHA",
-			env:       "GC_WORKTREE_TEST_REPLY_HEAD_SHA",
-			value:     "deadbeef",
-			wantError: "does not match current HEAD",
-		},
-		{
 			name:      "unknown field",
 			env:       "GC_WORKTREE_TEST_REPLY_EXTRA",
-			value:     `,"unexpected":"super-secret-helper-output"`,
+			value:     "true",
 			wantError: "invalid JSON",
+		},
+		{
+			name:      "trailing output",
+			env:       "GC_WORKTREE_TEST_REPLY_TRAILING",
+			value:     "true",
+			wantError: "trailing data",
 		},
 	}
 
@@ -581,32 +797,103 @@ func newWorktreeTestRig(t *testing.T) (string, worktreeRig, *config.City) {
 	return cityPath, rig, cfg
 }
 
-func installWorktreeTestHelper(t *testing.T, failAttach bool) string {
+func installWorktreeTestHelper(t *testing.T, failRegister bool) string {
 	t.Helper()
 	helper := filepath.Join(t.TempDir(), "gc-code-storage")
-	attach := "exit 0"
-	if failAttach {
-		attach = `echo "credential=super-secret-token" >&2; exit 23`
+	fail := "False"
+	if failRegister {
+		fail = "True"
 	}
-	body := `#!/bin/sh
-set -eu
-case "$1" in
-  attach)
-    ` + attach + `
-    ;;
-  publish)
-    worktree="${GC_WORKTREE_TEST_REPLY_WORKTREE-$5}"
-    ref="${GC_WORKTREE_TEST_REPLY_REF-refs/gc-storage/publish/attempt-$4}"
-    head="${GC_WORKTREE_TEST_REPLY_HEAD_SHA-$(git -C "$5" rev-parse HEAD)}"
-    pushed="${GC_WORKTREE_TEST_REPLY_PUSHED-true}"
-    already_up_to_date="${GC_WORKTREE_TEST_REPLY_ALREADY_UP_TO_DATE-false}"
-    extra="${GC_WORKTREE_TEST_REPLY_EXTRA-}"
-    printf '{"worktree":"%s","ref":"%s","headSha":"%s","pushed":%s,"alreadyUpToDate":%s%s}\n' "$worktree" "$ref" "$head" "$pushed" "$already_up_to_date" "$extra"
-    ;;
-  *)
-    exit 64
-    ;;
-esac
+	body := `#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+
+if len(sys.argv) != 3 or sys.argv[2] != "--json-request" or sys.argv[1] not in ("register", "publish"):
+    raise SystemExit(64)
+request = json.loads(sys.stdin.read())
+log_path = os.environ.get("GC_WORKTREE_TEST_REQUEST_LOG")
+if log_path:
+    with open(log_path, "a", encoding="utf-8") as log:
+        json.dump({
+            "argv": sys.argv[1:],
+            "request": request,
+            "has_pierre_private_key": "PIERRE_PRIVATE_KEY" in os.environ,
+        }, log, separators=(",", ":"))
+        log.write("\n")
+if sys.argv[1] == "register":
+    if ` + fail + `:
+        sys.stderr.write("""remote rejected lifecycle
+credential=super-secret-token
+jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signature123
+jwt_truncated=abcdefgh.ijklmnop.
+auth=opaque-authorization-secret
+Authorization: token github-authorization-secret
+url=https://user:password@example.invalid/repository
+signed=https://example.invalid/archive?X-Amz-Credential=credential-value&X-Amz-Signature=signature-value
+Authorization: Bearer authorization-secret
+Proxy-Authorization: Basic proxy-secret
+tenant=""" + os.environ.get("GC_WORKTREE_TEST_SECRET", "") + "\n")
+        sys.stderr.write("-----BEGIN PRIVATE KEY-----\n" + ("private-key-material" * 1024))
+        print("https://user:stdout-secret@example.invalid/attached")
+        raise SystemExit(23)
+    reply = {
+        "version": request["version"],
+        "requestId": request["requestId"],
+        "ok": True,
+        "operation": "registerAttempt",
+        "lifecycleId": request["lifecycleId"],
+        "owner": request["owner"],
+        "rig": request["rig"],
+        "rigRoot": request["rigRoot"],
+        "worktreePath": request["worktreePath"],
+        "attempt": request["attempt"],
+        "base": request["base"],
+        "branch": request["branch"],
+        "headSha": request["headSha"],
+    }
+    if os.environ.get("GC_WORKTREE_TEST_REGISTER_EXTRA"):
+        reply["unexpected"] = "super-secret-helper-output"
+    if os.environ.get("GC_WORKTREE_TEST_REGISTER_MISMATCH"):
+        reply["requestId"] = "123e4567-e89b-42d3-a456-426614174999"
+    encoded = json.dumps(reply, separators=(",", ":"))
+    if os.environ.get("GC_WORKTREE_TEST_REGISTER_PADDING"):
+        encoded = (" " * 9000) + encoded
+    sys.stdout.write(encoded + "\n")
+    if os.environ.get("GC_WORKTREE_TEST_REGISTER_OVERFLOW"):
+        sys.stdout.write((" " * (33 * 1024)) + '{"unexpected":true}\n')
+    if os.environ.get("GC_WORKTREE_TEST_REGISTER_TRAILING"):
+        print("super-secret-helper-output")
+    raise SystemExit(0)
+
+worktree = os.environ.get("GC_WORKTREE_TEST_REPLY_WORKTREE", request["worktreePath"])
+ref = os.environ.get(
+    "GC_WORKTREE_TEST_REPLY_REF",
+    f'sessions/{request["lifecycleId"]}/attempt/{request["attempt"]}',
+)
+head = os.environ.get("GC_WORKTREE_TEST_REPLY_HEAD_SHA", request["headSha"])
+reply = {
+    "worktree": worktree,
+    "ref": ref,
+    "head_sha": head,
+    "pushed": os.environ.get("GC_WORKTREE_TEST_REPLY_PUSHED", "true") == "true",
+    "already_up_to_date": os.environ.get(
+        "GC_WORKTREE_TEST_REPLY_ALREADY_UP_TO_DATE", "false"
+    ) == "true",
+}
+if os.environ.get("GC_WORKTREE_TEST_REPLY_EXTRA"):
+    reply["unexpected"] = "super-secret-helper-output"
+if os.environ.get("GC_WORKTREE_TEST_ADVANCE_HEAD"):
+    subprocess.run(
+        ["git", "-C", request["worktreePath"], "commit", "--allow-empty", "-m", "advance during publish"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+print(json.dumps(reply, separators=(",", ":")))
+if os.environ.get("GC_WORKTREE_TEST_REPLY_TRAILING"):
+    print("super-secret-helper-output")
 `
 	if err := os.WriteFile(helper, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
