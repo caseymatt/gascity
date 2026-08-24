@@ -650,6 +650,42 @@ bd_runtime_schema_ready() {
     server_sql "USE \`$db\`; SELECT 1 FROM config LIMIT 1" >/dev/null 2>&1
 }
 
+# seed_current_bd_version_witness_for_empty_database bridges the bootstrap
+# cycle introduced by bd's cross-era guard. A fresh managed server already has
+# <scope>/.beads/dolt plus GC-preseeded server metadata before bd init runs, so
+# current bd refuses it as an ambiguous legacy layout unless .local_version
+# proves it is current-era. Seed that witness only when SQL proves the pinned
+# database has no user tables; never bless a non-empty or unreachable store.
+seed_current_bd_version_witness_for_empty_database() {
+    local dir="$1"
+    local db="$2"
+    local host output count version witness tmp
+    witness="$dir/.beads/.local_version"
+    [ -f "$witness" ] && return 0
+    valid_sql_name "$db" || return 1
+
+    host=$(connect_host)
+    output=$(dolt --host "$host" --port "$DOLT_PORT" --user "$DOLT_USER" --password "${DOLT_PASSWORD:-}" --no-tls \
+        sql -r csv -q "SELECT COUNT(*) AS cnt FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$db'" 2>/dev/null) || return 1
+    count=$(printf '%s\n' "$output" | tail -1 | tr -d '[:space:]')
+    [ "$count" = "0" ] || return 1
+
+    output=$(run_bd_pinned "$dir" version 2>/dev/null) || return 1
+    version=$(printf '%s\n' "$output" | sed -n 's/^bd version \([^ ]*\).*/\1/p' | head -1)
+    case "$version" in
+        [0-9]*.[0-9]*.[0-9]*) ;;
+        *) return 1 ;;
+    esac
+
+    tmp="$witness.tmp.$$"
+    printf '%s\n' "$version" > "$tmp" || return 1
+    chmod 600 "$tmp" || {
+        rm -f "$tmp"
+        return 1
+    }
+    mv "$tmp" "$witness"
+}
+
 # server_reachable reports whether the managed Dolt server answers a
 # trivial query. Used to distinguish a transient connection failure
 # (port drift, an exclusive lock held by a stale dolt, a slow server
@@ -2486,10 +2522,27 @@ run_bd_init_pinned() {
     local dolt_database="$3"
     local host="$4"
     local force_init="${5:-false}"
+    local fresh_empty_database="${6:-false}"
+    local init_output
     if [ "$force_init" = "true" ]; then
-        run_bd_pinned "$dir" init --force --quiet --server -p "$prefix" --database "$dolt_database" --skip-hooks --skip-agents \
-            --server-host "$host" --server-port "$DOLT_PORT" "$dir" || die "bd init failed for $dir"
-        return 0
+        if init_output=$(run_bd_pinned "$dir" init --reinit-local --quiet --server -p "$prefix" --database "$dolt_database" --skip-hooks --skip-agents \
+            --server-host "$host" --server-port "$DOLT_PORT" "$dir" 2>&1); then
+            return 0
+        fi
+        printf '%s\n' "$init_output" >&2
+        # bd may create the base tables and then refuse its own migrations
+        # because those fresh tables are still dirty (beads#4566). Recover only
+        # when SQL already proved this database was empty before init; on every
+        # non-empty or ambiguous store, preserve bd's failure unchanged.
+        if [ "$fresh_empty_database" = "true" ] &&
+            printf '%s' "$init_output" | grep -q "pending schema migrations alter pre-existing dirty tables"; then
+            run_bd_pinned "$dir" dolt commit -m "Initialize fresh Beads schema" ||
+                die "bd init left a fresh schema dirty and bd dolt commit failed for $dir"
+            run_bd_pinned "$dir" migrate --force --yes ||
+                die "bd init left a fresh schema dirty and bd migrate failed for $dir"
+            return 0
+        fi
+        die "bd init failed for $dir"
     fi
 
     run_bd_pinned "$dir" init --quiet --server -p "$prefix" --database "$dolt_database" --skip-hooks --skip-agents \
@@ -2656,7 +2709,7 @@ op_init() {
     local metadata_path="$dir/.beads/metadata.json"
     local existing_db=""
     local allow_reserved_existing=false
-    local bd_init_force=""
+    local bd_init_fresh_empty=false
     if [ -z "$dir" ] || [ -z "$prefix" ]; then
         die "usage: gc-beads-bd init <dir> <prefix> [dolt_database]"
     fi
@@ -2771,20 +2824,20 @@ op_init() {
     # writes metadata.json (dolt_database/dolt_mode) BEFORE invoking us, so a
     # fresh init also reaches this branch — that is intentional. The branch
     # does NOT blindly skip init: it only exits early when the server already
-    # has a live bd schema (bd_runtime_schema_ready). Otherwise it sets
-    # bd_init_force="--force" so the fall-through bd init reinitializes over
-    # the gc-pre-seeded metadata stub instead of aborting with bd's "This
-    # workspace is already initialized" guard. Gating this branch on project_id
-    # instead breaks fresh init: gc-pre-seeded metadata has no project_id, so
-    # --force is never set and bd init aborts.
+    # has a live bd schema (bd_runtime_schema_ready). Otherwise it requests
+    # --reinit-local so the fall-through bd init reinitializes over the
+    # gc-pre-seeded metadata stub instead of aborting with bd's "This workspace
+    # is already initialized" guard. Gating this branch on project_id instead
+    # breaks fresh init: gc-pre-seeded metadata has no project_id, so the
+    # reinitialization is never requested and bd init aborts.
     if [ -f "$dir/.beads/metadata.json" ]; then
         # A pre-existing metadata.json means the store may already be
         # initialized. Both checks below run SQL against the managed Dolt
         # server, so a transient server-unreachable blip (port drift, an
         # exclusive lock held by a stale dolt process, a slow server start)
         # is indistinguishable from "schema missing" / "not registered" —
-        # and both of those branches react by forcing a DESTRUCTIVE reinit
-        # (--force), which trips bd's remote-history guard and aborts city
+        # and both of those branches react by forcing a DESTRUCTIVE local reinit
+        # (--reinit-local), which trips bd's remote-history guard and aborts city
         # init on an otherwise healthy store. Confirm the server actually
         # answers before trusting a negative result; otherwise fail closed
         # so the caller's retry loop waits for the server to come up instead
@@ -2805,6 +2858,14 @@ op_init() {
                 exit 0
             fi
             echo "warning: database '$dolt_database' missing bd schema; re-initializing" >&2
+            # A genuinely empty database is a fresh GC bootstrap, not a legacy
+            # workspace. Give current bd the version witness it requires before
+            # the reinitializing init. Failure stays non-fatal here: bd's own
+            # cross-era guard remains the fail-closed authority for non-empty,
+            # unreachable, or otherwise ambiguous stores.
+            if seed_current_bd_version_witness_for_empty_database "$dir" "$dolt_database"; then
+                bd_init_fresh_empty=true
+            fi
             bd_init_force="--force"
         else
             echo "warning: database '$dolt_database' not registered; re-initializing" >&2
@@ -2832,12 +2893,10 @@ op_init() {
     # Run bd init in server mode through the pinned wrapper so the fallback
     # path uses the same authenticated Dolt target as the rest of init.
     # Metadata-only scopes already look initialized to bd, so schema-repair
-    # fallback must force reinit to seed the missing tables into the pinned DB.
-    # Always pass the pinned server database explicitly; `-p` controls the
-    # visible issue prefix, while `--database` tells bd which existing Dolt
-    # database to initialize. Without `--database`, bd can seed beads_<prefix>
-    # and leave the pinned database schema-less.
-    run_bd_init_pinned "$dir" "$prefix" "$dolt_database" "$host" "${bd_init_force:+true}"
+    # fallback must explicitly reinitialize to seed the missing tables into the
+    # pinned DB. Always pass the pinned server database; `-p` controls the
+    # visible issue prefix, while `--database` selects the database to seed.
+    run_bd_init_pinned "$dir" "$prefix" "$dolt_database" "$host" "${bd_init_force:+true}" "$bd_init_fresh_empty"
 
     # Re-register post-init: if bd init didn't catalog-register the DB
     # (server-mode quirk), do it now. After a successful bd init this is a

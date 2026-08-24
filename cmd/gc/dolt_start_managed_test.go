@@ -226,11 +226,11 @@ func TestGCBeadsBDScript_DoesNotMutateDoltInternals(t *testing.T) {
 // fresh-init regression where `gc init` / `gc rig add` aborted at provider
 // readiness with bd's "This workspace is already initialized" error. GC
 // pre-seeds .beads/metadata.json (dolt_database/dolt_mode) before invoking
-// gc-beads-bd init; bd (>= 1.0.x) treats any present metadata.json as proof
-// the workspace is already initialized and bails unless `bd init` is given
-// --force. op_init's "already initialized on disk" branch must therefore key
-// on the metadata.json file itself (not on a project_id, which a fresh
-// pre-seeded stub never has) so the schema-missing path can set --force.
+// gc-beads-bd init; bd treats any present metadata.json as proof the workspace
+// is already initialized and bails unless `bd init` is given --reinit-local.
+// op_init's "already initialized on disk" branch must therefore key on the
+// metadata.json file itself (not on a project_id, which a fresh pre-seeded stub
+// never has) so the schema-missing path can request a local reinitialization.
 func TestGCBeadsBDScript_InitForcesReinitOverPreSeededMetadata(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -246,7 +246,7 @@ func TestGCBeadsBDScript_InitForcesReinitOverPreSeededMetadata(t *testing.T) {
 	guard := `if [ -f "$dir/.beads/metadata.json" ]; then`
 	if !strings.Contains(script, guard) {
 		t.Fatalf("gc-beads-bd.sh op_init must gate the already-initialized branch on the metadata.json file, not on project_id; " +
-			"gating on project_id leaves --force unset for gc-pre-seeded metadata and bd init aborts")
+			"gating on project_id leaves --reinit-local unset for gc-pre-seeded metadata and bd init aborts")
 	}
 	if strings.Contains(script, `if metadata_has_project_id "$dir/.beads/metadata.json"; then
         if ensure_database_registered`) {

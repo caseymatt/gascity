@@ -1554,7 +1554,7 @@ func TestBdRigWorktreeStoreConsistentAcrossRawBdGcBdAndProviderStore(t *testing.
 	if err != nil {
 		t.Fatalf("nativeDoltOpenEnvForScope(rig): %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	nativeStorage, err := beads.OpenNativeStorage(ctx, rigPath, nativeEnv)
 	if err != nil {

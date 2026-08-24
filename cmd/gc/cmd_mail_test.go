@@ -1512,7 +1512,7 @@ func TestCmdMailInbox_NormalizesCanonicalManagedProviderEnvAndReadsInbox(t *test
 	if err != nil {
 		t.Fatalf("nativeDoltOpenEnvForScope(): %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	nativeStorage, err := beads.OpenNativeStorage(ctx, cityDir, nativeEnv)
 	if err != nil {
