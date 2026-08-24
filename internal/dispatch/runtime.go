@@ -80,6 +80,11 @@ type ProcessOptions struct {
 	// beadUsesMetadataPoolRoute, and retryPreservedAssignee). It is a pointer so
 	// the cache is shared across the by-value opts copies handed to sub-steps.
 	routeCfg *routeConfigCache
+	// controlLeaseNow, controlLeaseOwner, and controlLeaseRenew are private
+	// deterministic seams for the durable root execution lease.
+	controlLeaseNow   func() time.Time
+	controlLeaseOwner func() (string, error)
+	controlLeaseRenew <-chan time.Time
 }
 
 // routeConfigCache memoizes a single attempt-route config load (and its error)
@@ -135,13 +140,10 @@ var ErrControlPending = errors.New("workflow control pending")
 // that cannot become valid by waiting.
 var ErrControlGraphMalformed = errors.New("workflow control graph malformed")
 
-// ProcessControl executes a graph.v2 control bead.
-//
-// The current graph.v2 runtime assumes a single controller processes a given
-// workflow root at a time. The gc.* spawning/spawned state machines provide
-// crash-recovery and idempotent resume, but they are not a compare-and-swap
-// guard for concurrent controllers executing the same control bead.
-func ProcessControl(store beads.Store, bead beads.Bead, opts ProcessOptions) (ControlResult, error) {
+// ProcessControl executes a graph.v2 control bead while holding a durable
+// execution lease on its workflow root. Every controller incarnation must win
+// that root-scoped CAS before it may mutate any control in the workflow.
+func ProcessControl(store beads.Store, bead beads.Bead, opts ProcessOptions) (result ControlResult, err error) {
 	if store == nil {
 		return ControlResult{}, fmt.Errorf("store is nil")
 	}
@@ -152,20 +154,65 @@ func ProcessControl(store beads.Store, bead beads.Bead, opts ProcessOptions) (Co
 		opts.routeCfg = &routeConfigCache{}
 	}
 	if bead.Status != "open" {
-		// A control bead that is not open — typically stuck at in_progress
-		// after a rogue `bd update --status in_progress` from a worker —
-		// can silently strand an entire workflow because the serve loop
-		// treats the no-op return as a successful processed cycle. Emit a
-		// specific trace line so the skip is visible in the dispatcher
-		// trace log instead of looking identical to a processed cycle.
-		// See bug investigation on workflow ga-ttn5z where 20+ minutes of
-		// processing cycles silently no-op'd because ga-fw2fm had been
-		// moved to in_progress by its implement-change worker.
-		opts.tracef("process-control bead=%s kind=%s skip reason=bead_not_open status=%s",
-			bead.ID, bead.Metadata[beadmeta.KindMetadataKey], bead.Status)
+		traceControlNotOpen(opts, bead)
 		return ControlResult{}, nil
 	}
-	if result, handled, err := closeOrphanedControl(store, bead, opts); handled || err != nil {
+
+	// The caller's bead may have been read before another controller completed.
+	// Refresh before choosing the lease target, then refresh again after the CAS
+	// so a stale open snapshot can never replay an already-finished transition.
+	bead, err = store.Get(bead.ID)
+	if err != nil {
+		return ControlResult{}, fmt.Errorf("%s: refreshing control bead: %w", bead.ID, err)
+	}
+	if bead.Status != "open" {
+		traceControlNotOpen(opts, bead)
+		return ControlResult{}, nil
+	}
+	if !beadmeta.IsControlKind(bead.Metadata[beadmeta.KindMetadataKey]) {
+		return ControlResult{}, fmt.Errorf("%s: unsupported control bead kind %q", bead.ID, bead.Metadata[beadmeta.KindMetadataKey])
+	}
+
+	root, err := controlExecutionRoot(store, bead)
+	if err != nil {
+		return ControlResult{}, err
+	}
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	leaseCtx, cancelLeaseContext := context.WithCancel(ctx)
+	opts.Context = leaseCtx
+	lease, acquired, err := acquireControlExecutionLease(store, root, opts, cancelLeaseContext)
+	if err != nil {
+		cancelLeaseContext()
+		return ControlResult{}, fmt.Errorf("%s: acquiring workflow-root execution lease: %w", bead.ID, err)
+	}
+	if !acquired {
+		cancelLeaseContext()
+		return ControlResult{}, fmt.Errorf("%s: workflow root %s execution lease is held: %w", bead.ID, root.ID, ErrControlPending)
+	}
+	defer func() {
+		releaseErr := lease.release()
+		cancelLeaseContext()
+		if releaseErr != nil {
+			err = errors.Join(err, fmt.Errorf("%s: releasing workflow-root execution lease: %w", bead.ID, releaseErr))
+		}
+	}()
+
+	bead, err = store.Get(bead.ID)
+	if err != nil {
+		return ControlResult{}, fmt.Errorf("%s: refreshing leased control bead: %w", bead.ID, err)
+	}
+	if bead.Status != "open" {
+		traceControlNotOpen(opts, bead)
+		return ControlResult{}, nil
+	}
+	if currentRootID := strings.TrimSpace(bead.Metadata[beadmeta.RootBeadIDMetadataKey]); currentRootID != root.ID {
+		return ControlResult{}, fmt.Errorf("%s: workflow root changed from %q to %q while acquiring lease: %w",
+			bead.ID, root.ID, currentRootID, ErrControlGraphMalformed)
+	}
+	if result, handled, err := closeCanceledRootControl(store, bead, opts); handled || err != nil {
 		return result, err
 	}
 
@@ -191,51 +238,40 @@ func ProcessControl(store beads.Store, bead beads.Bead, opts ProcessOptions) (Co
 	}
 }
 
+func traceControlNotOpen(opts ProcessOptions, bead beads.Bead) {
+	// A control bead that is not open — typically stuck at in_progress after a
+	// rogue worker update — can silently strand a workflow. Keep the skip
+	// visible in the dispatcher trace instead of treating it like a processed
+	// cycle.
+	opts.tracef("process-control bead=%s kind=%s skip reason=bead_not_open status=%s",
+		bead.ID, bead.Metadata[beadmeta.KindMetadataKey], bead.Status)
+}
+
 // controlRootCanceledCloseReason is stamped on a control bead closed because its
 // workflow root was canceled, distinguishing the cancellation gate from a skip
-// teardown or a missing-root orphan close.
+// teardown.
 const controlRootCanceledCloseReason = "control closed: workflow root canceled via run cancel"
 
-func closeOrphanedControl(store beads.Store, bead beads.Bead, opts ProcessOptions) (ControlResult, bool, error) {
+func closeCanceledRootControl(store beads.Store, bead beads.Bead, opts ProcessOptions) (ControlResult, bool, error) {
 	if bead.Metadata[beadmeta.KindMetadataKey] == beadmeta.KindWorkflowFinalize {
 		return ControlResult{}, false, nil
 	}
 	rootID := strings.TrimSpace(bead.Metadata[beadmeta.RootBeadIDMetadataKey])
 	rootStoreRef := strings.TrimSpace(bead.Metadata[beadmeta.RootStoreRefMetadataKey])
-	if rootID == "" || rootStoreRef == "" || rootID == bead.ID {
-		return ControlResult{}, false, nil
-	}
 	root, err := store.Get(rootID)
-	if err == nil {
-		// Root present. A canceled root is a durable stop signal: close this
-		// control bead as canceled instead of letting it spawn or continue work
-		// (fanout child beads, retry attempts, drain expansion) under a run the
-		// operator canceled. This is the authoritative gate that makes
-		// POST /runs/{id}/cancel converge to stopped rather than merely racing
-		// the dispatcher, and is the consumer that gives gc.cancel_requested
-		// teeth.
-		if rootCanceled(root) {
-			return closeCanceledControl(store, bead, opts, rootID, rootStoreRef)
+	if err != nil {
+		if errors.Is(err, beads.ErrNotFound) {
+			return ControlResult{}, false, fmt.Errorf("%s: workflow root %s disappeared while execution lease was held: %w",
+				bead.ID, rootID, ErrControlGraphMalformed)
 		}
-		return ControlResult{}, false, nil
-	} else if !errors.Is(err, beads.ErrNotFound) {
 		return ControlResult{}, false, fmt.Errorf("%s: loading workflow root %s: %w", bead.ID, rootID, err)
 	}
-
-	opts.tracef("process-control bead=%s kind=%s close reason=missing_workflow_root root=%s store_ref=%s",
-		bead.ID, bead.Metadata[beadmeta.KindMetadataKey], rootID, rootStoreRef)
-	closeMetadata := map[string]string{
-		beadmeta.OutcomeMetadataKey:           beadmeta.OutcomeFail,
-		beadmeta.FailureClassMetadataKey:      beadmeta.FailureClassHard,
-		beadmeta.FailureReasonMetadataKey:     "missing_workflow_root",
-		beadmeta.FinalDispositionMetadataKey:  beadmeta.DispositionOrphanedWorkflow,
-		beadmeta.MissingRootBeadIDMetadataKey: rootID,
+	// A canceled root is a durable stop signal: close this control bead instead
+	// of letting it spawn or continue work under a run the operator canceled.
+	if rootCanceled(root) {
+		return closeCanceledControl(store, bead, opts, rootID, rootStoreRef)
 	}
-	clearControllerSpawnErrorMetadata(closeMetadata)
-	if err := updateMetadataAndClose(store, bead.ID, closeMetadata); err != nil {
-		return ControlResult{}, true, fmt.Errorf("%s: closing orphaned control: %w", bead.ID, err)
-	}
-	return ControlResult{Processed: true, Action: "orphaned-workflow"}, true, nil
+	return ControlResult{}, false, nil
 }
 
 // rootCanceled reports whether a workflow root is a durable cancellation stop
@@ -837,12 +873,6 @@ func processWorkflowFinalize(store beads.Store, bead beads.Bead, opts ProcessOpt
 	// so retryable scan failures keep the root live for singleton scans, but
 	// source beads are not mutated until the root is durably closed.
 	if err := setOutcomeAndClose(store, rootID, outcome); err != nil {
-		if errors.Is(err, beads.ErrNotFound) {
-			if closeErr := setOutcomeAndClose(store, bead.ID, beadmeta.OutcomeMissingRoot); closeErr != nil {
-				return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: closing orphaned finalizer (root %s missing): %w", bead.ID, rootID, closeErr))
-			}
-			return ControlResult{Processed: true, Action: "workflow-missing_root"}, nil
-		}
 		return ControlResult{}, recordWorkflowFinalizeError(store, bead.ID, fmt.Errorf("%s: completing workflow head: %w", rootID, err))
 	}
 	// Generated spec sidecars are topology records rather than executable

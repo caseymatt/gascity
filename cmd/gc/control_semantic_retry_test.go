@@ -38,6 +38,14 @@ func (s *refusingCloseStore) Update(id string, opts beads.UpdateOpts) error {
 	return s.Store.Update(id, opts)
 }
 
+func (s *refusingCloseStore) CompareAndSetMetadataKey(id, key, expected, next string) (bool, error) {
+	writer, ok := beads.MetadataCASWriterFor(s.Store)
+	if !ok {
+		return false, beads.ErrConditionalWriteUnsupported
+	}
+	return writer.CompareAndSetMetadataKey(id, key, expected, next)
+}
+
 // unansweringCloseStore is the Tier-A control: the store never answers the
 // close at all — the connection is refused rather than the request refused.
 type unansweringCloseStore struct {
@@ -52,6 +60,14 @@ func (s *unansweringCloseStore) Update(id string, opts beads.UpdateOpts) error {
 		return fmt.Errorf("updating bead %q: dial tcp 127.0.0.1:3306: connect: connection refused", id)
 	}
 	return s.Store.Update(id, opts)
+}
+
+func (s *unansweringCloseStore) CompareAndSetMetadataKey(id, key, expected, next string) (bool, error) {
+	writer, ok := beads.MetadataCASWriterFor(s.Store)
+	if !ok {
+		return false, beads.ErrConditionalWriteUnsupported
+	}
+	return writer.CompareAndSetMetadataKey(id, key, expected, next)
 }
 
 type deadlockedFinalizeFixture struct {

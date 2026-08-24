@@ -331,13 +331,14 @@ func TestProcessScopeCheckAbortsScopeOnFailure(t *testing.T) {
 	t.Parallel()
 
 	store := newStrictCloseStore()
+	root := mustCreateProcessControlRoot(t, store)
 	body := mustCreateWorkflowBead(t, store, beads.Bead{
 		Title: "body",
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope",
 			"gc.scope_role":   "body",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.step_ref":     "demo.body",
 		},
 	})
@@ -346,7 +347,7 @@ func TestProcessScopeCheckAbortsScopeOnFailure(t *testing.T) {
 		Type:   "task",
 		Status: "closed",
 		Metadata: map[string]string{
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "member",
 			"gc.outcome":      "fail",
@@ -357,7 +358,7 @@ func TestProcessScopeCheckAbortsScopeOnFailure(t *testing.T) {
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope-check",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "control",
 		},
@@ -368,7 +369,7 @@ func TestProcessScopeCheckAbortsScopeOnFailure(t *testing.T) {
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope-check",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "control",
 		},
@@ -377,7 +378,7 @@ func TestProcessScopeCheckAbortsScopeOnFailure(t *testing.T) {
 		Title: "implement",
 		Type:  "task",
 		Metadata: map[string]string{
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "member",
 		},
@@ -387,7 +388,7 @@ func TestProcessScopeCheckAbortsScopeOnFailure(t *testing.T) {
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "cleanup",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "teardown",
 		},
@@ -451,6 +452,7 @@ func TestProcessScopeCheckHardFailureOverridesClosedPassBody(t *testing.T) {
 	t.Parallel()
 
 	store := beads.NewMemStore()
+	root := mustCreateProcessControlRoot(t, store)
 	body := mustCreateWorkflowBead(t, store, beads.Bead{
 		Title:  "body",
 		Type:   "task",
@@ -458,7 +460,7 @@ func TestProcessScopeCheckHardFailureOverridesClosedPassBody(t *testing.T) {
 		Metadata: map[string]string{
 			"gc.kind":         "scope",
 			"gc.scope_role":   "body",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.step_ref":     "demo.body",
 			"gc.outcome":      "pass",
 		},
@@ -468,7 +470,7 @@ func TestProcessScopeCheckHardFailureOverridesClosedPassBody(t *testing.T) {
 		Type:   "task",
 		Status: "closed",
 		Metadata: map[string]string{
-			"gc.root_bead_id":  "wf-1",
+			"gc.root_bead_id":  root.ID,
 			"gc.scope_ref":     "body",
 			"gc.scope_role":    "member",
 			"gc.outcome":       "fail",
@@ -482,7 +484,7 @@ func TestProcessScopeCheckHardFailureOverridesClosedPassBody(t *testing.T) {
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope-check",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "control",
 		},
@@ -516,18 +518,19 @@ func TestProcessScopeCheckHardFailureOverridesClosedPassBody(t *testing.T) {
 // (downstream blocks on the subject's scope-check, not on the subject).
 func scopeCheckAbortScopeFixture(t *testing.T, store beads.Store, subjectMeta map[string]string) (control, futureMember, futureControl, body beads.Bead) {
 	t.Helper()
+	root := mustCreateProcessControlRoot(t, store)
 	body = mustCreateWorkflowBead(t, store, beads.Bead{
 		Title: "body",
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope",
 			"gc.scope_role":   "body",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.step_ref":     "demo.body",
 		},
 	})
 	meta := map[string]string{
-		"gc.root_bead_id": "wf-1",
+		"gc.root_bead_id": root.ID,
 		"gc.scope_ref":    "body",
 		"gc.scope_role":   "member",
 	}
@@ -545,7 +548,7 @@ func scopeCheckAbortScopeFixture(t *testing.T, store beads.Store, subjectMeta ma
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope-check",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "control",
 		},
@@ -554,7 +557,7 @@ func scopeCheckAbortScopeFixture(t *testing.T, store beads.Store, subjectMeta ma
 		Title: "implement",
 		Type:  "task",
 		Metadata: map[string]string{
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "member",
 			"gc.on_fail":      "abort_scope",
@@ -565,7 +568,7 @@ func scopeCheckAbortScopeFixture(t *testing.T, store beads.Store, subjectMeta ma
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope-check",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "control",
 		},
@@ -998,13 +1001,14 @@ func TestProcessScopeCheckTreatsRetryAttemptFailureAsNonTerminalForScope(t *test
 	t.Parallel()
 
 	store := newStrictCloseStore()
+	root := mustCreateProcessControlRoot(t, store)
 	body := mustCreateWorkflowBead(t, store, beads.Bead{
 		Title: "body",
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope",
 			"gc.scope_role":   "body",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.step_ref":     "demo.body",
 		},
 	})
@@ -1013,7 +1017,7 @@ func TestProcessScopeCheckTreatsRetryAttemptFailureAsNonTerminalForScope(t *test
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "retry",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "member",
 			"gc.step_ref":     "demo.review-codex",
@@ -1027,7 +1031,7 @@ func TestProcessScopeCheckTreatsRetryAttemptFailureAsNonTerminalForScope(t *test
 		Status: "closed",
 		Metadata: map[string]string{
 			"gc.kind":            "retry-run",
-			"gc.root_bead_id":    "wf-1",
+			"gc.root_bead_id":    root.ID,
 			"gc.scope_ref":       "body",
 			"gc.scope_role":      "member",
 			"gc.step_ref":        "demo.review-codex.run.1",
@@ -1043,7 +1047,7 @@ func TestProcessScopeCheckTreatsRetryAttemptFailureAsNonTerminalForScope(t *test
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "scope-check",
-			"gc.root_bead_id": "wf-1",
+			"gc.root_bead_id": root.ID,
 			"gc.scope_ref":    "body",
 			"gc.scope_role":   "control",
 		},
@@ -2087,11 +2091,6 @@ type transientMissingScopeBodyStore struct {
 	hiddenReads int
 }
 
-type workflowFinalizeCloseFailStore struct {
-	beads.Store
-	finalizerID string
-}
-
 type closeErrorStore struct {
 	beads.Store
 	failID string
@@ -2207,20 +2206,6 @@ func filterBeadID(items []beads.Bead, id string) []beads.Bead {
 		}
 	}
 	return filtered
-}
-
-func (s *workflowFinalizeCloseFailStore) Close(id string) error {
-	if id == s.finalizerID {
-		return errors.New("finalizer close failed")
-	}
-	return s.Store.Close(id)
-}
-
-func (s *workflowFinalizeCloseFailStore) Update(id string, opts beads.UpdateOpts) error {
-	if id == s.finalizerID && opts.Status != nil && *opts.Status == "closed" {
-		opts.Status = nil
-	}
-	return s.Store.Update(id, opts)
 }
 
 func (s closeErrorStore) Close(id string) error {
@@ -2864,7 +2849,7 @@ func TestProcessWorkflowFinalizeTreatsQuarantinedControlAsFailure(t *testing.T) 
 	}
 }
 
-func TestProcessWorkflowFinalizeOrphanedRootClosesFinalizerWithoutError(t *testing.T) {
+func TestProcessWorkflowFinalizeMissingRootFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	store := beads.NewMemStore()
@@ -2879,57 +2864,15 @@ func TestProcessWorkflowFinalizeOrphanedRootClosesFinalizerWithoutError(t *testi
 	})
 
 	result, err := ProcessControl(store, finalizer, ProcessOptions{})
-	if err != nil {
-		t.Fatalf("ProcessControl(orphan finalize): %v", err)
+	if !errors.Is(err, ErrControlGraphMalformed) {
+		t.Fatalf("ProcessControl error = %v, want %v", err, ErrControlGraphMalformed)
 	}
-	if !result.Processed {
-		t.Fatalf("result = %+v, want processed", result)
+	if result != (ControlResult{}) {
+		t.Fatalf("result = %+v, want no processing", result)
 	}
-	if result.Action != "workflow-missing_root" {
-		t.Fatalf("result.Action = %q, want workflow-missing_root", result.Action)
-	}
-
-	finalizerAfter, err := store.Get(finalizer.ID)
-	if err != nil {
-		t.Fatalf("get finalizer: %v", err)
-	}
-	if finalizerAfter.Status != "closed" {
-		t.Fatalf("finalizer status = %q, want closed", finalizerAfter.Status)
-	}
-	if got := finalizerAfter.Metadata["gc.outcome"]; got != "missing_root" {
-		t.Fatalf("finalizer outcome = %q, want missing_root", got)
-	}
-}
-
-func TestProcessWorkflowFinalizeOrphanedRootReportsFinalizerCloseFailure(t *testing.T) {
-	t.Parallel()
-
-	mem := beads.NewMemStore()
-	finalizer := mustCreateWorkflowBead(t, mem, beads.Bead{
-		Title: "Finalize workflow",
-		Type:  "task",
-		Metadata: map[string]string{
-			"gc.kind":         "workflow-finalize",
-			"gc.root_bead_id": "missing-root-id",
-		},
-	})
-	store := &workflowFinalizeCloseFailStore{
-		Store:       mem,
-		finalizerID: finalizer.ID,
-	}
-
-	result, err := ProcessControl(store, finalizer, ProcessOptions{})
-	if err == nil {
-		t.Fatalf("ProcessControl(orphan finalize) error = nil, want finalizer close failure")
-	}
-	if result.Processed {
-		t.Fatalf("result = %+v, want not processed when finalizer close fails", result)
-	}
-	if !strings.Contains(err.Error(), "closing orphaned finalizer") {
-		t.Fatalf("error = %q, want orphaned finalizer context", err)
-	}
-	if !strings.Contains(err.Error(), "missing-root-id") {
-		t.Fatalf("error = %q, want missing root ID context", err)
+	finalizerAfter := mustGetBead(t, store, finalizer.ID)
+	if finalizerAfter.Status != "open" {
+		t.Fatalf("finalizer status = %q, want open", finalizerAfter.Status)
 	}
 }
 
@@ -8003,11 +7946,13 @@ func TestProcessFanoutSpawnedNoOpsWhileBlockersRemainOpen(t *testing.T) {
 	t.Parallel()
 
 	store := beads.NewMemStore()
+	root := mustCreateProcessControlRoot(t, store)
 	source := mustCreateWorkflowBead(t, store, beads.Bead{
 		Title: "survey",
 		Type:  "task",
 		Metadata: map[string]string{
-			"gc.output_json": `{"items":[{"name":"claude"}]}`,
+			"gc.root_bead_id": root.ID,
+			"gc.output_json":  `{"items":[{"name":"claude"}]}`,
 		},
 	})
 	fanout := mustCreateWorkflowBead(t, store, beads.Bead{
@@ -8015,6 +7960,7 @@ func TestProcessFanoutSpawnedNoOpsWhileBlockersRemainOpen(t *testing.T) {
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":         "fanout",
+			"gc.root_bead_id": root.ID,
 			"gc.fanout_state": "spawned",
 		},
 	})
@@ -9130,6 +9076,17 @@ func mustCreateWorkflowBead(t *testing.T, store beads.Store, bead beads.Bead) be
 	return created
 }
 
+func mustCreateProcessControlRoot(t *testing.T, store beads.Store) beads.Bead {
+	t.Helper()
+	return mustCreateWorkflowBead(t, store, beads.Bead{
+		Title: "workflow",
+		Type:  "task",
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey: beadmeta.KindWorkflow,
+		},
+	})
+}
+
 func mustDepAdd(t *testing.T, store beads.Store, issueID, dependsOnID, _depType string) {
 	t.Helper()
 	if err := store.DepAdd(issueID, dependsOnID, _depType); err != nil {
@@ -9228,12 +9185,13 @@ func TestRetryControlPropagatesAttemptMetadata(t *testing.T) {
 	t.Parallel()
 
 	store := beads.NewMemStore()
+	root := mustCreateProcessControlRoot(t, store)
 	retryControl := mustCreateWorkflowBead(t, store, beads.Bead{
 		Title: "review codex",
 		Type:  "task",
 		Metadata: map[string]string{
 			"gc.kind":             "retry",
-			"gc.root_bead_id":     "wf-1",
+			"gc.root_bead_id":     root.ID,
 			"gc.step_ref":         "demo.review-codex",
 			"gc.max_attempts":     "3",
 			"gc.on_exhausted":     "hard_fail",
@@ -9246,7 +9204,7 @@ func TestRetryControlPropagatesAttemptMetadata(t *testing.T) {
 		Type:   "task",
 		Status: "closed",
 		Metadata: map[string]string{
-			"gc.root_bead_id":    "wf-1",
+			"gc.root_bead_id":    root.ID,
 			"gc.step_ref":        "demo.review-codex.attempt.1",
 			"gc.logical_bead_id": retryControl.ID,
 			"gc.attempt":         "1",
@@ -9645,12 +9603,12 @@ func TestProcessControlEmitsSkipReasonWhenNotOpen(t *testing.T) {
 	}
 }
 
-func TestProcessControlClosesControlWhenWorkflowRootMissing(t *testing.T) {
+func TestProcessControlMissingWorkflowRootFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	store := beads.NewMemStore()
 	control, err := store.Create(beads.Bead{
-		Title:  "orphaned retry control",
+		Title:  "retry control with missing root",
 		Type:   "task",
 		Status: "open",
 		Metadata: map[string]string{
@@ -9664,40 +9622,19 @@ func TestProcessControlClosesControlWhenWorkflowRootMissing(t *testing.T) {
 		t.Fatalf("create control: %v", err)
 	}
 
-	var traceBuf bytes.Buffer
-	opts := ProcessOptions{
-		Tracef: func(format string, args ...any) {
-			fmt.Fprintf(&traceBuf, format, args...)
-			traceBuf.WriteByte('\n')
-		},
+	result, err := ProcessControl(store, control, ProcessOptions{})
+	if !errors.Is(err, ErrControlGraphMalformed) {
+		t.Fatalf("ProcessControl error = %v, want %v", err, ErrControlGraphMalformed)
 	}
-
-	result, err := ProcessControl(store, control, opts)
-	if err != nil {
-		t.Fatalf("ProcessControl: %v", err)
-	}
-	if !result.Processed || result.Action != "orphaned-workflow" {
-		t.Fatalf("result = %+v, want processed orphaned-workflow", result)
+	if result != (ControlResult{}) {
+		t.Fatalf("result = %+v, want no processing", result)
 	}
 	after := mustGetBead(t, store, control.ID)
-	if after.Status != "closed" {
-		t.Fatalf("status = %q, want closed", after.Status)
+	if after.Status != "open" {
+		t.Fatalf("status = %q, want open", after.Status)
 	}
-	if after.Metadata["gc.outcome"] != "fail" {
-		t.Fatalf("gc.outcome = %q, want fail", after.Metadata["gc.outcome"])
-	}
-	if after.Metadata["gc.failure_reason"] != "missing_workflow_root" {
-		t.Fatalf("gc.failure_reason = %q, want missing_workflow_root", after.Metadata["gc.failure_reason"])
-	}
-	if after.Metadata["gc.final_disposition"] != "orphaned_workflow" {
-		t.Fatalf("gc.final_disposition = %q, want orphaned_workflow", after.Metadata["gc.final_disposition"])
-	}
-	if after.Metadata["gc.missing_root_bead_id"] != "missing-root" {
-		t.Fatalf("gc.missing_root_bead_id = %q, want missing-root", after.Metadata["gc.missing_root_bead_id"])
-	}
-	traced := traceBuf.String()
-	if !strings.Contains(traced, "close reason=missing_workflow_root") {
-		t.Fatalf("trace missing missing-root close reason; got:\n%s", traced)
+	if got := after.Metadata["gc.outcome"]; got != "" {
+		t.Fatalf("gc.outcome = %q, want no mutation", got)
 	}
 }
 
