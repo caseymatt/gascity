@@ -114,6 +114,12 @@ func checkCooldown(a Order, now time.Time, lastRunFn LastRunFunc) TriggerResult 
 	}
 
 	elapsed := now.Sub(last)
+	if elapsed < 0 {
+		// The caller may capture now before lastRunFn observes a concurrent
+		// run. Treat that newer timestamp as zero elapsed so the reported
+		// cooldown never exceeds the configured interval.
+		elapsed = 0
+	}
 	if elapsed >= interval {
 		return TriggerResult{
 			Due:     true,

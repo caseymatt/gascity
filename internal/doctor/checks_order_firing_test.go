@@ -210,6 +210,72 @@ func TestOrderFiringCurrent_UsesNewestOrderRunHistory(t *testing.T) {
 	}
 }
 
+func TestOrderFiringCurrent_RecentlyCompletedRunWinsSnapshotRace(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	cityPath, cfg := orderFiringTestCity(t)
+	writeOrderFiringTestOrder(t, cityPath, "cleanup-cooldown", "cooldown", "1h")
+	writeOrderFiringTestEvents(t, cityPath,
+		events.Event{Type: events.ControllerStarted, Ts: now.Add(-24 * time.Hour)},
+		events.Event{Type: events.OrderFired, Subject: "cleanup-cooldown", Ts: now.Add(-8 * time.Hour)},
+	)
+
+	// The prefetched snapshot predates a run that completes while doctor is
+	// classifying it. The live confirmation lookup must observe the completed
+	// persisted run instead of emitting the stale verdict from the old snapshot.
+	var calls int
+	check := NewOrderFiringCurrentCheck(cfg, cityPath)
+	check.clock = func() time.Time { return now }
+	check.lastRun = func(orders.Order) (time.Time, error) {
+		calls++
+		if calls == 1 {
+			return now.Add(-8 * time.Hour), nil
+		}
+		return now.Add(-2 * time.Minute), nil
+	}
+
+	result := check.Run(&CheckContext{CityPath: cityPath})
+	if result.Status != StatusOK {
+		t.Fatalf("status = %v, want OK for just-completed firing; msg = %s; details = %v", result.Status, result.Message, result.Details)
+	}
+	if calls != 2 {
+		t.Fatalf("lastRun calls = %d, want initial snapshot plus live confirmation", calls)
+	}
+	if !strings.Contains(strings.Join(result.Details, "\n"), "last fired 2m ago") {
+		t.Fatalf("details = %v, want confirmed completed-run timestamp", result.Details)
+	}
+}
+
+func TestOrderFiringCurrent_RecentFailureDoesNotMasqueradeAsFreshRun(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	cityPath, cfg := orderFiringTestCity(t)
+	writeOrderFiringTestOrder(t, cityPath, "cleanup-cooldown", "cooldown", "1h")
+	writeOrderFiringTestEvents(t, cityPath,
+		events.Event{Type: events.ControllerStarted, Ts: now.Add(-24 * time.Hour)},
+		events.Event{Type: events.OrderFired, Subject: "cleanup-cooldown", Ts: now.Add(-8 * time.Hour)},
+		events.Event{Type: events.OrderFailed, Subject: "cleanup-cooldown", Ts: now.Add(-4 * time.Minute), Message: "required parameter repo is missing"},
+	)
+
+	check := NewOrderFiringCurrentCheck(cfg, cityPath)
+	check.clock = func() time.Time { return now }
+	// LastRun reports the tracking row's CreatedAt even when that row later
+	// fails. The terminal failure follows this timestamp and must keep it from
+	// being treated as a successful, fresh firing.
+	check.lastRun = func(orders.Order) (time.Time, error) {
+		return now.Add(-5 * time.Minute), nil
+	}
+
+	result := check.Run(&CheckContext{CityPath: cityPath})
+	if result.Status != StatusError {
+		t.Fatalf("status = %v, want stale error after failed firing; msg = %s; details = %v", result.Status, result.Message, result.Details)
+	}
+	details := strings.Join(result.Details, "\n")
+	for _, want := range []string{"CRITICAL: stale", "latest firing failed 4m ago", "required parameter repo is missing"} {
+		if !strings.Contains(details, want) {
+			t.Fatalf("details = %v, want failure context %q", result.Details, want)
+		}
+	}
+}
+
 func TestOrderFiringCurrent_SkipsSuspendedRigOrders(t *testing.T) {
 	// The dispatcher intentionally skips suspended rigs. Doctor should not turn
 	// their paused recurring orders into blocking stale-order failures.

@@ -172,6 +172,135 @@ func TestOrderFiringCurrent_FiringOlderThanTailFallsBackToLastRun(t *testing.T) 
 	}
 }
 
+// TestOrderFiringCurrent_ConfirmationSeesConcurrentInFlightFiring proves the
+// second bounded snapshot closes the false-stale race: the initial city-wide
+// tail is stale, then the order fires before the scoped confirmation read.
+func TestOrderFiringCurrent_ConfirmationSeesConcurrentInFlightFiring(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	cityPath, cfg := orderFiringTestCity(t)
+	writeOrderFiringTestOrder(t, cityPath, "cleanup-cooldown", "cooldown", "1h")
+	writeOrderFiringTestEvents(t, cityPath,
+		events.Event{Type: events.ControllerStarted, Ts: now.Add(-24 * time.Hour)},
+		events.Event{Type: events.OrderFired, Subject: "cleanup-cooldown", Ts: now.Add(-8 * time.Hour)},
+	)
+
+	var calls []eventReadCall
+	check := NewOrderFiringCurrentCheck(cfg, cityPath)
+	check.clock = func() time.Time { return now }
+	check.readEvents = func(path string, filter events.Filter, limit int) ([]events.Event, error) {
+		calls = append(calls, eventReadCall{filter: filter, limit: limit})
+		if filter.Type == events.OrderFired && filter.Subject == "cleanup-cooldown" {
+			return []events.Event{{Type: events.OrderFired, Subject: filter.Subject, Ts: now.Add(-1 * time.Minute)}}, nil
+		}
+		return events.ReadFilteredTail(path, filter, limit)
+	}
+	check.lastRun = func(orders.Order) (time.Time, error) {
+		return now.Add(-8 * time.Hour), nil
+	}
+
+	result := check.Run(&CheckContext{CityPath: cityPath})
+	if result.Status != StatusOK {
+		t.Fatalf("status = %v, want OK for firing that began during diagnosis; msg = %s; details = %v", result.Status, result.Message, result.Details)
+	}
+
+	var sawScopedFired, sawScopedFailed bool
+	for _, call := range calls {
+		if call.filter.Subject != "cleanup-cooldown" {
+			continue
+		}
+		if call.limit != orderFiringConfirmationTailLimit {
+			t.Fatalf("scoped confirmation limit = %d, want %d", call.limit, orderFiringConfirmationTailLimit)
+		}
+		if call.filter.MaxScanBytes != orderFiringConfirmationMaxScanBytes {
+			t.Fatalf("scoped confirmation byte bound = %d, want %d", call.filter.MaxScanBytes, orderFiringConfirmationMaxScanBytes)
+		}
+		switch call.filter.Type {
+		case events.OrderFired:
+			sawScopedFired = true
+		case events.OrderFailed:
+			sawScopedFailed = true
+		}
+	}
+	if !sawScopedFired || !sawScopedFailed {
+		t.Fatalf("scoped confirmation reads: fired=%v failed=%v, want both bounded snapshots", sawScopedFired, sawScopedFailed)
+	}
+}
+
+// TestOrderFiringCurrent_ConfirmationLookupFailureIsBoundedAndActionable keeps
+// the race-closing lookup honest: its store error is surfaced, and both event
+// reads remain newest-record queries rather than unbounded history scans.
+func TestOrderFiringCurrent_ConfirmationLookupFailureIsBoundedAndActionable(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	cityPath, cfg := orderFiringTestCity(t)
+	writeOrderFiringTestOrder(t, cityPath, "cleanup-cooldown", "cooldown", "1h")
+	writeOrderFiringTestEvents(t, cityPath,
+		events.Event{Type: events.ControllerStarted, Ts: now.Add(-24 * time.Hour)},
+		events.Event{Type: events.OrderFired, Subject: "cleanup-cooldown", Ts: now.Add(-8 * time.Hour)},
+	)
+
+	var calls []eventReadCall
+	var historyCalls int32
+	check := NewOrderFiringCurrentCheck(cfg, cityPath)
+	check.clock = func() time.Time { return now }
+	check.readEvents = spyEventReader(&calls)
+	check.lastRun = func(orders.Order) (time.Time, error) {
+		if atomic.AddInt32(&historyCalls, 1) == 1 {
+			return now.Add(-8 * time.Hour), nil
+		}
+		return time.Time{}, fmt.Errorf("confirmation store unavailable")
+	}
+
+	result := check.Run(&CheckContext{CityPath: cityPath})
+	if result.Status != StatusError {
+		t.Fatalf("status = %v, want error when confirmation lookup fails; msg = %s", result.Status, result.Message)
+	}
+	if details := strings.Join(result.Details, "\n"); !strings.Contains(details, "confirmation store unavailable") {
+		t.Fatalf("details = %v, want confirmation lookup failure surfaced", result.Details)
+	}
+	if got := atomic.LoadInt32(&historyCalls); got != 2 {
+		t.Fatalf("history calls = %d, want initial snapshot plus confirmation", got)
+	}
+	for _, call := range calls {
+		if call.filter.Subject == "cleanup-cooldown" {
+			if call.limit != orderFiringConfirmationTailLimit {
+				t.Fatalf("confirmation read %+v is unbounded by rows; want limit %d", call, orderFiringConfirmationTailLimit)
+			}
+			if call.filter.MaxScanBytes != orderFiringConfirmationMaxScanBytes {
+				t.Fatalf("confirmation read %+v is unbounded by bytes; want %d", call, orderFiringConfirmationMaxScanBytes)
+			}
+		}
+	}
+}
+
+func TestOrderFiringCurrent_ConfirmationKeepsGenuinelyStaleOrder(t *testing.T) {
+	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	cityPath, cfg := orderFiringTestCity(t)
+	writeOrderFiringTestOrder(t, cityPath, "cleanup-cooldown", "cooldown", "1h")
+	writeOrderFiringTestEvents(t, cityPath,
+		events.Event{Type: events.ControllerStarted, Ts: now.Add(-24 * time.Hour)},
+		events.Event{Type: events.OrderFired, Subject: "cleanup-cooldown", Ts: now.Add(-8 * time.Hour)},
+	)
+
+	var historyCalls int32
+	check := NewOrderFiringCurrentCheck(cfg, cityPath)
+	check.clock = func() time.Time { return now }
+	check.lastRun = func(orders.Order) (time.Time, error) {
+		atomic.AddInt32(&historyCalls, 1)
+		return now.Add(-8 * time.Hour), nil
+	}
+
+	result := check.Run(&CheckContext{CityPath: cityPath})
+	if result.Status != StatusError {
+		t.Fatalf("status = %v, want error for genuinely stale order; msg = %s; details = %v", result.Status, result.Message, result.Details)
+	}
+	if details := strings.Join(result.Details, "\n"); !strings.Contains(details, "CRITICAL: stale") {
+		t.Fatalf("details = %v, want stale diagnosis after confirmation", result.Details)
+	}
+	if got := atomic.LoadInt32(&historyCalls); got != 2 {
+		t.Fatalf("history calls = %d, want stale snapshot confirmed once before diagnosis", got)
+	}
+}
+
 // TestOrderFiringCurrent_TimeoutHintNamesQueryCost pins the corrected hint. The
 // old text blamed "beads/Dolt connectivity", which sent triage at the data
 // plane while the data plane was healthy and cost a full triage cycle (ga-klv).
@@ -333,8 +462,8 @@ func TestOrderFiringCurrent_PrefetchSkipsOrdersTheEventLogAnswers(t *testing.T) 
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(lookedUp) != 1 || lookedUp[0] != "stale-cooldown" {
-		t.Fatalf("looked up %v, want only the order the event log cannot answer", lookedUp)
+	if len(lookedUp) != 2 || lookedUp[0] != "stale-cooldown" || lookedUp[1] != "stale-cooldown" {
+		t.Fatalf("looked up %v, want the stale-event order once in the prefetch and once in the live confirmation", lookedUp)
 	}
 }
 
@@ -344,6 +473,12 @@ func TestOrderFiringCurrent_PrefetchSkipsOrdersTheEventLogAnswers(t *testing.T) 
 func TestOrderFiringEventTailLimitIsPositive(t *testing.T) {
 	if orderFiringEventTailLimit <= 0 {
 		t.Fatalf("orderFiringEventTailLimit = %d, want positive; a non-positive limit means an unbounded read", orderFiringEventTailLimit)
+	}
+	if orderFiringConfirmationTailLimit <= 0 {
+		t.Fatalf("orderFiringConfirmationTailLimit = %d, want positive; a non-positive limit means an unbounded confirmation read", orderFiringConfirmationTailLimit)
+	}
+	if orderFiringConfirmationMaxScanBytes <= 0 {
+		t.Fatalf("orderFiringConfirmationMaxScanBytes = %d, want positive; a non-positive value means an unbounded confirmation scan", orderFiringConfirmationMaxScanBytes)
 	}
 }
 

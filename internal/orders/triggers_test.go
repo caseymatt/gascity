@@ -52,6 +52,85 @@ func TestCheckTriggerCooldownNotDue(t *testing.T) {
 	}
 }
 
+func TestCheckTriggerCooldownBoundaries(t *testing.T) {
+	a := Order{Name: "digest", Trigger: "cooldown", Interval: "24h"}
+	now := time.Date(2026, 2, 27, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		elapsed    time.Duration
+		wantDue    bool
+		wantReason string
+	}{
+		{
+			name:       "just before interval",
+			elapsed:    24*time.Hour - time.Second,
+			wantDue:    false,
+			wantReason: "cooldown: 1s remaining",
+		},
+		{
+			name:       "at interval",
+			elapsed:    24 * time.Hour,
+			wantDue:    true,
+			wantReason: "elapsed 24h0m0s >= interval 24h0m0s",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lastRun := now.Add(-tt.elapsed)
+			result := CheckTrigger(a, now, func(_ string) (time.Time, error) {
+				return lastRun, nil
+			}, nil, nil)
+
+			if result.Due != tt.wantDue {
+				t.Errorf("Due = %v, want %v", result.Due, tt.wantDue)
+			}
+			if result.Reason != tt.wantReason {
+				t.Errorf("Reason = %q, want %q", result.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestCheckTriggerCooldownClampsFutureLastRun(t *testing.T) {
+	a := Order{Name: "digest", Trigger: "cooldown", Interval: "24h"}
+	now := time.Date(2026, 2, 27, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		lastRun time.Time
+	}{
+		{
+			name:    "concurrent update after now snapshot",
+			lastRun: now.Add(time.Nanosecond),
+		},
+		{
+			name:    "future stored timestamp",
+			lastRun: now.Add(48 * time.Hour),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := CheckTrigger(a, now, func(_ string) (time.Time, error) {
+				return tt.lastRun, nil
+			}, nil, nil)
+
+			if result.Due {
+				t.Error("Due = true, want false")
+			}
+			const wantReason = "cooldown: 24h0m0s remaining"
+			if result.Reason != wantReason {
+				t.Errorf("Reason = %q, want %q", result.Reason, wantReason)
+			}
+			if !result.LastRun.Equal(tt.lastRun) {
+				t.Errorf("LastRun = %s, want %s", result.LastRun, tt.lastRun)
+			}
+		})
+	}
+}
+
 func TestCheckTriggerManual(t *testing.T) {
 	a := Order{Name: "deploy", Trigger: "manual"}
 	now := time.Date(2026, 2, 27, 12, 0, 0, 0, time.UTC)
