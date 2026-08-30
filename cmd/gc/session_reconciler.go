@@ -5666,7 +5666,12 @@ func resolveTaskBeadWorkDir(cityPath string, store beads.Store, bead beads.Bead)
 	if sourceWorkDir := resolveDrainSourceWorkDir(cityPath, store, bead); sourceWorkDir != "" {
 		return sourceWorkDir
 	}
-	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+	// Legacy `work_dir` is the worktree CREATOR's record; `gc.work_dir` is an
+	// observability stamp reconciliation mirrors (see
+	// workDirStampHasOwnershipEvidence) and, for non-pool sessions, writes
+	// unconditionally from the observed cwd. Read the owned path first so this
+	// stays a strict superset of the pre-existing legacy-only lookup.
+	for _, key := range []string{beadmeta.LegacyWorkDirMetadataKey, beadmeta.WorkDirMetadataKey} {
 		workDir := strings.TrimSpace(bead.Metadata[key])
 		if workDir == "" {
 			continue
@@ -5700,7 +5705,7 @@ func resolveDrainSourceWorkDir(cityPath string, store beads.Store, bead beads.Be
 	if err != nil {
 		return ""
 	}
-	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+	for _, key := range []string{beadmeta.LegacyWorkDirMetadataKey, beadmeta.WorkDirMetadataKey} {
 		workDir := strings.TrimSpace(source.Metadata[key])
 		if workDir == "" {
 			continue

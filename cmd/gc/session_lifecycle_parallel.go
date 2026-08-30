@@ -1291,9 +1291,13 @@ func resolvePreparedTaskWorkDir(
 	store beads.Store,
 	workDirResolver taskWorkDirResolver,
 ) string {
+	// Prepared drain items only: the item step's copied metadata can still name
+	// the launcher checkout before prepare-worktree runs. Deliberately NOT the
+	// full resolveTaskBeadWorkDir chain — that would put the trigger bead ahead
+	// of the snapshot resolver for every pool session.
 	if triggerID := strings.TrimSpace(candidate.info.TriggerBeadID); triggerID != "" && store != nil {
 		if trigger, err := store.Get(triggerID); err == nil {
-			if workDir := resolveTaskBeadWorkDir(cityPath, store, trigger); workDir != "" {
+			if workDir := resolveDrainSourceWorkDir(cityPath, store, trigger); workDir != "" {
 				return workDir
 			}
 		}
