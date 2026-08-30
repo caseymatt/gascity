@@ -43,6 +43,10 @@ const WorkRef StoreRef = ""
 // RigRef is the canonical ref of a rig work store.
 func RigRef(name string) StoreRef { return StoreRef("rig:" + strings.TrimSpace(name)) }
 
+// classRefPrefix is the binding family's marker, spelled once so ClassRef and
+// the scope predicates that read it back cannot drift apart.
+const classRefPrefix = "class:"
+
 // ClassRef is the canonical ref of the binding serving a class set.
 //
 // The token is the classes' initials in name order, which identifies a binding
@@ -68,7 +72,7 @@ func ClassRef(classes []coordclass.Class) StoreRef {
 		seen[n] = true
 		token.WriteString(n[:1])
 	}
-	return StoreRef("class:" + token.String())
+	return StoreRef(classRefPrefix + token.String())
 }
 
 // Leg is one store the resolver can name, with the id prefix it was CONFIGURED
@@ -88,9 +92,10 @@ type ClassBinding struct {
 	// carries all five infrastructure classes on one binding.
 	Classes []coordclass.Class
 
-	// Prefixes are the reserved id prefixes those classes mint (the caller
-	// supplies them from config.ReservedClassPrefix; storeref stays free of
-	// internal/config).
+	// Prefixes are the reserved id namespaces those classes HOLD — the prefix
+	// each mints under plus any its store holds without minting, such as the
+	// nudge queue's. The caller supplies them from
+	// config.ReservedClassPrefixesFor; storeref stays free of internal/config.
 	Prefixes []string
 
 	// Leg is the opened binding store.
@@ -101,16 +106,23 @@ type ClassBinding struct {
 	// condition: when a binding mints truthfully, a new bead's residence is
 	// decidable from its id alone.
 	//
-	// A constructor may only set this from a VERIFIED boot-time check. This
-	// build has no such check, so every constructor here leaves it false and
-	// the probe stays — the flip row is pre-written in the corpus so the day
-	// verification ships is a topology-bit change, not a redesign.
+	// A constructor may only set this from a VERIFIED boot-time check. The
+	// check is MintsInsideNamespace: the store declares the namespace it mints
+	// into, the binding declares the namespaces it claims, and a store that
+	// declares nothing reports false. A false bit only keeps the residence
+	// probe; a wrong true one retires it over beads it cannot recognize.
 	MintsReserved bool
 
 	// HasLegacyResidents reports whether the binding is known to still hold
 	// OPEN beads minted outside the reserved namespace — the relics `gc storage
 	// migrate` produced by preserving ids. The residence probe retires only
 	// when the binding both mints truthfully AND holds no such relic.
+	//
+	// Constructors set this TRUE until a census can say otherwise: "not known
+	// to hold relics" and "known to hold none" are different claims, and only
+	// the second may retire the probe. Defaulting false while the mint bit is
+	// observed would retire the probe on any converged city the moment it
+	// booted, stranding every id the migration preserved.
 	HasLegacyResidents bool
 }
 
@@ -156,16 +168,11 @@ func (t Topology) IsSingleStore() bool { return len(t.Bindings) == 0 }
 // dedupe needs the stores.
 func (t Topology) ClaimRefs() []StoreRef {
 	refs := []StoreRef{t.Work.Ref}
-	seen := map[beads.Store]bool{}
-	if t.Work.Store != nil {
-		seen[t.Work.Store] = true
-	}
+	var seen storeSet
+	seen.addIfNew(t.Work.Store)
 	for _, b := range t.orderedBindings() {
-		if b.Leg.Store != nil {
-			if seen[b.Leg.Store] {
-				continue
-			}
-			seen[b.Leg.Store] = true
+		if b.Leg.Store != nil && !seen.addIfNew(b.Leg.Store) {
+			continue
 		}
 		refs = append(refs, b.Leg.Ref)
 	}
@@ -209,14 +216,7 @@ func (t Topology) orderedRigs() []Leg {
 
 // coversID reports whether any of the binding's reserved prefixes claims id's
 // namespace.
-func (b ClassBinding) coversID(id string) bool {
-	for _, p := range b.Prefixes {
-		if IDInNamespace(id, p) {
-			return true
-		}
-	}
-	return false
-}
+func (b ClassBinding) coversID(id string) bool { return idInAnyNamespace(id, b.Prefixes) }
 
 // probeRetired reports whether the residence probe may be dropped for this
 // binding: it mints truthfully AND holds no open legacy resident. Both halves

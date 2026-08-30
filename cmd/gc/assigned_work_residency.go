@@ -115,8 +115,44 @@ func assignedWorkPlanForSessionInfo(cityPath string, cfg *config.City, store bea
 // binding's ref, and answering "no refs" there would drop every claim-holder on
 // that city into the no-wake-reason drain — the failure the refusal is supposed
 // to prevent, delivered by the guard against it.
+//
+// The work leg comes from censusWorkLeg, NOT from the caller's leading store,
+// and that is load-bearing: this set is matched against refs the CENSUS emitted,
+// and the census resolves its work leg the same way. Taking the caller's leading
+// store here would, on the reconciler's plane, make the work leg and the binding
+// the same store — collapsing their two refs into one — while the census (which
+// has the runtime's real work store) emitted both. Every binding-resident claim
+// would then be collected and rejected.
 func assignedWorkClaimRefs(cityPath string, cfg *config.City, leading beads.Store) []string {
-	refs := residencyTopologyForCity(cityPath, cfg, leading, nil).ClaimRefs()
+	refs := residencyTopologyForCity(cityPath, cfg, censusWorkLeg(cityPath, leading), nil).ClaimRefs()
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, string(ref))
+	}
+	return out
+}
+
+// assignedWorkRelocatedClaimRefs is assignedWorkClaimRefs for the callers that
+// may only widen where a class was actually RELOCATED: it answers empty for a
+// single-store city.
+//
+// The wake filter can take the unconditional set because it matches a session's
+// own exact assignee identity, so a wider ref set still admits only that
+// session's own claims. Pool demand matches a routed TEMPLATE, so the same set
+// would make city-store work resume a rig-scoped pool session on a city that
+// relocates nothing — the reachability rule
+// TestBuildDesiredState_RigPoolIgnoresAssignedWorkInUnreachableStore pins, and
+// the reason this is a second function rather than a second caller of the first.
+//
+// On a city that DOES relocate, the collapse inside ClaimRefs is what makes the
+// answer right on both planes: a leading arm that is itself the binding reports
+// the single ref its census records, and a distinct binding reports its own.
+func assignedWorkRelocatedClaimRefs(cityPath string, cfg *config.City, leading beads.Store) []string {
+	topology := residencyTopologyForCity(cityPath, cfg, censusWorkLeg(cityPath, leading), nil)
+	if topology.IsSingleStore() {
+		return nil
+	}
+	refs := topology.ClaimRefs()
 	out := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		out = append(out, string(ref))

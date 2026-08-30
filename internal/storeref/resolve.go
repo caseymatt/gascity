@@ -70,6 +70,7 @@ package storeref
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -122,6 +123,15 @@ type ByID struct {
 // route byte-identical to the caller reading its own store. Any further legs
 // are read in order, so a multi-leg answer proves absence rather than handing
 // back a residual.
+//
+// DECLARING ONE IS A REVIEWED ACT. An implementation replaces this package's
+// by-id work rule with the plane's own, so a second one is a second answer to
+// the same question — the bug class the residency resolver exists to end,
+// wearing the resolver's API. A plane may declare at most one axis, every
+// declaration is named in scripts/residency-boundary-baseline.txt under the
+// c:WorkAxisRouter pattern, and the day a SECOND plane declares one the two
+// must land with a cross-plane router-agreement pin. The rule is stated in
+// full beside the pattern in scripts/residency-boundary-patterns.txt.
 type WorkAxisRouter interface {
 	// WorkLegsForID returns the work legs for id, or nil to leave the
 	// resolver's own [work, covering-shadows] rule in place.
@@ -469,16 +479,58 @@ func shadowLegsCovering(id string, legs []Leg) []Leg {
 // role, because that is the reason the leg is there.
 func dedupeLegs(p ResolvedPlan) ResolvedPlan {
 	out := p.Legs[:0]
-	seen := make(map[beads.Store]bool, len(p.Legs))
+	var seen storeSet
 	for _, l := range p.Legs {
-		if l.Leg.Store == nil || seen[l.Leg.Store] {
+		if !seen.addIfNew(l.Leg.Store) {
 			continue
 		}
-		seen[l.Leg.Store] = true
 		out = append(out, l)
 	}
 	p.Legs = out
 	return p
+}
+
+// storeSet tracks store identity for a dedupe pass without assuming a store can
+// be a map key.
+//
+// beads.Store is an INTERFACE, and an implementation whose dynamic type is a
+// struct carrying a slice or a map is not comparable: putting one in a map
+// panics with "hash of unhashable type", and so does ==. Plans are built over
+// whatever stores the caller opened, so the resolver cannot make that
+// assumption about them.
+//
+// An uncomparable store is therefore treated as distinct from everything. That
+// is the safe direction of the two: a duplicated leg is read twice, while a
+// wrongly-dropped one is a leg silently missing from a federated answer, which
+// is the whole failure class this package exists to close.
+//
+// Identity is ==, so two DIFFERENT backends behind a value-typed store that
+// happens to compare equal — a zero-size store double, say — read as one leg.
+// Every production store is reference-identified (a pointer, or a wrapper
+// carrying one), which is what makes == the right rule here.
+type storeSet struct{ seen []beads.Store }
+
+// addIfNew reports whether store is a leg worth keeping — non-nil, and not one
+// already added.
+func (s *storeSet) addIfNew(store beads.Store) bool {
+	if store == nil {
+		return false
+	}
+	if !comparableStore(store) {
+		return true
+	}
+	for _, have := range s.seen {
+		if comparableStore(have) && have == store {
+			return false
+		}
+	}
+	s.seen = append(s.seen, store)
+	return true
+}
+
+func comparableStore(store beads.Store) bool {
+	t := reflect.TypeOf(store)
+	return t != nil && t.Comparable()
 }
 
 // ResolveOwner probes a FirstOwner plan and pins the store that holds id.
@@ -573,6 +625,35 @@ func ResolveOwnerRow(p ResolvedPlan, id string) (Owner, error) {
 	return Owner{}, beads.ErrNotFound
 }
 
+// ResolvePlacement is the ModeSingleOwner executor: the one store a
+// class-pure operation — above all a CREATE — acts on.
+//
+// It performs no I/O, because placement is not a search. A by-id plan asks
+// "where does this bead live" and probes until something answers; a placement
+// plan asks "where does this class BELONG", and the topology already knows.
+// That difference is why the modes need separate executors rather than one
+// leg-walking loop: running a FirstOwner plan through this function would
+// return the leg that merely LEADS a probe order and place the bead there, and
+// running a placement plan through ResolveOwner would probe the owner and
+// report a not-yet-created bead's absence as a miss.
+//
+// A refused city never reaches here for a relocated class — Plan returns the
+// standing refusal as an error, which is what keeps an infrastructure-class
+// create off the work ledger the class was moved away from.
+func ResolvePlacement(p ResolvedPlan) (Leg, error) {
+	if p.Mode != ModeSingleOwner {
+		return Leg{}, fmt.Errorf("storeref: ResolvePlacement needs a %s plan, got %s", ModeSingleOwner, p.Mode)
+	}
+	if len(p.Legs) != 1 {
+		return Leg{}, fmt.Errorf("storeref: a %s plan names exactly one store, got %d (%s)", ModeSingleOwner, len(p.Legs), p)
+	}
+	owner := p.Legs[0].Leg
+	if owner.Store == nil {
+		return Leg{}, fmt.Errorf("storeref: %s plan leg %s has no store", ModeSingleOwner, legName(owner.Ref))
+	}
+	return owner, nil
+}
+
 // LegError names a leg whose read failed and was tolerated as a partial
 // degradation.
 type LegError struct {
@@ -632,6 +713,26 @@ func Union[T any](p ResolvedPlan, id func(T) string, fn func(Leg) ([]T, error)) 
 		return out, err
 	}
 	return out, nil
+}
+
+// EachLeg visits every leg of a plan in order, with the reason it is there and
+// the meaning of its failure. It performs NO I/O and cannot fail.
+//
+// It is the enumeration seam for a consumer that genuinely cannot run its reads
+// inside Walk: one that fans the legs out CONCURRENTLY (the controller's census
+// arms, which read every leg in parallel and fold per-arm partials), or one that
+// resolves the leg set once and reads it repeatedly under different queries (the
+// `gc ready` reader, whose three arms share one leg set).
+//
+// Those consumers still must not hand-roll a store list, because the two things
+// a hand-rolled list loses are the two things that were wrong at 31 call sites:
+// the leg ORDER and the per-leg error POLICY. EachLeg hands over both, so what a
+// consumer supplies is only its own fan-out shape. Walk remains the executor for
+// reads — the place a policy is APPLIED — and a consumer that can use it should.
+func EachLeg(p ResolvedPlan, visit func(leg Leg, role Role, onError ErrPolicy)) {
+	for _, l := range p.Legs {
+		visit(l.Leg, l.Role, l.OnError)
+	}
 }
 
 // WalkResult is what a leg-by-leg pass over a Union plan reports beyond the
