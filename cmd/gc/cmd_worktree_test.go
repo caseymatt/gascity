@@ -581,27 +581,49 @@ func newWorktreeTestRig(t *testing.T) (string, worktreeRig, *config.City) {
 	return cityPath, rig, cfg
 }
 
-func installWorktreeTestHelper(t *testing.T, failAttach bool) string {
+func installWorktreeTestHelper(t *testing.T, failRegister bool) {
 	t.Helper()
 	helper := filepath.Join(t.TempDir(), "gc-code-storage")
-	attach := "exit 0"
-	if failAttach {
-		attach = `echo "credential=super-secret-token" >&2; exit 23`
+	register := `
+    lifecycle_id=$(field lifecycleId)
+    owner=$(field owner)
+    rig=$(field rig)
+    rig_root=$(field rigRoot)
+    worktree=$(field worktreePath)
+    attempt=$(number_field attempt)
+    base=$(field base)
+    branch=$(field branch)
+    head=$(field headSha)
+    request_id=$(field requestId)
+    printf '{"version":1,"requestId":"%s","ok":true,"operation":"registerAttempt","lifecycleId":"%s","owner":"%s","rig":"%s","rigRoot":"%s","worktreePath":"%s","attempt":%s,"base":"%s","branch":"%s","headSha":"%s"}\n' \
+      "$request_id" "$lifecycle_id" "$owner" "$rig" "$rig_root" "$worktree" "$attempt" "$base" "$branch" "$head"
+`
+	if failRegister {
+		register = `echo "credential=super-secret-token" >&2; exit 23`
 	}
 	body := `#!/bin/sh
 set -eu
+[ "${2-}" = "--json-request" ] || exit 64
+request=$(cat)
+field() {
+  printf '%s' "$request" | sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'
+}
+number_field() {
+  printf '%s' "$request" | sed -n 's/.*"'"$1"'":\([0-9][0-9]*\).*/\1/p'
+}
 case "$1" in
-  attach)
-    ` + attach + `
+  register)
+    ` + register + `
     ;;
   publish)
-    worktree="${GC_WORKTREE_TEST_REPLY_WORKTREE-$5}"
-    ref="${GC_WORKTREE_TEST_REPLY_REF-refs/gc-storage/publish/attempt-$4}"
-    head="${GC_WORKTREE_TEST_REPLY_HEAD_SHA-$(git -C "$5" rev-parse HEAD)}"
+    worktree="${GC_WORKTREE_TEST_REPLY_WORKTREE-$(field worktreePath)}"
+    attempt=$(number_field attempt)
+    ref="${GC_WORKTREE_TEST_REPLY_REF-refs/gc-storage/publish/attempt-$attempt}"
+    head="${GC_WORKTREE_TEST_REPLY_HEAD_SHA-$(field headSha)}"
     pushed="${GC_WORKTREE_TEST_REPLY_PUSHED-true}"
     already_up_to_date="${GC_WORKTREE_TEST_REPLY_ALREADY_UP_TO_DATE-false}"
     extra="${GC_WORKTREE_TEST_REPLY_EXTRA-}"
-    printf '{"worktree":"%s","ref":"%s","headSha":"%s","pushed":%s,"alreadyUpToDate":%s%s}\n' "$worktree" "$ref" "$head" "$pushed" "$already_up_to_date" "$extra"
+    printf '{"worktree":"%s","ref":"%s","head_sha":"%s","pushed":%s,"already_up_to_date":%s%s}\n' "$worktree" "$ref" "$head" "$pushed" "$already_up_to_date" "$extra"
     ;;
   *)
     exit 64
@@ -612,7 +634,6 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("GC_CODE_STORAGE_HELPER", helper)
-	return helper
 }
 
 func createWorktreeTestEntry(t *testing.T, cityPath string, rig worktreeRig, id, relativePath string) worktreeRegistryEntry {

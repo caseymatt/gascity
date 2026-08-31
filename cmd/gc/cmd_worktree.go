@@ -24,6 +24,7 @@ import (
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/git"
 	"github.com/gastownhall/gascity/internal/pathutil"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -671,12 +672,46 @@ func rigOwnsWorktreePath(rigRoot, path string) (bool, error) {
 	return false, nil
 }
 
+const codeStorageRequestLifetime = 30 * time.Second
+
+type codeStorageSignerRequest struct {
+	Version      int    `json:"version"`
+	Operation    string `json:"operation"`
+	RequestID    string `json:"requestId"`
+	ExpiresAt    string `json:"expiresAt"`
+	LifecycleID  string `json:"lifecycleId"`
+	Owner        string `json:"owner"`
+	Rig          string `json:"rig"`
+	RigRoot      string `json:"rigRoot"`
+	WorktreePath string `json:"worktreePath"`
+	Attempt      int    `json:"attempt"`
+	Base         string `json:"base"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"headSha"`
+}
+
+type codeStorageRegisterReply struct {
+	Version      int    `json:"version"`
+	RequestID    string `json:"requestId"`
+	OK           bool   `json:"ok"`
+	Operation    string `json:"operation"`
+	LifecycleID  string `json:"lifecycleId"`
+	Owner        string `json:"owner"`
+	Rig          string `json:"rig"`
+	RigRoot      string `json:"rigRoot"`
+	WorktreePath string `json:"worktreePath"`
+	Attempt      int    `json:"attempt"`
+	Base         string `json:"base"`
+	Branch       string `json:"branch"`
+	HeadSHA      string `json:"headSha"`
+}
+
 type codeStoragePublishReply struct {
 	Worktree        string `json:"worktree"`
 	Ref             string `json:"ref"`
-	HeadSHA         string `json:"headSha"`
+	HeadSHA         string `json:"head_sha"`
 	Pushed          bool   `json:"pushed"`
-	AlreadyUpToDate bool   `json:"alreadyUpToDate"`
+	AlreadyUpToDate bool   `json:"already_up_to_date"`
 }
 
 func codeStorageHelperPath(cityPath string) string {
@@ -686,25 +721,87 @@ func codeStorageHelperPath(cityPath string) string {
 	return filepath.Join(cityPath, "tools", "code-storage", "gc-code-storage")
 }
 
-func invokeCodeStorageAttach(ctx context.Context, cityPath string, entry worktreeRegistryEntry) error {
-	cmd := exec.CommandContext(ctx, codeStorageHelperPath(cityPath), "attach", entry.Rig, entry.ID, strconv.Itoa(entry.Attempt), entry.Path)
-	cmd.Stdout = io.Discard
+func newCodeStorageSignerRequest(entry worktreeRegistryEntry, operation string) codeStorageSignerRequest {
+	return codeStorageSignerRequest{
+		Version:      1,
+		Operation:    operation,
+		RequestID:    uuid.NewString(),
+		ExpiresAt:    worktreeNow().UTC().Add(codeStorageRequestLifetime).Format(time.RFC3339Nano),
+		LifecycleID:  entry.ID,
+		Owner:        entry.Owner,
+		Rig:          entry.Rig,
+		RigRoot:      entry.RigRoot,
+		WorktreePath: entry.Path,
+		Attempt:      entry.Attempt,
+		Base:         entry.Base,
+		Branch:       entry.Branch,
+		HeadSHA:      entry.HeadSHA,
+	}
+}
+
+func invokeCodeStorageHelper(
+	ctx context.Context,
+	cityPath string,
+	command string,
+	request codeStorageSignerRequest,
+) ([]byte, error) {
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return nil, errors.New("code storage helper request could not be encoded")
+	}
+	payload = append(payload, '\n')
+
+	var stdout bytes.Buffer
+	cmd := exec.CommandContext(ctx, codeStorageHelperPath(cityPath), command, "--json-request")
+	cmd.Stdin = bytes.NewReader(payload)
+	cmd.Stdout = &stdout
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
-		return redactedHelperError("attach", err)
+		return nil, redactedHelperError(command, err)
+	}
+	return stdout.Bytes(), nil
+}
+
+func invokeCodeStorageAttach(ctx context.Context, cityPath string, entry worktreeRegistryEntry) error {
+	request := newCodeStorageSignerRequest(entry, "registerAttempt")
+	stdout, err := invokeCodeStorageHelper(ctx, cityPath, "register", request)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(stdout))
+	dec.DisallowUnknownFields()
+	var reply codeStorageRegisterReply
+	if err := dec.Decode(&reply); err != nil {
+		return errors.New("code storage helper register returned invalid JSON (output redacted)")
+	}
+	if dec.Decode(&struct{}{}) != io.EOF {
+		return errors.New("code storage helper register returned trailing data (output redacted)")
+	}
+	if reply.Version != request.Version ||
+		reply.RequestID != request.RequestID ||
+		!reply.OK ||
+		reply.Operation != request.Operation ||
+		reply.LifecycleID != request.LifecycleID ||
+		reply.Owner != request.Owner ||
+		reply.Rig != request.Rig ||
+		!pathutil.SamePath(reply.RigRoot, request.RigRoot) ||
+		!pathutil.SamePath(reply.WorktreePath, request.WorktreePath) ||
+		reply.Attempt != request.Attempt ||
+		reply.Base != request.Base ||
+		reply.Branch != request.Branch ||
+		!strings.EqualFold(reply.HeadSHA, request.HeadSHA) {
+		return errors.New("code storage helper register returned a mismatched lifecycle identity (output redacted)")
 	}
 	return nil
 }
 
 func invokeCodeStoragePublish(ctx context.Context, cityPath string, entry worktreeRegistryEntry) (codeStoragePublishReply, error) {
-	var stdout bytes.Buffer
-	cmd := exec.CommandContext(ctx, codeStorageHelperPath(cityPath), "publish", entry.Rig, entry.ID, strconv.Itoa(entry.Attempt), entry.Path)
-	cmd.Stdout = &stdout
-	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
-		return codeStoragePublishReply{}, redactedHelperError("publish", err)
+	request := newCodeStorageSignerRequest(entry, "publishAttempt")
+	stdout, err := invokeCodeStorageHelper(ctx, cityPath, "publish", request)
+	if err != nil {
+		return codeStoragePublishReply{}, err
 	}
-	dec := json.NewDecoder(&stdout)
+	dec := json.NewDecoder(bytes.NewReader(stdout))
 	dec.DisallowUnknownFields()
 	var reply codeStoragePublishReply
 	if err := dec.Decode(&reply); err != nil {
@@ -750,11 +847,13 @@ func publishRegisteredWorktree(ctx context.Context, cityPath, selector string, r
 		if !owned {
 			return fmt.Errorf("registered path %q is not owned by rig %q", entry.Path, entry.Rig)
 		}
-		reply, err := invokeCodeStoragePublish(ctx, cityPath, entry)
+		currentHead, err := git.New(entry.Path).HeadCtx(ctx)
 		if err != nil {
 			return err
 		}
-		currentHead, err := git.New(entry.Path).HeadCtx(ctx)
+		publishEntry := entry
+		publishEntry.HeadSHA = currentHead
+		reply, err := invokeCodeStoragePublish(ctx, cityPath, publishEntry)
 		if err != nil {
 			return err
 		}
