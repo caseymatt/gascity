@@ -1606,13 +1606,71 @@ func reserveDrainMember(store beads.Store, control, member beads.Bead, opts Proc
 		return fmt.Errorf("%s: loading exclusive drain member %s: %w", control.ID, member.ID, err)
 	}
 	owner := strings.TrimSpace(current.Metadata[beadmeta.ExclusiveDrainReservationMetadataKey])
-	if owner != "" && owner != control.ID {
-		return drainReservationError{ControlID: control.ID, MemberID: member.ID, Owner: owner}
-	}
 	if owner == control.ID {
 		return nil
 	}
+	if owner != "" {
+		ownerControl, ownerErr := store.Get(owner)
+		if ownerErr != nil || ownerControl.Status != "closed" {
+			return drainReservationError{ControlID: control.ID, MemberID: member.ID, Owner: owner}
+		}
+		return reclaimClosedDrainReservation(memberStore, control, member, owner)
+	}
 	return claimDrainReservation(memberStore, control, member)
+}
+
+// reclaimClosedDrainReservation atomically transfers a reservation whose
+// owning drain is known closed. The conditional path fences against a
+// successor claim; the legacy path re-reads immediately before its write and
+// preserves the same best-effort semantics as the original unfenced claim.
+func reclaimClosedDrainReservation(memberStore beads.Store, control, member beads.Bead, owner string) error {
+	writer, _, err := beads.ResolveConditionalWriter(memberStore)
+	if err != nil {
+		return fmt.Errorf("%s: reclaiming drain member %s from closed drain %s: %w", control.ID, member.ID, owner, err)
+	}
+	if writer == nil {
+		current, getErr := memberStore.Get(member.ID)
+		if getErr != nil {
+			return fmt.Errorf("%s: re-reading drain member %s before stale reservation reclaim: %w", control.ID, member.ID, getErr)
+		}
+		currentOwner := strings.TrimSpace(current.Metadata[beadmeta.ExclusiveDrainReservationMetadataKey])
+		switch currentOwner {
+		case control.ID:
+			return nil
+		case owner:
+			return memberStore.SetMetadata(member.ID, beadmeta.ExclusiveDrainReservationMetadataKey, control.ID)
+		case "":
+			return claimDrainReservation(memberStore, control, member)
+		default:
+			return drainReservationError{ControlID: control.ID, MemberID: member.ID, Owner: currentOwner}
+		}
+	}
+
+	ok, casErr := writer.CompareAndSetMetadataKey(member.ID, beadmeta.ExclusiveDrainReservationMetadataKey, owner, control.ID)
+	if ok {
+		return nil
+	}
+	current, getErr := memberStore.Get(member.ID)
+	if getErr != nil {
+		if casErr != nil {
+			return fmt.Errorf("%s: reclaiming drain member %s from closed drain %s: %w", control.ID, member.ID, owner, casErr)
+		}
+		return fmt.Errorf("%s: re-reading drain member %s after stale reservation reclaim: %w", control.ID, member.ID, getErr)
+	}
+	currentOwner := strings.TrimSpace(current.Metadata[beadmeta.ExclusiveDrainReservationMetadataKey])
+	switch currentOwner {
+	case control.ID:
+		return nil
+	case "":
+		return claimDrainReservationCAS(memberStore, writer, control, member)
+	case owner:
+		if casErr == nil {
+			casErr = errors.New("conditional stale reservation reclaim lost")
+		}
+		return fmt.Errorf("%s: reclaiming drain member %s from closed drain %s: %w", control.ID, member.ID, owner, casErr)
+	default:
+		return drainReservationError{ControlID: control.ID, MemberID: member.ID, Owner: currentOwner}
+	}
 }
 
 // claimDrainReservation claims the empty reservation slot. When the member's

@@ -154,6 +154,28 @@ func TestReserveDrainMemberCASReentryIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestReserveDrainMemberReclaimsClosedOwner(t *testing.T) {
+	store := newStampedDrainStore(t, gate.Auto)
+	control, member := newDrainReservationFixtures(t, store)
+	closedOwner, err := store.Create(beads.Bead{Title: "closed drain"})
+	if err != nil {
+		t.Fatalf("create closed owner: %v", err)
+	}
+	if err := store.Close(closedOwner.ID); err != nil {
+		t.Fatalf("close owner: %v", err)
+	}
+	if err := store.SetMetadata(member.ID, beadmeta.ExclusiveDrainReservationMetadataKey, closedOwner.ID); err != nil {
+		t.Fatalf("seed stale reservation: %v", err)
+	}
+
+	if err := reserveDrainMember(store, control, member, ProcessOptions{}); err != nil {
+		t.Fatalf("reserve after owner closure: %v", err)
+	}
+	if owner := reservationOwner(t, store, member.ID); owner != control.ID {
+		t.Fatalf("owner = %q, want successor %q", owner, control.ID)
+	}
+}
+
 func TestReserveDrainMemberRequireIncapableFailsClosed(t *testing.T) {
 	store := newStampedDrainStore(t, gate.Require)
 	store.DisableConditionalWrites = true
