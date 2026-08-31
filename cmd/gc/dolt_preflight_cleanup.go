@@ -17,8 +17,9 @@ import (
 var managedDoltPreflightCleanupFn = preflightManagedDoltCleanup
 
 const (
-	managedDoltProcTimeout = 1500 * time.Millisecond
-	managedDoltLsofTimeout = 3 * time.Second
+	managedDoltProcTimeout      = 1500 * time.Millisecond
+	managedDoltLsofTimeout      = 3 * time.Second
+	managedDoltStaleTempFileAge = 24 * time.Hour
 )
 
 var (
@@ -26,8 +27,61 @@ var (
 	managedDoltUnixSocketTable = "/proc/net/unix"
 )
 
-func preflightManagedDoltCleanup(_ string) error {
-	return removeStaleManagedDoltSockets()
+func preflightManagedDoltCleanup(cityPath string) error {
+	if err := removeStaleManagedDoltSockets(); err != nil {
+		return err
+	}
+	if err := removeStaleManagedDoltTempFiles(cityPath, time.Now()); err != nil {
+		fmt.Fprintf(os.Stderr, "gc: managed dolt stale temp-file cleanup: %v\n", err) //nolint:errcheck // startup must continue
+	}
+	return nil
+}
+
+// removeStaleManagedDoltTempFiles reclaims crash-leaked NBS scratch files
+// before the managed server opens any database. Dolt normally removes files
+// created by a cleanly exiting process, but a hard stop can leave multi-GB
+// buffered_file_byte_sink files in .dolt/temptf indefinitely. The startup
+// caller has already proved the data-dir lock is free, so files older than
+// Dolt's own 24-hour stale-file threshold cannot belong to the next process.
+func removeStaleManagedDoltTempFiles(cityPath string, now time.Time) error {
+	layout, err := resolveManagedDoltRuntimeLayout(cityPath)
+	if err != nil {
+		return err
+	}
+	databases, err := os.ReadDir(layout.DataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read managed dolt data dir: %w", err)
+	}
+
+	var cleanupErr error
+	for _, database := range databases {
+		if !database.IsDir() || database.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		tempDir := filepath.Join(layout.DataDir, database.Name(), ".dolt", "temptf")
+		err := filepath.Walk(tempDir, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				if os.IsNotExist(walkErr) {
+					return nil
+				}
+				return walkErr
+			}
+			if !info.Mode().IsRegular() || now.Sub(info.ModTime()) <= managedDoltStaleTempFileAge {
+				return nil
+			}
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("%s: %w", tempDir, err))
+		}
+	}
+	return cleanupErr
 }
 
 var errManagedDoltOpenStateUnknown = errors.New("managed dolt open-file state unknown")

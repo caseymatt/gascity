@@ -7272,6 +7272,75 @@ func TestOrderTrackingRetentionWatchdog_PrunesEligibleBeads(t *testing.T) {
 	}
 }
 
+func TestOrderTrackingRetentionWatchdog_UsesEffectiveConfiguredTTL(t *testing.T) {
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		cfg         *config.City
+		wantDeleted int
+	}{
+		{
+			name: "configured 24h TTL prunes 48h-old history",
+			cfg: &config.City{
+				Workspace: config.Workspace{Name: "test-city"},
+				Beads: config.BeadsConfig{
+					Policies: map[string]config.BeadPolicyConfig{
+						orderTrackingBeadPolicyName: {DeleteAfterClose: "24h"},
+					},
+				},
+			},
+			wantDeleted: 2,
+		},
+		{
+			name:        "missing policy falls back to 7d and preserves 48h-old history",
+			cfg:         &config.City{Workspace: config.Workspace{Name: "test-city"}},
+			wantDeleted: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seed := make([]beads.Bead, 0, minClosedOrderTrackingRetained+2)
+			for i := range minClosedOrderTrackingRetained + 2 {
+				seed = append(seed, beads.Bead{
+					ID:        fmt.Sprintf("effective-ttl-%02d", i),
+					Title:     "order:effective-ttl",
+					Status:    "closed",
+					Type:      "task",
+					CreatedAt: now.Add(-48*time.Hour + time.Duration(i)*time.Minute),
+					Labels:    []string{"order-run:effective-ttl", labelOrderTracking},
+					Ephemeral: true,
+				})
+			}
+			store := beads.NewMemStoreFrom(100, seed, nil)
+			cr := &CityRuntime{
+				cityName:            "test-city",
+				cfg:                 tt.cfg,
+				standaloneCityStore: store,
+				stdout:              io.Discard,
+				stderr:              io.Discard,
+				logPrefix:           "gc test",
+			}
+
+			cr.runOrderTrackingRetentionWatchdog(now)
+
+			for i := range minClosedOrderTrackingRetained + 2 {
+				id := fmt.Sprintf("effective-ttl-%02d", i)
+				_, err := store.Get(id)
+				if i < tt.wantDeleted {
+					if !errors.Is(err, beads.ErrNotFound) {
+						t.Fatalf("Get(%s) err = %v, want ErrNotFound", id, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatalf("Get(%s) err = %v, want bead preserved", id, err)
+				}
+			}
+		})
+	}
+}
+
 func TestOrderTrackingRetentionWatchdog_LogsPrunedCount(t *testing.T) {
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	// Beads are 8 days old (> 7d default TTL). One exceeds the retain-10 floor.
@@ -7438,94 +7507,34 @@ func TestOrderTrackingRetentionWatchdog_PrunesWhenBackupFresh(t *testing.T) {
 	}
 }
 
-func TestWarnIfClosedOrderTrackingBacklogLarge_SilentAtThreshold(t *testing.T) {
-	// 100 closed beads: at the threshold, no warning (fires only when > 100).
-	seed := make([]beads.Bead, 100)
+func TestSweepOrphanedOrderTrackingAtBoot_DoesNotWarnOnRecentClosedHistory(t *testing.T) {
+	seed := make([]beads.Bead, 600)
+	closedAt := time.Now()
 	for i := range seed {
 		seed[i] = beads.Bead{
-			ID:     fmt.Sprintf("ot-%03d", i),
-			Status: "closed",
-			Labels: []string{labelOrderTracking},
+			ID:        fmt.Sprintf("ot-%03d", i),
+			Status:    "closed",
+			Labels:    []string{labelOrderTracking},
+			CreatedAt: closedAt,
+			UpdatedAt: closedAt,
 		}
 	}
-	store := beads.NewMemStoreFrom(200, seed, nil)
-	var buf bytes.Buffer
-	warnIfClosedOrderTrackingBacklogLarge([]beads.Store{store}, &buf)
-	if buf.Len() > 0 {
-		t.Fatalf("got unexpected warning at count=100: %q", buf.String())
+	store := beads.NewMemStoreFrom(700, seed, nil)
+	prev := newCityRuntimeOpenSweepStore
+	newCityRuntimeOpenSweepStore = func(string, string) (beads.Store, error) {
+		return store, nil
 	}
-}
+	t.Cleanup(func() { newCityRuntimeOpenSweepStore = prev })
 
-func TestWarnIfClosedOrderTrackingBacklogLarge_FiresAboveThreshold(t *testing.T) {
-	// 101 closed beads: above the threshold, warning must fire.
-	seed := make([]beads.Bead, 101)
-	for i := range seed {
-		seed[i] = beads.Bead{
-			ID:     fmt.Sprintf("ot-%03d", i),
-			Status: "closed",
-			Labels: []string{labelOrderTracking},
-		}
-	}
-	store := beads.NewMemStoreFrom(200, seed, nil)
-	var buf bytes.Buffer
-	warnIfClosedOrderTrackingBacklogLarge([]beads.Store{store}, &buf)
-	got := buf.String()
-	if !strings.Contains(got, "101") {
-		t.Fatalf("warning = %q, want count 101", got)
-	}
-	if !strings.Contains(got, "gc start:") {
-		t.Fatalf("warning = %q, missing 'gc start:' prefix", got)
-	}
-}
-
-func TestWarnIfClosedOrderTrackingBacklogLarge_CapFormatAtLimit(t *testing.T) {
-	// 1001 closed beads: at the list limit, count displays as "≥1001".
-	seed := make([]beads.Bead, 1001)
-	for i := range seed {
-		seed[i] = beads.Bead{
-			ID:     fmt.Sprintf("ot-%04d", i),
-			Status: "closed",
-			Labels: []string{labelOrderTracking},
-		}
-	}
-	store := beads.NewMemStoreFrom(1100, seed, nil)
-	var buf bytes.Buffer
-	warnIfClosedOrderTrackingBacklogLarge([]beads.Store{store}, &buf)
-	got := buf.String()
-	if !strings.Contains(got, "≥1001") {
-		t.Fatalf("warning = %q, want ≥1001 cap format", got)
-	}
-}
-
-func TestWarnIfClosedOrderTrackingBacklogLarge_SilentOnNilStore(_ *testing.T) {
-	// nil store: must not panic.
-	warnIfClosedOrderTrackingBacklogLarge([]beads.Store{nil}, io.Discard)
-}
-
-// TestWarnIfClosedOrderTrackingBacklogLarge_CountsStoresTogether is the split
-// city: a converged one holds its pre-cutover backlog in the work ledger and
-// everything since in the orders binding. Neither half clears the threshold on
-// its own, so a per-store test stays silent on a city holding 120.
-func TestWarnIfClosedOrderTrackingBacklogLarge_CountsStoresTogether(t *testing.T) {
-	seedClosed := func(prefix string, n int) beads.Store {
-		seed := make([]beads.Bead, n)
-		for i := range seed {
-			seed[i] = beads.Bead{
-				ID:     fmt.Sprintf("%s-%03d", prefix, i),
-				Status: "closed",
-				Labels: []string{labelOrderTracking},
-			}
-		}
-		return beads.NewMemStoreFrom(200, seed, nil)
-	}
-
-	var buf bytes.Buffer
-	warnIfClosedOrderTrackingBacklogLarge([]beads.Store{seedClosed("work", 60), seedClosed("bind", 60)}, &buf)
-	got := buf.String()
-	if !strings.Contains(got, "120") {
-		t.Fatalf("warning = %q, want the combined count 120; a per-store threshold halves the advisory's sensitivity on exactly the split cities it was extended for", got)
-	}
-	if strings.Count(got, "gc start:") != 1 {
-		t.Fatalf("warning = %q, want one advisory line for the city", got)
+	var stderr bytes.Buffer
+	sweepOrphanedOrderTrackingAtBoot(
+		&storageRoutes{},
+		t.TempDir(),
+		&config.City{},
+		events.Discard,
+		&stderr,
+	)
+	if stderr.Len() != 0 {
+		t.Fatalf("startup stderr = %q, want no raw warning for normal recent order-tracking history", stderr.String())
 	}
 }

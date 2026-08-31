@@ -1,30 +1,47 @@
 ---
 title: Recover from Dolt Bloat
-description: Recover a Gas City beads store whose Dolt noms directory has grown out of proportion.
+description: Recover a Gas City beads store whose managed Dolt footprint has grown out of proportion.
 ---
 
 ## Overview
 
-Gas City stores beads in a managed Dolt server. Dolt records every write as
-immutable chunks under `.beads/dolt/<database>/.dolt/noms/`. Chunks are
-only reclaimed by garbage collection. Dolt's auto-GC fires when ~125 MB of
-new chunks have accumulated since the last GC, which means a database that
-bloated once during an agent storm and then went quiet will not auto-GC on
-its own — it sits at its peak size indefinitely.
+Gas City stores beads in a managed Dolt server. The complete per-database
+footprint is `.beads/dolt/<database>/.dolt/`, not only its `noms/` directory.
+The main components are:
 
-This runbook walks an operator through recovering such a database: stopping
-writers, taking a safety backup, running a full GC with archive compression,
-and verifying the result.
+- `noms/`: immutable chunks and the live Dolt commit graph.
+- `git-remote-cache/`: rebuildable Git transport objects for `git+...` remotes.
+- `temptf/`: temporary table and NBS scratch files.
+
+`gc doctor` measures the complete footprint and reports this component
+breakdown as `dolt-storage-size`. This runbook covers each component; running
+chunk GC cannot reclaim remote-cache or temporary-file growth.
 
 ## Symptoms
 
-1. `gc doctor` reports `dolt-noms-size` as **Warning** or **Error**.
-2. `du -sh <cityPath>/.beads/dolt/<database>/.dolt/` returns more than
-   20 GB.
+1. `gc doctor` reports `dolt-storage-size` as **Warning** or **Error**.
+2. `du -sh <cityPath>/.beads/dolt/<database>/.dolt/` exceeds the configured
+   warning threshold.
 3. `bd` writes feel slower than usual, or `bd ready` takes noticeable time.
 4. Agents fail with Dolt connection or timeout errors, especially shortly
    after start.
 
+
+## Identify the dominant component
+
+Measure each path separately. Do not pass both a parent and its children to one
+`du` invocation: GNU `du` de-duplicates blocks across arguments, which makes the
+parent total look smaller than it is.
+
+```bash
+du -sh <cityPath>/.beads/dolt/<database>/.dolt
+du -sh <cityPath>/.beads/dolt/<database>/.dolt/noms
+du -sh <cityPath>/.beads/dolt/<database>/.dolt/git-remote-cache
+du -sh <cityPath>/.beads/dolt/<database>/.dolt/temptf
+```
+
+Use the matching recovery below. A large `noms/` directory needs compaction or
+GC; a large `git-remote-cache/` or `temptf/` directory does not.
 ## Preconditions
 
 - **Stop all agents.** Run `gc stop` in the affected city so no session is
@@ -34,16 +51,13 @@ and verifying the result.
 - **Free disk space.** Dolt GC rewrites chunks into a new store before
   swapping; budget at least **2× the current `.dolt/` size** in free space
   on the same filesystem.
-- **Final Dolt 2.1.0 or newer.** This matches the floor enforced by Gas
-  City's managed Dolt tooling. Releases before 1.86.2 also have the upstream
-  GC/writer deadlock fixed in dolthub/dolt commit `ccf7bde206`, which can hang
-  `dolt_backup sync` under heavy write load. Check with
-  `dolt version`. If your binary rejects `--archive-level=1` (rare on
-  modern releases), drop the flag and run plain
-  `dolt gc` — archive compression is default-on in 1.75+ so the flag is
-  an optimization, not a requirement.
+- **Dolt 2.1.2 or newer.** Dolt 2.1.2 restored Git-remote teardown and
+  2.1.3 bounds the parented cache history, preventing the remote cache from
+  retaining every force-pushed flattened history. Gas City's embedded Beads
+  dependency includes these fixes. Check the external server binary with
+  `dolt version`.
 
-## Recovery Procedure
+## Noms Recovery Procedure
 
 ```bash
 # 1. Stop the supervisor (and with it, all agents and the managed Dolt server).
@@ -60,13 +74,48 @@ dolt gc --archive-level=1
 # 4. Restart the city and verify.
 cd <cityPath>
 gc start
-gc doctor          # dolt-noms-size should now be OK
+gc doctor          # dolt-storage-size should now report the remaining components accurately
 du -sh .beads/dolt/<database>/.dolt
 ```
 
-If `gc doctor` reports a clean `dolt-noms-size` and agents come back up
+If `gc doctor` reports a clean `dolt-storage-size` and agents come back up
 cleanly, the recovery is complete. You may delete the `.dolt.bak-*`
 directory at your leisure once you are confident in the new store.
+
+## Reclaiming stale temporary files
+
+A hard-killed Dolt process can leave `buffered_file_byte_sink_*` scratch files
+under `.dolt/temptf/`. Gas City's managed-server preflight removes regular files
+there once they are older than 24 hours, after proving the data-directory lock
+is free and before starting the next server.
+
+```bash
+gc stop <cityPath>
+gc start <cityPath>
+gc doctor
+```
+
+Do not delete `temptf/` while the server is running. Files newer than 24 hours
+are preserved because they may belong to recent work.
+
+## Reclaiming a legacy Git remote cache
+
+Dolt 2.1.2+ cleans process-owned cache refs on graceful teardown, and 2.1.3+
+bounds reachable cache history. Those fixes prevent future unbounded growth but
+do not necessarily reclaim refs leaked by an older process. For a legacy cache
+that still dominates `dolt-storage-size`:
+
+1. Verify `dolt version` is 2.1.3 or newer and the configured remote is
+   reachable.
+2. Stop the city. Do not touch a cache held by the running SQL server.
+3. Rename `.dolt/git-remote-cache` to a sibling rollback directory.
+4. Restart the city and query the affected bead store. Dolt rebuilds the cache
+   from the configured remote.
+5. Keep the rollback directory until `gc bd list --rig <rig> --limit 1 --json`,
+   `gc doctor`, and the next remote sync all succeed; then remove it.
+
+The cache is transport state, not the local Dolt database. Never move or delete
+`.dolt/noms`, `repo_state.json`, or working-set files as part of this procedure.
 
 ## Reclaiming a database stranded below the compaction threshold
 
@@ -170,9 +219,9 @@ If GC finishes but the size barely moves, the chunks are nearly all live
 
 ## Prevention
 
-- **Keep Dolt at a final 2.1.0 or newer.** This matches Gas City's
-  managed-Dolt floor; newer releases ship improved auto-GC heuristics and
-  default archive compression.
+- **Keep Dolt at 2.1.3 or newer.** These releases clean process-owned Git
+  transport refs and bound parented cache history in addition to the managed
+  server's normal auto-GC and archive compression.
 - **Let the dolt pack's `mol-dog-compactor` order run continuously.**
   It ships embedded in the dolt pack and runs `gc dolt compact` once a
   managed database crosses the commit threshold. Compaction fetches the
@@ -188,7 +237,8 @@ If GC finishes but the size barely moves, the chunks are nearly all live
   compactor and may kill an in-progress GC; raise the cap or leave it
   unset if you want unattended recovery on big databases.
 - **Run `gc doctor` regularly.** A daily cron or CI job is enough. The
-  `dolt-noms-size` check gives early warning well before users notice.
+  `dolt-storage-size` check reports the full footprint and identifies which
+  component needs attention.
 - **Avoid long-lived `dolt sql` sessions from outside Gas City.** External
   clients hold open transactions that can block GC.
 
@@ -246,8 +296,8 @@ without opening this runbook first.
 
 ## When to Escalate
 
-If a recovery GC reduces the store by less than ~10% and `gc doctor` still
-flags `dolt-noms-size`:
+If a recovery GC reduces `noms/` by less than ~10% and `gc doctor` still
+flags `dolt-storage-size` with `noms` as the dominant component:
 
 1. All remaining chunks are probably live — the database legitimately
    contains this much history. Squashing Dolt history is not a supported

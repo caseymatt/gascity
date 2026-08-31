@@ -71,7 +71,7 @@ func TestCheckWarmupEligibleDefaultsFalse(t *testing.T) {
 		&CustomTypesCheck{},
 		&DeprecatedAttachmentFieldsCheck{},
 		&DoltConfigCheck{},
-		&DoltNomsSizeCheck{},
+		&DoltStorageSizeCheck{},
 		&DoltServerCheck{},
 		&DoltVersionCheck{},
 		&DurationRangeCheck{},

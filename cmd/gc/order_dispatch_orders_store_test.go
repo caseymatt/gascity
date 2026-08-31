@@ -583,9 +583,9 @@ func TestOneShotOrderFederationsStayOnTheOneStoreOnSingleStoreCity(t *testing.T)
 	}
 }
 
-// TestDoctorOrderTrackingRetentionCountsTheOrdersBinding pins the advisory an
-// operator reads to decide whether retention is keeping up. It counts closed
-// tracking beads, and on a split city every one of them is in the binding, so a
+// TestDoctorOrderTrackingRetentionCountsTheOrdersBinding pins the actionable
+// signal an operator reads to decide whether retention is keeping up. On a split
+// city the deletion-eligible tracking backlog is in the orders binding, so a
 // work-store-only count reports a reassuring zero on exactly the city whose
 // backlog is growing.
 func TestDoctorOrderTrackingRetentionCountsTheOrdersBinding(t *testing.T) {
@@ -595,12 +595,12 @@ func TestDoctorOrderTrackingRetentionCountsTheOrdersBinding(t *testing.T) {
 	entry := cliStorageRoutesEntryFor(filepath.Clean(cityPath))
 	entry.once.Do(func() { entry.routes = messagingSplitRoutes(binding) })
 
-	check := newOrderTrackingRetentionCheck(cityPath, func(string) (beads.Store, error) {
+	check := newOrderTrackingRetentionCheck(cityPath, nil, func(string) (beads.Store, error) {
 		return beads.NewMemStore(), nil
 	})
 	res := check.Run(&doctor.CheckContext{})
 	if res.Status != doctor.StatusWarning {
-		t.Fatalf("status = %v (%s), want a warning: the binding holds 600 closed tracking beads and the advisory reports the work store's zero", res.Status, res.Message)
+		t.Fatalf("status = %v (%s), want a warning: the binding holds 590 deletion-eligible tracking beads and the advisory reports the work store's zero", res.Status, res.Message)
 	}
 }
 

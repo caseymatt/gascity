@@ -175,7 +175,7 @@ for c in missing:
   coverage. It's operator-managed through gas-city, runs on a 6h
   cooldown rather than per-command, and is the one targeted by
   retention work in `gastownhall/gascity`.
-- **Watch `gc doctor` for `dolt-noms-size` alongside this check.** Both
-  surfaces grow together on busy cities; treating them as a single
-  disk-pressure signal works better than reasoning about each in
-  isolation.
+- **Watch `gc doctor` for `dolt-storage-size` alongside this check.** Both
+  surfaces grow together on busy cities; the storage check distinguishes Noms,
+  Git remote-cache, temporary-file, and other managed-Dolt growth before an
+  operator chooses a recovery path.

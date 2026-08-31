@@ -2542,7 +2542,7 @@ func TestWorktreeCheckFix(t *testing.T) {
 	}
 }
 
-// --- DoltNomsSizeCheck ---
+// --- DoltStorageSizeCheck ---
 
 // setupManagedDoltCity creates a minimal managed-bd/Dolt city in a temp dir
 // and returns its path. Runtime state is written for the pinned database.
@@ -2660,8 +2660,8 @@ func writeFakeFile(t *testing.T, path string, size int64) {
 	}
 }
 
-func newTestDoltNomsSizeCheck(cityPath string, skip bool) *DoltNomsSizeCheck {
-	c := NewDoltNomsSizeCheck(cityPath, skip)
+func newTestDoltNomsSizeCheck(cityPath string, skip bool) *DoltStorageSizeCheck {
+	c := NewDoltStorageSizeCheck(cityPath, skip)
 	c.measureDir = sumDirBytes
 	return c
 }
@@ -2839,6 +2839,33 @@ func TestDoltNomsSizeCheck_WarnAtThreshold(t *testing.T) {
 	}
 }
 
+func TestDoltStorageSizeCheck_ReportsNonNomsDominatedFootprint(t *testing.T) {
+	dir := setupManagedDoltCity(t)
+	root := filepath.Join(dir, ".beads", "dolt", "hq", ".dolt")
+	writeFakeFile(t, filepath.Join(root, "noms", "chunks"), 256*1024*1024)
+	writeFakeFile(t, filepath.Join(root, "git-remote-cache", "repo.git", "objects", "pack"), 3*1024*1024*1024)
+	writeFakeFile(t, filepath.Join(root, "temptf", "buffered_file_byte_sink_1"), 512*1024*1024)
+
+	c := newTestDoltNomsSizeCheck(dir, false)
+	r := c.Run(&CheckContext{})
+	if r.Name != "dolt-storage-size" {
+		t.Fatalf("name = %q, want dolt-storage-size", r.Name)
+	}
+	if r.Status != StatusWarning {
+		t.Fatalf("status = %d, want Warning; msg = %s", r.Status, r.Message)
+	}
+	for _, want := range []string{
+		"managed dolt footprint",
+		"noms 0.25 GB",
+		"git-remote-cache 3.00 GB",
+		"temptf 0.50 GB",
+	} {
+		if !strings.Contains(r.Message, want) {
+			t.Errorf("message = %q, want %q", r.Message, want)
+		}
+	}
+}
+
 func TestDoltNomsSizeCheck_ErrorAtThreshold(t *testing.T) {
 	dir := setupManagedDoltCity(t)
 	// 21 GB — above error (20 GB).
@@ -2903,7 +2930,7 @@ func TestDoltNomsSizeCheck_ConfigErrorScansManagedRigMetadata(t *testing.T) {
 	})
 	writeDoctorCanonicalMetadata(t, fs, rigDir, "de")
 
-	c := NewDoltNomsSizeCheckForConfig(dir, false, nil, os.ErrInvalid)
+	c := NewDoltStorageSizeCheckForConfig(dir, false, nil, os.ErrInvalid)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, string(filepath.Separator)+"de"+string(filepath.Separator)+".dolt") {
 			return 3 * 1024 * 1024 * 1024, true, nil
@@ -2998,7 +3025,7 @@ func TestDoltNomsSizeCheck_SkipsSystemDatabaseMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, string(filepath.Separator)+"mysql"+string(filepath.Separator)) {
 			t.Fatalf("measureDir called for system database path %s", path)
@@ -3017,7 +3044,7 @@ func TestDoltNomsSizeCheck_SkipsInvalidDatabaseMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, "outside") {
 			t.Fatalf("measureDir called for invalid database path %s", path)
@@ -3058,7 +3085,7 @@ func TestDoltNomsSizeCheck_IgnoresAmbientDataDirOverride(t *testing.T) {
 	dir := setupManagedDoltCity(t)
 	t.Setenv("GC_DOLT_DATA_DIR", filepath.Join(t.TempDir(), "wrong-dolt-data"))
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, "wrong-dolt-data") {
 			t.Fatalf("measureDir used ambient data override path %s", path)
@@ -3084,7 +3111,7 @@ func TestDoltNomsSizeCheck_UsesPublishedRuntimeDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, "relocated-dolt-data") {
 			return 3 * 1024 * 1024 * 1024, true, nil
@@ -3117,7 +3144,7 @@ func TestDoltNomsSizeCheck_IgnoresPublishedRuntimeDataDirWithUnreachablePort(t *
 		t.Fatal(err)
 	}
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, "unreachable-port-dolt-data") {
 			t.Fatalf("measureDir used stale running data dir %s", path)
@@ -3145,7 +3172,7 @@ func TestDoltNomsSizeCheck_UsesStoppedPublishedRuntimeDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, "relocated-stopped-dolt-data") {
 			return 3 * 1024 * 1024 * 1024, true, nil
@@ -3170,7 +3197,7 @@ func TestDoltNomsSizeCheck_IgnoresStaleStoppedPublishedRuntimeDataDir(t *testing
 		t.Fatal(err)
 	}
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, "stale-stopped-dolt-data") {
 			t.Fatalf("measureDir used stale stopped data dir %s", path)
@@ -3192,7 +3219,7 @@ func TestDoltNomsSizeCheck_IgnoresMissingPublishedRuntimeDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, "missing-relocated-dolt-data") {
 			t.Fatalf("measureDir used missing published data dir %s", path)
@@ -3217,7 +3244,7 @@ func TestDoltNomsSizeCheck_IgnoresStaleRunningPublishedRuntimeDataDir(t *testing
 		t.Fatal(err)
 	}
 
-	c := NewDoltNomsSizeCheck(dir, false)
+	c := NewDoltStorageSizeCheck(dir, false)
 	c.measureDir = func(path string) (int64, bool, error) {
 		if strings.Contains(path, "stale-running-dolt-data") {
 			t.Fatalf("measureDir used stale running data dir %s", path)
@@ -3705,10 +3732,10 @@ func TestManagedDoltChecksSkipInvalidCityConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sizeCheck := NewDoltNomsSizeCheck(dir, false)
+	sizeCheck := NewDoltStorageSizeCheck(dir, false)
 	sizeResult := sizeCheck.Run(&CheckContext{})
 	if sizeResult.Status != StatusOK || !strings.Contains(sizeResult.Message, "skipped") {
-		t.Fatalf("dolt-noms-size status=%d message=%q, want skipped OK", sizeResult.Status, sizeResult.Message)
+		t.Fatalf("dolt-storage-size status=%d message=%q, want skipped OK", sizeResult.Status, sizeResult.Message)
 	}
 
 	configCheck := NewDoltConfigCheck(dir, false)

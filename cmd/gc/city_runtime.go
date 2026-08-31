@@ -77,12 +77,6 @@ func sweepOrphanedOrderTrackingAtBoot(routes *storageRoutes, cityPath string, cf
 			fmt.Fprintf(stderr, "gc start: closed %d orphaned order-tracking beads\n", n) //nolint:errcheck // best-effort stderr
 		}
 	}
-	// The advisory is about the city's backlog, so it counts the stores together.
-	// Per-store thresholds would halve the sensitivity on exactly the split cities
-	// the sweep was extended for: a converged city holds half its closed tracking
-	// beads in the work ledger and half in the binding, and neither half alone
-	// reaches the threshold the pair clears.
-	warnIfClosedOrderTrackingBacklogLarge(stores, stderr)
 }
 
 // reloadOrderDrainTimeout bounds how long config reload will wait for
@@ -1721,58 +1715,6 @@ func (cr *CityRuntime) runOrderTrackingRetentionWatchdog(now time.Time) {
 	if deleted > 0 && cr.stderr != nil {
 		fmt.Fprintf(cr.stderr, "%s: order-tracking retention watchdog: pruned %d closed bead(s)\n", cr.logPrefix, deleted) //nolint:errcheck // best-effort stderr
 	}
-}
-
-const (
-	// orderTrackingRetentionStartupWarnThreshold is the minimum number of closed
-	// order-tracking beads a city holds that triggers a startup advisory.
-	// The watchdog prunes automatically; this warning surfaces cities that have
-	// accumulated a visible backlog before the first watchdog cycle completes.
-	orderTrackingRetentionStartupWarnThreshold = 100
-	// orderTrackingRetentionStartupListLimit caps the startup List query so the
-	// advisory does not scan unbounded closed-bead history on large stores.
-	orderTrackingRetentionStartupListLimit = 1001
-)
-
-// warnIfClosedOrderTrackingBacklogLarge writes one advisory line to stderr when
-// the city's stores together hold more than
-// orderTrackingRetentionStartupWarnThreshold closed order-tracking beads. It is
-// best-effort: a nil store or a List error is skipped so startup is never
-// blocked.
-//
-// The count is the total across the stores, not a per-store test, because the
-// backlog is one city's. A split city holds its pre-cutover half in the work
-// ledger and everything since in the binding; testing each half separately
-// stays silent on a city with twice the backlog the threshold is set at.
-func warnIfClosedOrderTrackingBacklogLarge(stores []beads.Store, stderr io.Writer) {
-	total := 0
-	truncated := false
-	for _, store := range stores {
-		if store == nil {
-			continue
-		}
-		closed, err := beads.HandlesFor(store).Live.List(beads.ListQuery{
-			Status:   "closed",
-			Label:    labelOrderTracking,
-			TierMode: beads.TierBoth,
-			Limit:    orderTrackingRetentionStartupListLimit,
-		})
-		if err != nil {
-			continue
-		}
-		total += len(closed)
-		if len(closed) >= orderTrackingRetentionStartupListLimit {
-			truncated = true
-		}
-	}
-	if total <= orderTrackingRetentionStartupWarnThreshold {
-		return
-	}
-	countStr := fmt.Sprintf("%d", total)
-	if truncated {
-		countStr = "≥" + countStr
-	}
-	fmt.Fprintf(stderr, "gc start: %s closed order-tracking beads detected — retention watchdog will prune automatically (7d TTL default; configure: [beads.policies.order_tracking].delete_after_close). For immediate cleanup: gc order sweep-tracking\n", countStr) //nolint:errcheck // best-effort stderr
 }
 
 func (cr *CityRuntime) runNudgeMailSweepWatchdog(now time.Time) {

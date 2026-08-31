@@ -71,7 +71,7 @@ order-tracking-retention
 session-model
 dolt-server
 fork-rate
-dolt-noms-size
+dolt-storage-size
 dolt-journal-size
 dolt-config
 dolt-version

@@ -2366,9 +2366,9 @@ func formatGB(bytes int64) string {
 	return fmt.Sprintf("%.2f GB", gb)
 }
 
-// DoltNomsSizeCheck warns when the managed Dolt database's on-disk footprint
-// is approaching or exceeds operator-set thresholds.
-type DoltNomsSizeCheck struct {
+// DoltStorageSizeCheck warns when the managed Dolt database's complete
+// on-disk footprint is approaching or exceeds operator-set thresholds.
+type DoltStorageSizeCheck struct {
 	cityPath        string
 	skip            bool
 	measureDir      func(string) (int64, bool, error)
@@ -2377,14 +2377,70 @@ type DoltNomsSizeCheck struct {
 	scopeRoots      []string
 }
 
-// NewDoltNomsSizeCheck creates a Dolt noms/on-disk size check.
-func NewDoltNomsSizeCheck(cityPath string, skip bool) *DoltNomsSizeCheck {
-	return &DoltNomsSizeCheck{cityPath: cityPath, skip: skip, measureDir: duDirBytes}
+type doltStorageComponents struct {
+	total       int64
+	noms        int64
+	remoteCache int64
+	tempFiles   int64
 }
 
-// NewDoltNomsSizeCheckForConfig creates a Dolt size check using preloaded city config.
-func NewDoltNomsSizeCheckForConfig(cityPath string, skip bool, cfg *config.City, cfgErr error) *DoltNomsSizeCheck {
-	return &DoltNomsSizeCheck{
+func (c doltStorageComponents) add(other doltStorageComponents) doltStorageComponents {
+	c.total += other.total
+	c.noms += other.noms
+	c.remoteCache += other.remoteCache
+	c.tempFiles += other.tempFiles
+	return c
+}
+
+func (c doltStorageComponents) otherBytes() int64 {
+	other := c.total - c.noms - c.remoteCache - c.tempFiles
+	if other < 0 {
+		return 0
+	}
+	return other
+}
+
+func (c doltStorageComponents) summary() string {
+	return fmt.Sprintf(
+		"noms %s, git-remote-cache %s, temptf %s, other %s",
+		formatGB(c.noms),
+		formatGB(c.remoteCache),
+		formatGB(c.tempFiles),
+		formatGB(c.otherBytes()),
+	)
+}
+
+func measureDoltStorageComponents(
+	root string,
+	measureDir func(string) (int64, bool, error),
+) (doltStorageComponents, bool, error) {
+	total, exists, err := measureDir(root)
+	if err != nil || !exists {
+		return doltStorageComponents{}, exists, err
+	}
+	components := doltStorageComponents{total: total}
+	for name, destination := range map[string]*int64{
+		"noms":             &components.noms,
+		"git-remote-cache": &components.remoteCache,
+		"temptf":           &components.tempFiles,
+	} {
+		size, _, err := measureDir(filepath.Join(root, name))
+		if err != nil {
+			return doltStorageComponents{}, true, fmt.Errorf("measure %s: %w", filepath.Join(root, name), err)
+		}
+		*destination = size
+	}
+	return components, true, nil
+}
+
+// NewDoltStorageSizeCheck creates a complete managed-Dolt footprint check.
+func NewDoltStorageSizeCheck(cityPath string, skip bool) *DoltStorageSizeCheck {
+	return &DoltStorageSizeCheck{cityPath: cityPath, skip: skip, measureDir: duDirBytes}
+}
+
+// NewDoltStorageSizeCheckForConfig creates a Dolt storage check using preloaded city config.
+func NewDoltStorageSizeCheckForConfig(cityPath string, skip bool, cfg *config.City, cfgErr error) *DoltStorageSizeCheck {
+	return &DoltStorageSizeCheck{
 		cityPath:        cityPath,
 		skip:            skip,
 		measureDir:      duDirBytes,
@@ -2394,7 +2450,7 @@ func NewDoltNomsSizeCheckForConfig(cityPath string, skip bool, cfg *config.City,
 	}
 }
 
-func (c *DoltNomsSizeCheck) managedApplicable() bool {
+func (c *DoltStorageSizeCheck) managedApplicable() bool {
 	if c.applicableKnown {
 		return c.applicable
 	}
@@ -2402,11 +2458,11 @@ func (c *DoltNomsSizeCheck) managedApplicable() bool {
 }
 
 // Name returns the check identifier.
-func (c *DoltNomsSizeCheck) Name() string { return "dolt-noms-size" }
+func (c *DoltStorageSizeCheck) Name() string { return "dolt-storage-size" }
 
 // Run inspects the workspace's managed local Dolt databases and compares the
-// largest footprint to warning/error thresholds.
-func (c *DoltNomsSizeCheck) Run(_ *CheckContext) *CheckResult {
+// largest complete footprint to warning/error thresholds.
+func (c *DoltStorageSizeCheck) Run(_ *CheckContext) *CheckResult {
 	r := &CheckResult{Name: c.Name()}
 	if c.skip || !c.managedApplicable() {
 		r.Status = StatusOK
@@ -2431,29 +2487,29 @@ func (c *DoltNomsSizeCheck) Run(_ *CheckContext) *CheckResult {
 	}
 
 	var (
-		worstTarget doltDataScanTarget
-		worstBytes  int64
-		totalBytes  int64
-		existsCount int
+		worstTarget     doltDataScanTarget
+		worstComponents doltStorageComponents
+		allComponents   doltStorageComponents
+		existsCount     int
 	)
 	measureDir := c.measureDir
 	if measureDir == nil {
 		measureDir = duDirBytes
 	}
 	for _, target := range targets {
-		total, exists, err := measureDir(target.ScanRoot)
+		components, exists, err := measureDoltStorageComponents(target.ScanRoot, measureDir)
 		if err != nil {
 			r.Status = StatusWarning
-			r.Message = fmt.Sprintf("scan dolt data dir: %v", err)
+			r.Message = fmt.Sprintf("scan managed dolt storage: %v", err)
 			return r
 		}
 		if !exists {
 			continue
 		}
 		existsCount++
-		totalBytes += total
-		if total > worstBytes {
-			worstBytes = total
+		allComponents = allComponents.add(components)
+		if components.total > worstComponents.total {
+			worstComponents = components
 			worstTarget = target
 		}
 	}
@@ -2469,44 +2525,68 @@ func (c *DoltNomsSizeCheck) Run(_ *CheckContext) *CheckResult {
 	} else if worstTarget.Orphan {
 		targetLabel = "orphan database " + targetLabel
 	}
-	size := formatGB(worstBytes)
+	size := formatGB(worstComponents.total)
 	scopeNote := ""
 	if existsCount > 1 {
 		scopeNote = fmt.Sprintf(" (largest of %d databases)", existsCount)
 	}
+	worstDescription := fmt.Sprintf(
+		"managed dolt footprint for %s is %s (%s)%s",
+		targetLabel,
+		size,
+		worstComponents.summary(),
+		scopeNote,
+	)
 	switch {
-	case worstBytes >= doltNomsErrorBytes:
+	case worstComponents.total >= doltNomsErrorBytes:
 		r.Status = StatusError
-		r.Message = fmt.Sprintf("dolt noms directory for %s is %s%s — excessive; recovery recommended", targetLabel, size, scopeNote)
+		r.Message = worstDescription + " — excessive; recovery recommended"
 		r.FixHint = "see docs/troubleshooting/dolt-bloat-recovery.md"
-	case totalBytes >= doltNomsErrorBytes:
+	case allComponents.total >= doltNomsErrorBytes:
 		r.Status = StatusError
-		r.Message = fmt.Sprintf("aggregate dolt data footprint is %s across %d databases — excessive; recovery recommended", formatGB(totalBytes), existsCount)
+		r.Message = fmt.Sprintf(
+			"aggregate managed dolt footprint is %s across %d databases (%s) — excessive; recovery recommended",
+			formatGB(allComponents.total),
+			existsCount,
+			allComponents.summary(),
+		)
 		r.FixHint = "see docs/troubleshooting/dolt-bloat-recovery.md"
-	case worstBytes >= doltNomsWarnBytes:
+	case worstComponents.total >= doltNomsWarnBytes:
 		r.Status = StatusWarning
-		r.Message = fmt.Sprintf("dolt noms directory for %s is %s%s — approaching threshold", targetLabel, size, scopeNote)
+		r.Message = worstDescription + " — approaching threshold"
 		r.FixHint = "see docs/troubleshooting/dolt-bloat-recovery.md"
-	case totalBytes >= doltNomsWarnBytes:
+	case allComponents.total >= doltNomsWarnBytes:
 		r.Status = StatusWarning
-		r.Message = fmt.Sprintf("aggregate dolt data footprint is %s across %d databases — approaching threshold", formatGB(totalBytes), existsCount)
+		r.Message = fmt.Sprintf(
+			"aggregate managed dolt footprint is %s across %d databases (%s) — approaching threshold",
+			formatGB(allComponents.total),
+			existsCount,
+			allComponents.summary(),
+		)
 		r.FixHint = "see docs/troubleshooting/dolt-bloat-recovery.md"
 	default:
 		r.Status = StatusOK
 		if existsCount > 1 {
-			r.Message = fmt.Sprintf("aggregate dolt data footprint is %s across %d databases (largest %s: %s)", formatGB(totalBytes), existsCount, targetLabel, size)
+			r.Message = fmt.Sprintf(
+				"aggregate managed dolt footprint is %s across %d databases (%s; largest %s: %s)",
+				formatGB(allComponents.total),
+				existsCount,
+				allComponents.summary(),
+				targetLabel,
+				size,
+			)
 		} else {
-			r.Message = fmt.Sprintf("dolt data footprint for %s %s%s", targetLabel, size, scopeNote)
+			r.Message = worstDescription
 		}
 	}
 	return r
 }
 
-// CanFix returns false — see PR 4 for bloat recovery runbook.
-func (c *DoltNomsSizeCheck) CanFix() bool { return false }
+// CanFix returns false — recovery requires an operator-reviewed maintenance window.
+func (c *DoltStorageSizeCheck) CanFix() bool { return false }
 
 // Fix is a no-op.
-func (c *DoltNomsSizeCheck) Fix(_ *CheckContext) error { return nil }
+func (c *DoltStorageSizeCheck) Fix(_ *CheckContext) error { return nil }
 
 // DoltConfigExpectedValue is a dotted YAML path and value expected in the
 // managed dolt-config.yaml.

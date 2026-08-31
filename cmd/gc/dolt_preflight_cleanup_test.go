@@ -12,6 +12,48 @@ import (
 	"time"
 )
 
+func TestRemoveStaleManagedDoltTempFilesRemovesOnlyExpiredScratchFiles(t *testing.T) {
+	t.Setenv("GC_DOLT_DATA_DIR", "")
+	cityPath := t.TempDir()
+	tempDir := filepath.Join(cityPath, ".beads", "dolt", "hq", ".dolt", "temptf")
+	stalePath := filepath.Join(tempDir, "nested", "buffered_file_byte_sink_stale")
+	freshPath := filepath.Join(tempDir, "buffered_file_byte_sink_fresh")
+	nomsPath := filepath.Join(cityPath, ".beads", "dolt", "hq", ".dolt", "noms", "old-chunk")
+	for _, path := range []string{stalePath, freshPath, nomsPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := time.Date(2026, time.August, 31, 12, 0, 0, 0, time.UTC)
+	staleTime := now.Add(-25 * time.Hour)
+	freshTime := now.Add(-23 * time.Hour)
+	for path, modTime := range map[string]time.Time{
+		stalePath: staleTime,
+		freshPath: freshTime,
+		nomsPath:  staleTime,
+	} {
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := removeStaleManagedDoltTempFiles(cityPath, now); err != nil {
+		t.Fatalf("removeStaleManagedDoltTempFiles: %v", err)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("stale temp file stat error = %v, want not exist", err)
+	}
+	for _, path := range []string{freshPath, nomsPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("preserved file %s: %v", path, err)
+		}
+	}
+}
+
 func TestStaleManagedDoltSocketPathsExcludesMysqlSock(t *testing.T) {
 	tmpSock, err := os.CreateTemp("/tmp", "dolt-preflight-cleanup-*.sock")
 	if err != nil {
