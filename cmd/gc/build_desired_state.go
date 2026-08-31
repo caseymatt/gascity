@@ -4344,18 +4344,24 @@ func selectOrPlanPoolSessionBead(
 	if !bp.hasCompleteSessionSnapshot() {
 		return session.Info{}, 0, nil, errPoolSessionCreatePartial
 	}
+	if !bp.tryClaimPoolSessionCreate(template) {
+		return session.Info{}, 0, nil, errPoolSessionCreateBudgetExhausted
+	}
 	slot, err := claimFreshPoolSlotInfo(bp, cfgAgent, usedSlots)
 	if err != nil {
+		bp.releasePoolSessionCreate()
 		return session.Info{}, 0, nil, err
 	}
 	_, qualifiedInstance, poolSlot := poolDesiredRequestIdentity(cfgAgent, slot)
 	metadata, err := poolTriggerMetadata(bp, cfgAgent, qualifiedInstance, request)
 	if err != nil {
+		bp.releasePoolSessionCreate()
 		delete(usedSlots, slot)
 		return session.Info{}, 0, nil, err
 	}
 
 	if bp.poolScaleCheckPartialTemplates[template] {
+		bp.releasePoolSessionCreate()
 		delete(usedSlots, slot)
 		return session.Info{}, 0, nil, errPoolSessionCreatePartial
 	}
@@ -4373,13 +4379,9 @@ func selectOrPlanPoolSessionBead(
 		provName = strings.TrimSpace(bp.workspace.Provider)
 	}
 	if healthy, present := bp.providerHealthSnapshot.check(provName); present && !healthy {
+		bp.releasePoolSessionCreate()
 		delete(usedSlots, slot)
 		return session.Info{}, 0, nil, errPoolSessionCreateProviderRed
-	}
-
-	if !bp.tryClaimPoolSessionCreate(template) {
-		delete(usedSlots, slot)
-		return session.Info{}, 0, nil, errPoolSessionCreateBudgetExhausted
 	}
 
 	plan := &poolSessionCreatePlan{

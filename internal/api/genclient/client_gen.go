@@ -6767,6 +6767,70 @@ type TypedEventStreamEnvelopeWorkerOperation struct {
 	Workflow         *WorkflowEventProjection    `json:"workflow,omitempty"`
 }
 
+// TypedEventStreamEnvelopeWorktreeCreated defines model for TypedEventStreamEnvelopeWorktreeCreated.
+type TypedEventStreamEnvelopeWorktreeCreated struct {
+	Actor            string                   `json:"actor"`
+	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
+	Message          *string                  `json:"message,omitempty"`
+	Payload          WorktreeCreatedPayload   `json:"payload"`
+	RunId            *string                  `json:"run_id,omitempty"`
+	Seq              int64                    `json:"seq"`
+	SessionId        *string                  `json:"session_id,omitempty"`
+	StepId           *string                  `json:"step_id,omitempty"`
+	Subject          *string                  `json:"subject,omitempty"`
+	Ts               time.Time                `json:"ts"`
+	Type             string                   `json:"type"`
+	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedEventStreamEnvelopeWorktreePublished defines model for TypedEventStreamEnvelopeWorktreePublished.
+type TypedEventStreamEnvelopeWorktreePublished struct {
+	Actor            string                   `json:"actor"`
+	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
+	Message          *string                  `json:"message,omitempty"`
+	Payload          WorktreePublishedPayload `json:"payload"`
+	RunId            *string                  `json:"run_id,omitempty"`
+	Seq              int64                    `json:"seq"`
+	SessionId        *string                  `json:"session_id,omitempty"`
+	StepId           *string                  `json:"step_id,omitempty"`
+	Subject          *string                  `json:"subject,omitempty"`
+	Ts               time.Time                `json:"ts"`
+	Type             string                   `json:"type"`
+	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedEventStreamEnvelopeWorktreeReclaimSkipped defines model for TypedEventStreamEnvelopeWorktreeReclaimSkipped.
+type TypedEventStreamEnvelopeWorktreeReclaimSkipped struct {
+	Actor            string                        `json:"actor"`
+	DependsOnStepIds *[]string                     `json:"depends_on_step_ids,omitempty"`
+	Message          *string                       `json:"message,omitempty"`
+	Payload          WorktreeReclaimSkippedPayload `json:"payload"`
+	RunId            *string                       `json:"run_id,omitempty"`
+	Seq              int64                         `json:"seq"`
+	SessionId        *string                       `json:"session_id,omitempty"`
+	StepId           *string                       `json:"step_id,omitempty"`
+	Subject          *string                       `json:"subject,omitempty"`
+	Ts               time.Time                     `json:"ts"`
+	Type             string                        `json:"type"`
+	Workflow         *WorkflowEventProjection      `json:"workflow,omitempty"`
+}
+
+// TypedEventStreamEnvelopeWorktreeReclaimed defines model for TypedEventStreamEnvelopeWorktreeReclaimed.
+type TypedEventStreamEnvelopeWorktreeReclaimed struct {
+	Actor            string                   `json:"actor"`
+	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
+	Message          *string                  `json:"message,omitempty"`
+	Payload          WorktreeReclaimedPayload `json:"payload"`
+	RunId            *string                  `json:"run_id,omitempty"`
+	Seq              int64                    `json:"seq"`
+	SessionId        *string                  `json:"session_id,omitempty"`
+	StepId           *string                  `json:"step_id,omitempty"`
+	Subject          *string                  `json:"subject,omitempty"`
+	Ts               time.Time                `json:"ts"`
+	Type             string                   `json:"type"`
+	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
 // TypedTaggedEventStreamEnvelope Discriminated union of supervisor event stream envelopes. Each variant constrains the envelope type and payload schema together and includes the source city.
 type TypedTaggedEventStreamEnvelope struct {
 	union json.RawMessage
@@ -8353,6 +8417,74 @@ type TypedTaggedEventStreamEnvelopeWorkerOperation struct {
 	Workflow         *WorkflowEventProjection    `json:"workflow,omitempty"`
 }
 
+// TypedTaggedEventStreamEnvelopeWorktreeCreated defines model for TypedTaggedEventStreamEnvelopeWorktreeCreated.
+type TypedTaggedEventStreamEnvelopeWorktreeCreated struct {
+	Actor            string                   `json:"actor"`
+	City             string                   `json:"city"`
+	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
+	Message          *string                  `json:"message,omitempty"`
+	Payload          WorktreeCreatedPayload   `json:"payload"`
+	RunId            *string                  `json:"run_id,omitempty"`
+	Seq              int64                    `json:"seq"`
+	SessionId        *string                  `json:"session_id,omitempty"`
+	StepId           *string                  `json:"step_id,omitempty"`
+	Subject          *string                  `json:"subject,omitempty"`
+	Ts               time.Time                `json:"ts"`
+	Type             string                   `json:"type"`
+	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedTaggedEventStreamEnvelopeWorktreePublished defines model for TypedTaggedEventStreamEnvelopeWorktreePublished.
+type TypedTaggedEventStreamEnvelopeWorktreePublished struct {
+	Actor            string                   `json:"actor"`
+	City             string                   `json:"city"`
+	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
+	Message          *string                  `json:"message,omitempty"`
+	Payload          WorktreePublishedPayload `json:"payload"`
+	RunId            *string                  `json:"run_id,omitempty"`
+	Seq              int64                    `json:"seq"`
+	SessionId        *string                  `json:"session_id,omitempty"`
+	StepId           *string                  `json:"step_id,omitempty"`
+	Subject          *string                  `json:"subject,omitempty"`
+	Ts               time.Time                `json:"ts"`
+	Type             string                   `json:"type"`
+	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped defines model for TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped.
+type TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped struct {
+	Actor            string                        `json:"actor"`
+	City             string                        `json:"city"`
+	DependsOnStepIds *[]string                     `json:"depends_on_step_ids,omitempty"`
+	Message          *string                       `json:"message,omitempty"`
+	Payload          WorktreeReclaimSkippedPayload `json:"payload"`
+	RunId            *string                       `json:"run_id,omitempty"`
+	Seq              int64                         `json:"seq"`
+	SessionId        *string                       `json:"session_id,omitempty"`
+	StepId           *string                       `json:"step_id,omitempty"`
+	Subject          *string                       `json:"subject,omitempty"`
+	Ts               time.Time                     `json:"ts"`
+	Type             string                        `json:"type"`
+	Workflow         *WorkflowEventProjection      `json:"workflow,omitempty"`
+}
+
+// TypedTaggedEventStreamEnvelopeWorktreeReclaimed defines model for TypedTaggedEventStreamEnvelopeWorktreeReclaimed.
+type TypedTaggedEventStreamEnvelopeWorktreeReclaimed struct {
+	Actor            string                   `json:"actor"`
+	City             string                   `json:"city"`
+	DependsOnStepIds *[]string                `json:"depends_on_step_ids,omitempty"`
+	Message          *string                  `json:"message,omitempty"`
+	Payload          WorktreeReclaimedPayload `json:"payload"`
+	RunId            *string                  `json:"run_id,omitempty"`
+	Seq              int64                    `json:"seq"`
+	SessionId        *string                  `json:"session_id,omitempty"`
+	StepId           *string                  `json:"step_id,omitempty"`
+	Subject          *string                  `json:"subject,omitempty"`
+	Ts               time.Time                `json:"ts"`
+	Type             string                   `json:"type"`
+	Workflow         *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
 // UnboundEventPayload defines model for UnboundEventPayload.
 type UnboundEventPayload struct {
 	Count     int64  `json:"count"`
@@ -8732,6 +8864,46 @@ type WorkspaceResponse struct {
 	Provider          *string `json:"provider,omitempty"`
 	SessionTemplate   *string `json:"session_template,omitempty"`
 	Suspended         bool    `json:"suspended"`
+}
+
+// WorktreeCreatedPayload defines model for WorktreeCreatedPayload.
+type WorktreeCreatedPayload struct {
+	HeadSha string `json:"head_sha"`
+	Id      string `json:"id"`
+	Owner   string `json:"owner"`
+	Path    string `json:"path"`
+	Rig     string `json:"rig"`
+}
+
+// WorktreePublishedPayload defines model for WorktreePublishedPayload.
+type WorktreePublishedPayload struct {
+	HeadSha string `json:"head_sha"`
+	Id      string `json:"id"`
+	Owner   string `json:"owner"`
+	Path    string `json:"path"`
+	Ref     string `json:"ref"`
+	Rig     string `json:"rig"`
+}
+
+// WorktreeReclaimSkippedPayload defines model for WorktreeReclaimSkippedPayload.
+type WorktreeReclaimSkippedPayload struct {
+	DryRun  bool   `json:"dry_run"`
+	HeadSha string `json:"head_sha"`
+	Id      string `json:"id"`
+	Owner   string `json:"owner"`
+	Path    string `json:"path"`
+	Reason  string `json:"reason"`
+	Rig     string `json:"rig"`
+}
+
+// WorktreeReclaimedPayload defines model for WorktreeReclaimedPayload.
+type WorktreeReclaimedPayload struct {
+	DryRun  bool   `json:"dry_run"`
+	HeadSha string `json:"head_sha"`
+	Id      string `json:"id"`
+	Owner   string `json:"owner"`
+	Path    string `json:"path"`
+	Rig     string `json:"rig"`
 }
 
 // PostV0CityParams defines parameters for PostV0City.
@@ -11273,6 +11445,110 @@ func (t *EventPayload) FromWorkerOperationEventPayload(v WorkerOperationEventPay
 
 // MergeWorkerOperationEventPayload performs a merge with any union data inside the EventPayload, using the provided WorkerOperationEventPayload
 func (t *EventPayload) MergeWorkerOperationEventPayload(v WorkerOperationEventPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsWorktreeCreatedPayload returns the union data inside the EventPayload as a WorktreeCreatedPayload
+func (t EventPayload) AsWorktreeCreatedPayload() (WorktreeCreatedPayload, error) {
+	var body WorktreeCreatedPayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromWorktreeCreatedPayload overwrites any union data inside the EventPayload as the provided WorktreeCreatedPayload
+func (t *EventPayload) FromWorktreeCreatedPayload(v WorktreeCreatedPayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeWorktreeCreatedPayload performs a merge with any union data inside the EventPayload, using the provided WorktreeCreatedPayload
+func (t *EventPayload) MergeWorktreeCreatedPayload(v WorktreeCreatedPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsWorktreePublishedPayload returns the union data inside the EventPayload as a WorktreePublishedPayload
+func (t EventPayload) AsWorktreePublishedPayload() (WorktreePublishedPayload, error) {
+	var body WorktreePublishedPayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromWorktreePublishedPayload overwrites any union data inside the EventPayload as the provided WorktreePublishedPayload
+func (t *EventPayload) FromWorktreePublishedPayload(v WorktreePublishedPayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeWorktreePublishedPayload performs a merge with any union data inside the EventPayload, using the provided WorktreePublishedPayload
+func (t *EventPayload) MergeWorktreePublishedPayload(v WorktreePublishedPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsWorktreeReclaimSkippedPayload returns the union data inside the EventPayload as a WorktreeReclaimSkippedPayload
+func (t EventPayload) AsWorktreeReclaimSkippedPayload() (WorktreeReclaimSkippedPayload, error) {
+	var body WorktreeReclaimSkippedPayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromWorktreeReclaimSkippedPayload overwrites any union data inside the EventPayload as the provided WorktreeReclaimSkippedPayload
+func (t *EventPayload) FromWorktreeReclaimSkippedPayload(v WorktreeReclaimSkippedPayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeWorktreeReclaimSkippedPayload performs a merge with any union data inside the EventPayload, using the provided WorktreeReclaimSkippedPayload
+func (t *EventPayload) MergeWorktreeReclaimSkippedPayload(v WorktreeReclaimSkippedPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsWorktreeReclaimedPayload returns the union data inside the EventPayload as a WorktreeReclaimedPayload
+func (t EventPayload) AsWorktreeReclaimedPayload() (WorktreeReclaimedPayload, error) {
+	var body WorktreeReclaimedPayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromWorktreeReclaimedPayload overwrites any union data inside the EventPayload as the provided WorktreeReclaimedPayload
+func (t *EventPayload) FromWorktreeReclaimedPayload(v WorktreeReclaimedPayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeWorktreeReclaimedPayload performs a merge with any union data inside the EventPayload, using the provided WorktreeReclaimedPayload
+func (t *EventPayload) MergeWorktreeReclaimedPayload(v WorktreeReclaimedPayload) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -15534,6 +15810,118 @@ func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeWorkerOperation(
 	return err
 }
 
+// AsTypedEventStreamEnvelopeWorktreeCreated returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeWorktreeCreated
+func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeWorktreeCreated() (TypedEventStreamEnvelopeWorktreeCreated, error) {
+	var body TypedEventStreamEnvelopeWorktreeCreated
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedEventStreamEnvelopeWorktreeCreated overwrites any union data inside the TypedEventStreamEnvelope as the provided TypedEventStreamEnvelopeWorktreeCreated
+func (t *TypedEventStreamEnvelope) FromTypedEventStreamEnvelopeWorktreeCreated(v TypedEventStreamEnvelopeWorktreeCreated) error {
+	v.Type = "worktree.created"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedEventStreamEnvelopeWorktreeCreated performs a merge with any union data inside the TypedEventStreamEnvelope, using the provided TypedEventStreamEnvelopeWorktreeCreated
+func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeWorktreeCreated(v TypedEventStreamEnvelopeWorktreeCreated) error {
+	v.Type = "worktree.created"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTypedEventStreamEnvelopeWorktreePublished returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeWorktreePublished
+func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeWorktreePublished() (TypedEventStreamEnvelopeWorktreePublished, error) {
+	var body TypedEventStreamEnvelopeWorktreePublished
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedEventStreamEnvelopeWorktreePublished overwrites any union data inside the TypedEventStreamEnvelope as the provided TypedEventStreamEnvelopeWorktreePublished
+func (t *TypedEventStreamEnvelope) FromTypedEventStreamEnvelopeWorktreePublished(v TypedEventStreamEnvelopeWorktreePublished) error {
+	v.Type = "worktree.published"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedEventStreamEnvelopeWorktreePublished performs a merge with any union data inside the TypedEventStreamEnvelope, using the provided TypedEventStreamEnvelopeWorktreePublished
+func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeWorktreePublished(v TypedEventStreamEnvelopeWorktreePublished) error {
+	v.Type = "worktree.published"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTypedEventStreamEnvelopeWorktreeReclaimSkipped returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeWorktreeReclaimSkipped
+func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeWorktreeReclaimSkipped() (TypedEventStreamEnvelopeWorktreeReclaimSkipped, error) {
+	var body TypedEventStreamEnvelopeWorktreeReclaimSkipped
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedEventStreamEnvelopeWorktreeReclaimSkipped overwrites any union data inside the TypedEventStreamEnvelope as the provided TypedEventStreamEnvelopeWorktreeReclaimSkipped
+func (t *TypedEventStreamEnvelope) FromTypedEventStreamEnvelopeWorktreeReclaimSkipped(v TypedEventStreamEnvelopeWorktreeReclaimSkipped) error {
+	v.Type = "worktree.reclaim_skipped"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedEventStreamEnvelopeWorktreeReclaimSkipped performs a merge with any union data inside the TypedEventStreamEnvelope, using the provided TypedEventStreamEnvelopeWorktreeReclaimSkipped
+func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeWorktreeReclaimSkipped(v TypedEventStreamEnvelopeWorktreeReclaimSkipped) error {
+	v.Type = "worktree.reclaim_skipped"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTypedEventStreamEnvelopeWorktreeReclaimed returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeWorktreeReclaimed
+func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeWorktreeReclaimed() (TypedEventStreamEnvelopeWorktreeReclaimed, error) {
+	var body TypedEventStreamEnvelopeWorktreeReclaimed
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedEventStreamEnvelopeWorktreeReclaimed overwrites any union data inside the TypedEventStreamEnvelope as the provided TypedEventStreamEnvelopeWorktreeReclaimed
+func (t *TypedEventStreamEnvelope) FromTypedEventStreamEnvelopeWorktreeReclaimed(v TypedEventStreamEnvelopeWorktreeReclaimed) error {
+	v.Type = "worktree.reclaimed"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedEventStreamEnvelopeWorktreeReclaimed performs a merge with any union data inside the TypedEventStreamEnvelope, using the provided TypedEventStreamEnvelopeWorktreeReclaimed
+func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeWorktreeReclaimed(v TypedEventStreamEnvelopeWorktreeReclaimed) error {
+	v.Type = "worktree.reclaimed"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsTypedEventStreamEnvelopeCustom returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeCustom
 func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeCustom() (TypedEventStreamEnvelopeCustom, error) {
 	var body TypedEventStreamEnvelopeCustom
@@ -15762,6 +16150,14 @@ func (t TypedEventStreamEnvelope) ValueByDiscriminator() (interface{}, error) {
 		return t.AsTypedEventStreamEnvelopeWebhookRejected()
 	case "worker.operation":
 		return t.AsTypedEventStreamEnvelopeWorkerOperation()
+	case "worktree.created":
+		return t.AsTypedEventStreamEnvelopeWorktreeCreated()
+	case "worktree.published":
+		return t.AsTypedEventStreamEnvelopeWorktreePublished()
+	case "worktree.reclaim_skipped":
+		return t.AsTypedEventStreamEnvelopeWorktreeReclaimSkipped()
+	case "worktree.reclaimed":
+		return t.AsTypedEventStreamEnvelopeWorktreeReclaimed()
 	default:
 		return nil, errors.New("unknown discriminator value: " + discriminator)
 	}
@@ -18353,6 +18749,118 @@ func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeWork
 	return err
 }
 
+// AsTypedTaggedEventStreamEnvelopeWorktreeCreated returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeWorktreeCreated
+func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeWorktreeCreated() (TypedTaggedEventStreamEnvelopeWorktreeCreated, error) {
+	var body TypedTaggedEventStreamEnvelopeWorktreeCreated
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedTaggedEventStreamEnvelopeWorktreeCreated overwrites any union data inside the TypedTaggedEventStreamEnvelope as the provided TypedTaggedEventStreamEnvelopeWorktreeCreated
+func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeWorktreeCreated(v TypedTaggedEventStreamEnvelopeWorktreeCreated) error {
+	v.Type = "worktree.created"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedTaggedEventStreamEnvelopeWorktreeCreated performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeWorktreeCreated
+func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeWorktreeCreated(v TypedTaggedEventStreamEnvelopeWorktreeCreated) error {
+	v.Type = "worktree.created"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTypedTaggedEventStreamEnvelopeWorktreePublished returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeWorktreePublished
+func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeWorktreePublished() (TypedTaggedEventStreamEnvelopeWorktreePublished, error) {
+	var body TypedTaggedEventStreamEnvelopeWorktreePublished
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedTaggedEventStreamEnvelopeWorktreePublished overwrites any union data inside the TypedTaggedEventStreamEnvelope as the provided TypedTaggedEventStreamEnvelopeWorktreePublished
+func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeWorktreePublished(v TypedTaggedEventStreamEnvelopeWorktreePublished) error {
+	v.Type = "worktree.published"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedTaggedEventStreamEnvelopeWorktreePublished performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeWorktreePublished
+func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeWorktreePublished(v TypedTaggedEventStreamEnvelopeWorktreePublished) error {
+	v.Type = "worktree.published"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped
+func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped() (TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped, error) {
+	var body TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped overwrites any union data inside the TypedTaggedEventStreamEnvelope as the provided TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped
+func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped(v TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped) error {
+	v.Type = "worktree.reclaim_skipped"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped
+func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped(v TypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped) error {
+	v.Type = "worktree.reclaim_skipped"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTypedTaggedEventStreamEnvelopeWorktreeReclaimed returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeWorktreeReclaimed
+func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeWorktreeReclaimed() (TypedTaggedEventStreamEnvelopeWorktreeReclaimed, error) {
+	var body TypedTaggedEventStreamEnvelopeWorktreeReclaimed
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedTaggedEventStreamEnvelopeWorktreeReclaimed overwrites any union data inside the TypedTaggedEventStreamEnvelope as the provided TypedTaggedEventStreamEnvelopeWorktreeReclaimed
+func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeWorktreeReclaimed(v TypedTaggedEventStreamEnvelopeWorktreeReclaimed) error {
+	v.Type = "worktree.reclaimed"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedTaggedEventStreamEnvelopeWorktreeReclaimed performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeWorktreeReclaimed
+func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeWorktreeReclaimed(v TypedTaggedEventStreamEnvelopeWorktreeReclaimed) error {
+	v.Type = "worktree.reclaimed"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsTypedTaggedEventStreamEnvelopeCustom returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeCustom
 func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeCustom() (TypedTaggedEventStreamEnvelopeCustom, error) {
 	var body TypedTaggedEventStreamEnvelopeCustom
@@ -18581,6 +19089,14 @@ func (t TypedTaggedEventStreamEnvelope) ValueByDiscriminator() (interface{}, err
 		return t.AsTypedTaggedEventStreamEnvelopeWebhookRejected()
 	case "worker.operation":
 		return t.AsTypedTaggedEventStreamEnvelopeWorkerOperation()
+	case "worktree.created":
+		return t.AsTypedTaggedEventStreamEnvelopeWorktreeCreated()
+	case "worktree.published":
+		return t.AsTypedTaggedEventStreamEnvelopeWorktreePublished()
+	case "worktree.reclaim_skipped":
+		return t.AsTypedTaggedEventStreamEnvelopeWorktreeReclaimSkipped()
+	case "worktree.reclaimed":
+		return t.AsTypedTaggedEventStreamEnvelopeWorktreeReclaimed()
 	default:
 		return nil, errors.New("unknown discriminator value: " + discriminator)
 	}
