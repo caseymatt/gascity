@@ -473,15 +473,19 @@ func TestHandleReloadSocketCmdWaitsForAcceptedAfterHandoff(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close() //nolint:errcheck
 
-	reloadReqCh := make(chan reloadRequest)
+	reloadReqCh := make(chan reloadRequest, 1)
 	done := make(chan struct{})
 	go func() {
 		handleReloadSocketCmd(server, `{"wait":false}`, reloadReqCh)
 		close(done)
 	}()
 
-	time.Sleep(180 * time.Millisecond)
-	req := <-reloadReqCh
+	var req reloadRequest
+	select {
+	case req = <-reloadReqCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reload request was not handed off")
+	}
 	time.Sleep(50 * time.Millisecond)
 	req.acceptedCh <- reloadControlReply{
 		Outcome: reloadOutcomeAccepted,
