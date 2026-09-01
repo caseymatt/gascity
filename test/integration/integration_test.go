@@ -453,7 +453,7 @@ func TestPinnedIntegrationBeadsModuleVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pinnedIntegrationBeadsModuleVersion() error = %v", err)
 	}
-	const want = "v1.1.1-0.20260820124357-349e4b029fd8"
+	const want = "v1.1.1-0.20260823003459-7fcf4e1634bf"
 	if version != want {
 		t.Errorf("pinnedIntegrationBeadsModuleVersion() = %q, want %q", version, want)
 	}
